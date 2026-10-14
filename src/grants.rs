@@ -322,8 +322,8 @@ pub async fn delete_grant(
     // Cascade: denylist the grant for the remaining token lifetimes
     // (tokens verify via `is_grant_revoked` — Valkey, no DB on hot path).
     let remaining = state.config.access_token_ttl_secs as i64 * 2; // access + refresh lifetime headroom
-    if let Ok(conn) = sentin8::middleware::valkey_client(&state.config.valkey_url, "sentin8:auth")
-        .await
+    if let Ok(conn) =
+        sentin8::middleware::valkey_client(&state.config.valkey_url, "sentin8:auth").await
     {
         let _: Result<(), _> = conn
             .set_ex(

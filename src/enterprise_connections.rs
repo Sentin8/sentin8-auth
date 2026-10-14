@@ -323,7 +323,7 @@ pub async fn create_connection(
     match row {
         Ok(r) => {
             crate::events::emit_event_tx(
-        &mut conn,
+                &mut conn,
                 _auth.env_id,
                 "sentin8:auth:connection:created",
                 serde_json::json!({
@@ -517,7 +517,7 @@ pub async fn update_connection(
     match result {
         Ok(r) if r.rows_affected() > 0 => {
             crate::events::emit_event_tx(
-        &mut conn,
+                &mut conn,
                 _auth.env_id,
                 "sentin8:auth:connection:updated",
                 serde_json::json!({ "connection_id": id }),
@@ -578,7 +578,7 @@ pub async fn delete_connection(
     match result {
         Ok(r) if r.rows_affected() > 0 => {
             crate::events::emit_event_tx(
-        &mut conn,
+                &mut conn,
                 _auth.env_id,
                 "sentin8:auth:connection:deleted",
                 serde_json::json!({ "connection_id": id }),

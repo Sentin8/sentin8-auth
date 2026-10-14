@@ -120,10 +120,7 @@ pub async fn delegate_access_token(
             ));
         }
         if !rec.scopes.iter().any(|s| s == "sentin8:delegate:read") {
-            return Err((
-                StatusCode::FORBIDDEN,
-                "missing scope: delegate:read".into(),
-            ));
+            return Err((StatusCode::FORBIDDEN, "missing scope: delegate:read".into()));
         }
         // The certificate thumbprint binds the delegated token (RFC 8705
         // `cnf x5t#S256`) — a delegated token minted through the cert

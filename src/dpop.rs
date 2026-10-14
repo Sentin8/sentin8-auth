@@ -234,8 +234,8 @@ pub async fn validate_and_verify_dpop(
     // jti replay protection (Valkey SET NX, TTL 300s).
     let jti = &decoded.claims.jti;
     if !jti.is_empty() {
-        if let Ok(conn) = sentin8::middleware::valkey_client(&state.config.valkey_url, "sentin8:auth")
-            .await
+        if let Ok(conn) =
+            sentin8::middleware::valkey_client(&state.config.valkey_url, "sentin8:auth").await
         {
             use glide::AsyncCommands as _;
             let setnx = conn
@@ -244,9 +244,7 @@ pub async fn validate_and_verify_dpop(
             if matches!(setnx, Ok(0)) {
                 return Err("DPoP proof jti already used (replay)".into());
             }
-            let _: Result<(), _> = conn
-                .expire(format!("auth:dpop:jti:{jti}"), 300i64)
-                .await;
+            let _: Result<(), _> = conn.expire(format!("auth:dpop:jti:{jti}"), 300i64).await;
         }
     }
 

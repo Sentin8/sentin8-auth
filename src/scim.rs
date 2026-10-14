@@ -296,7 +296,7 @@ pub async fn list_users(
         .unwrap_or(0);
 
     let _ = param_idx; // last placeholder index (unused, kept for clarity)
-    let resources = rows.iter().map(|r| row_to_scim_user(r)).collect();
+    let resources = rows.iter().map(row_to_scim_user).collect();
 
     Ok(Json(ScimListResponse {
         schemas: vec!["urn:ietf:params:scim:api:messages:2.0:ListResponse".into()],
@@ -731,12 +731,9 @@ fn parse_scim_filter(filter: Option<&str>) -> (String, Vec<String>) {
         // Match: attribute operator "value"
         if let Some((attr, rest)) = part.split_once(" eq ") {
             let val = rest.trim().trim_matches('"');
-            match attr.trim() {
-                "userName" => {
-                    values.push(val.to_string());
-                    clauses.push(format!("email = ${}", values.len()));
-                }
-                _ => {}
+            if attr.trim() == "userName" {
+                values.push(val.to_string());
+                clauses.push(format!("email = ${}", values.len()));
             }
         } else if let Some((attr, rest)) = part.split_once(" co ") {
             let val = rest.trim().trim_matches('"');

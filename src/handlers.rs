@@ -758,13 +758,10 @@ pub(crate) async fn auto_add_to_app_groups(pool: &PgPool, user_id: Uuid, env_id:
     let instances: Option<Vec<Uuid>> = (async {
         let issuer = sentin8::config::Sentin8Config::from_env().sentin8_auth_issuer();
         let ca_cert_path = sentin8::auth::m2m::try_platform_ca_path()?;
-        let cert = sentin8::auth::m2m::ensure_workload_certificate(
-            &issuer,
-            "sentin8:auth",
-            &ca_cert_path,
-        )
-        .await
-        .ok()?;
+        let cert =
+            sentin8::auth::m2m::ensure_workload_certificate(&issuer, "sentin8:auth", &ca_cert_path)
+                .await
+                .ok()?;
         let mtls = sentin8::middleware::mtls::MtlsConfig::new(
             &cert.ca_cert_path,
             &cert.cert_path,
@@ -1492,7 +1489,7 @@ pub async fn fetch_client_role_scopes(
     tx.commit().await?;
 
     let mut all: Vec<String> = Vec::new();
-    for s in own_scopes.into_iter().chain(role_scopes.into_iter()) {
+    for s in own_scopes.into_iter().chain(role_scopes) {
         if !all.contains(&s) {
             all.push(s);
         }

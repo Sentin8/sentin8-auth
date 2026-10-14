@@ -182,8 +182,9 @@ pub async fn wallet_authorize(
         "redirect_uri": q.redirect_uri,
         "created_at": chrono::Utc::now().timestamp(),
     });
-    let client = sentin8::middleware::valkey_client(&state.config.valkey_url, "sentin8:auth").await
-    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    let client = sentin8::middleware::valkey_client(&state.config.valkey_url, "sentin8:auth")
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
     let conn = client;
     let _: Result<(), _> = conn
         .set_ex(
@@ -223,8 +224,9 @@ pub async fn vp_response(
     Json(req): Json<VpResponseRequest>,
 ) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
     // Resolve (single-use) the pending presentation request.
-    let client = sentin8::middleware::valkey_client(&state.config.valkey_url, "sentin8:auth").await
-    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    let client = sentin8::middleware::valkey_client(&state.config.valkey_url, "sentin8:auth")
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
     let conn = client;
     let pending_key = format!("auth:vp:nonce:{}", req.nonce);
     let pending: Option<String> = conn

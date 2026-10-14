@@ -213,8 +213,8 @@ async fn verify_client_assertion(
     }
 
     // Replay protection (Valkey SET NX, TTL = remaining lifetime).
-    if let Ok(conn) = sentin8::middleware::valkey_client(&state.config.valkey_url, "sentin8:auth")
-        .await
+    if let Ok(conn) =
+        sentin8::middleware::valkey_client(&state.config.valkey_url, "sentin8:auth").await
     {
         use glide::AsyncCommands as _;
         let ttl = (exp - now).max(1) as i64;
@@ -227,9 +227,7 @@ async fn verify_client_assertion(
                 "client_assertion jti already used".into(),
             ));
         }
-        let _: Result<(), _> = conn
-            .expire(format!("auth:assertion:jti:{jti}"), ttl)
-            .await;
+        let _: Result<(), _> = conn.expire(format!("auth:assertion:jti:{jti}"), ttl).await;
     }
 
     // Signature verification against the client's registered keys.
@@ -270,8 +268,8 @@ async fn fetch_external_jwks(state: &AppState, jwks_uri: &str) -> Option<Vec<ser
         format!("auth:extjwks:{}", hex_encode(&digest))
     };
     // Try cache first.
-    if let Ok(conn) = sentin8::middleware::valkey_client(&state.config.valkey_url, "sentin8:auth")
-        .await
+    if let Ok(conn) =
+        sentin8::middleware::valkey_client(&state.config.valkey_url, "sentin8:auth").await
     {
         use glide::AsyncCommands as _;
         if let Ok(Some(cached)) = conn.get::<_, Option<String>>(cache_key.clone()).await {
@@ -293,8 +291,8 @@ async fn fetch_external_jwks(state: &AppState, jwks_uri: &str) -> Option<Vec<ser
     let doc: serde_json::Value = resp.json().await.ok()?;
     let keys = doc.get("keys")?.as_array()?.clone();
     // Cache the raw document.
-    if let Ok(conn) = sentin8::middleware::valkey_client(&state.config.valkey_url, "sentin8:auth")
-        .await
+    if let Ok(conn) =
+        sentin8::middleware::valkey_client(&state.config.valkey_url, "sentin8:auth").await
     {
         use glide::AsyncCommands as _;
         let _: Result<(), _> = conn.set_ex(cache_key, doc.to_string(), 300u64).await;
@@ -610,8 +608,8 @@ async fn is_token_revoked(state: &AppState, jti: &str) -> bool {
     if jti.is_empty() {
         return false;
     }
-    let Ok(conn) = sentin8::middleware::valkey_client(&state.config.valkey_url, "sentin8:auth")
-        .await
+    let Ok(conn) =
+        sentin8::middleware::valkey_client(&state.config.valkey_url, "sentin8:auth").await
     else {
         return false;
     };
@@ -628,8 +626,8 @@ async fn revoke_jti(state: &AppState, jti: &str, remaining_secs: i64) {
     if jti.is_empty() {
         return;
     }
-    if let Ok(conn) = sentin8::middleware::valkey_client(&state.config.valkey_url, "sentin8:auth")
-        .await
+    if let Ok(conn) =
+        sentin8::middleware::valkey_client(&state.config.valkey_url, "sentin8:auth").await
     {
         use glide::AsyncCommands as _;
         let _: Result<(), _> = conn
@@ -982,7 +980,7 @@ impl Default for SecurityProfile {
 
 /// Resolve the effective security profile for a request.
 ///
-//// — reads `scope` (platform/org/env) and the tenant
+/// — reads `scope` (platform/org/env) and the tenant
 /// context from TLS-injected headers. `org_id` is resolved from `env_id`
 /// via `sentin8_sys_environments` when needed. For `org` scope, uses the
 /// resolved `org_id`; for `env` scope, uses both `org_id` and `env_id`. Falls
@@ -1468,7 +1466,7 @@ fn resolve_issuer(config: &crate::config::AuthConfig, headers: &HeaderMap) -> St
         .get(axum::http::header::HOST)
         .and_then(|v| v.to_str().ok())
     {
-        if !h.is_empty() && h != &format!("auth.{}", config.sentin8_domain) {
+        if !h.is_empty() && h != format!("auth.{}", config.sentin8_domain) {
             return format!("https://{h}");
         }
     }
@@ -1586,8 +1584,9 @@ async fn resolve_par_request(state: &AppState, request_uri: &str) -> Option<serd
         .unwrap_or(request_uri);
     let valkey_key = format!("auth:par:{key}");
 
-    let client = sentin8::middleware::valkey_client(&state.config.valkey_url, "sentin8:auth").await
-    .ok()?;
+    let client = sentin8::middleware::valkey_client(&state.config.valkey_url, "sentin8:auth")
+        .await
+        .ok()?;
     let conn = client;
     // GETDEL — atomic single-use resolution.
     let val: Option<String> = glide::cmd("GETDEL")
@@ -1710,8 +1709,9 @@ pub async fn pushed_authorization_request(
         "authorization_details": authorization_details,
     });
 
-    let client = sentin8::middleware::valkey_client(&state.config.valkey_url, "sentin8:auth").await
-    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    let client = sentin8::middleware::valkey_client(&state.config.valkey_url, "sentin8:auth")
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
     let conn = client;
 
     let _: () = conn
@@ -2202,7 +2202,8 @@ pub async fn authorize_continue(
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
     // Use Valkey for auth codes (TTL 600s).
     let valkey_url = &state.config.valkey_url;
-    let valkey_conn = sentin8::middleware::valkey_client(valkey_url, "sentin8:auth").await
+    let valkey_conn = sentin8::middleware::valkey_client(valkey_url, "sentin8:auth")
+        .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
     let _: () = valkey_conn
         .set_ex(&code_key, code_data.to_string(), 600)
@@ -2497,12 +2498,9 @@ pub async fn token(
     match req.grant_type.as_str() {
         "authorization_code" => {
             handle_code_exchange(&state, &client, dpop_jkt.as_deref(), &headers, req)
-                .await
-                .map_err(Into::into)
-        }
+                .await}
         "refresh_token" => handle_refresh(&state, &client, dpop_jkt.as_deref(), req)
-            .await
-            .map_err(Into::into),
+            .await,
         "client_credentials" => handle_client_credentials(&state, &headers, &client, req)
             .await
             .map_err(Into::into),
@@ -2560,8 +2558,9 @@ async fn handle_code_exchange(
 
     // Fetch the auth code data from Valkey.
     let code_key = format!("auth:authcode:{code}");
-    let valkey_conn = sentin8::middleware::valkey_client(&state.config.valkey_url, "sentin8:auth").await
-    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    let valkey_conn = sentin8::middleware::valkey_client(&state.config.valkey_url, "sentin8:auth")
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
     let code_json: Option<String> = valkey_conn
         .get(&code_key)
@@ -3407,7 +3406,7 @@ async fn handle_token_exchange(
             .unwrap_or("");
         if iss == state.config.issuer {
             // Self-issued JWT — publisher-token exchange path.
-            return handle_publisher_token_exchange(state, req, &headers, &st, &claims_unverified)
+            return handle_publisher_token_exchange(state, req, headers, &st, &claims_unverified)
                 .await;
         }
         // External JWT — federated credentials path.
@@ -3485,9 +3484,9 @@ async fn handle_publisher_token_exchange(
     // If the jti is already cached, reject with 400 token_already_exchanged.
     if !publisher_claims.jti.is_empty() {
         let jti_key = format!("auth:exchange:jti:{}", publisher_claims.jti);
-        let remaining_secs = (publisher_claims.exp - now_ts).max(1) as i64;
-        if let Ok(conn) = sentin8::middleware::valkey_client(&state.config.valkey_url, "sentin8:auth")
-            .await
+        let remaining_secs = (publisher_claims.exp - now_ts).max(1);
+        if let Ok(conn) =
+            sentin8::middleware::valkey_client(&state.config.valkey_url, "sentin8:auth").await
         {
             use glide::AsyncCommands as _;
             let setnx = conn.set_nx::<_, _, i64>(&jti_key, "1").await;
@@ -3640,7 +3639,7 @@ async fn handle_publisher_token_exchange(
     let max_exp =
         (now + chrono::Duration::seconds(state.config.m2m_token_ttl_secs as i64)).timestamp();
     let exp = publisher_exp.min(max_exp);
-    let ttl_secs = (exp - now.timestamp()).max(1) as i64;
+    let ttl_secs = (exp - now.timestamp()).max(1);
 
     // 5b.sender-constrain the delegated token: when the
     // subscriber presented a client certificate (cert-bound M2M per
@@ -4572,7 +4571,8 @@ pub async fn device_authorization(
 
     // Store the device code in Valkey with the requested scope + client_id.
     let valkey_url = &state.config.valkey_url;
-    let valkey_conn = sentin8::middleware::valkey_client(valkey_url, "sentin8:auth").await
+    let valkey_conn = sentin8::middleware::valkey_client(valkey_url, "sentin8:auth")
+        .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
     let key = format!("auth:device_code:{device_code}");
     let data = serde_json::json!({
@@ -4621,7 +4621,8 @@ async fn handle_device_code(
         ))
     })?;
     let valkey_url = &state.config.valkey_url;
-    let valkey_conn = sentin8::middleware::valkey_client(valkey_url, "sentin8:auth").await
+    let valkey_conn = sentin8::middleware::valkey_client(valkey_url, "sentin8:auth")
+        .await
         .map_err(|e| TokenError::Internal(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
     let key = format!("auth:device_code:{device_code}");
     let data: Option<String> = valkey_conn
@@ -4728,7 +4729,10 @@ async fn handle_device_code(
         .del(&key)
         .await
         .map_err(|e| TokenError::Internal(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
-    let uc_key = format!("auth:user_code:{}", data["user_code"].as_str().unwrap_or(""));
+    let uc_key = format!(
+        "auth:user_code:{}",
+        data["user_code"].as_str().unwrap_or("")
+    );
     let _: () = valkey_conn
         .del(&uc_key)
         .await
@@ -4774,7 +4778,8 @@ async fn handle_ciba_token(
         })?;
 
     let valkey_url = &state.config.valkey_url;
-    let valkey_conn = sentin8::middleware::valkey_client(valkey_url, "sentin8:auth").await
+    let valkey_conn = sentin8::middleware::valkey_client(valkey_url, "sentin8:auth")
+        .await
         .map_err(|e| TokenError::Internal(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
     let key = format!("auth:ciba:{auth_req_id}");
@@ -4995,7 +5000,8 @@ pub async fn device_verify(
     }
 
     let valkey_url = &state.config.valkey_url;
-    let valkey_conn = sentin8::middleware::valkey_client(valkey_url, "sentin8:auth").await
+    let valkey_conn = sentin8::middleware::valkey_client(valkey_url, "sentin8:auth")
+        .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
     let uc_key = format!("auth:user_code:{}", req.user_code);
     let device_code: Option<String> = valkey_conn

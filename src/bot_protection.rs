@@ -280,9 +280,7 @@ async fn check_rate(
     }
 }
 
-async fn valkey_conn(
-    state: &AppState,
-) -> Result<glide::GlideClient, (StatusCode, String)> {
+async fn valkey_conn(state: &AppState) -> Result<glide::GlideClient, (StatusCode, String)> {
     sentin8::middleware::valkey_client(&state.config.valkey_url, "sentin8:auth")
         .await
         .map_err(|e| {

@@ -352,7 +352,6 @@ async fn drain_and_push_post(
     Ok(pushed)
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -41,14 +41,13 @@ fn parse_http_uri(uri: &str) -> Option<(String, String, Option<u16>)> {
     };
     let (host, port) = if authority.starts_with('[') {
         // IPv6 — [::1]:port or [::1]
-        if let Some(end) = authority.find(']') {
+        {
+            let end = authority.find(']')?;
             let h = &authority[..=end];
             let p = authority[end + 1..]
                 .strip_prefix(':')
                 .and_then(|x| x.parse::<u16>().ok());
             (h, p)
-        } else {
-            return None;
         }
     } else {
         match authority.rfind(':') {

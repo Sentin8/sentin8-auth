@@ -202,7 +202,6 @@ fn verify_rfc9421(
                 .to_string()
                 .trim_start_matches('(')
                 .trim_end_matches(')')
-                .to_string()
         ));
         // Reconstruct params with created/keyid as in the raw input for the
         // base line — RFC 9421 requires the exact serialized params. Build

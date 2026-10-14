@@ -177,10 +177,12 @@ async fn resolve_certificate_context(
         exp: i64::MAX,
         token_tp: "m2m".to_string(),
         scope: rec.scopes.join(" "),
-        env_id: Some(target_env_id
-            .filter(|s| !s.is_empty())
-            .unwrap_or(&sentin8::config::SYSTEM_ENV_ID.to_string())
-            .to_string()),
+        env_id: Some(
+            target_env_id
+                .filter(|s| !s.is_empty())
+                .unwrap_or(&sentin8::config::SYSTEM_ENV_ID.to_string())
+                .to_string(),
+        ),
         email: None,
         act: None,
         vertical: Some(rec.vertical.clone()),
@@ -225,12 +227,11 @@ async fn resolve_certificate_context(
             .await
             .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
         crate::admin::set_tenant_context(&mut tx, env_id).await;
-        let resolved =
-            sqlx::query_scalar(r#"SELECT org_id FROM sys.environments WHERE id = $1"#)
-                .bind(env_id)
-                .fetch_optional(&mut *tx)
-                .await
-                .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+        let resolved = sqlx::query_scalar(r#"SELECT org_id FROM sys.environments WHERE id = $1"#)
+            .bind(env_id)
+            .fetch_optional(&mut *tx)
+            .await
+            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
         tx.commit()
             .await
             .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
@@ -320,9 +321,7 @@ pub async fn require_sentin8or_access_mode(
     if !headers.contains_key(axum::http::header::AUTHORIZATION)
         && !headers.contains_key("authorization")
     {
-        if let Some(ctx) =
-            resolve_certificate_context(state, headers, target_env_id, mode).await?
-        {
+        if let Some(ctx) = resolve_certificate_context(state, headers, target_env_id, mode).await? {
             return Ok(ctx);
         }
     }
@@ -425,7 +424,10 @@ pub async fn require_sentin8or_access_mode(
     };
     crate::policy::require_policy(
         &state.policy,
-        &sentin8::auth::client::AuthContext { claims: sdk_claims, workload: None },
+        &sentin8::auth::client::AuthContext {
+            claims: sdk_claims,
+            workload: None,
+        },
         headers,
         sentin8::shield::EvalTarget::new(match mode {
             AccessMode::Read => "sentin8:auth:admin:read",

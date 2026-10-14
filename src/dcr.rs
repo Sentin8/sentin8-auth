@@ -405,7 +405,7 @@ async fn m2m_scope_gate(
         r#"SELECT allowed_scopes FROM auth.m2m_scope_grants
              WHERE service_name = $1"#,
     )
-    .bind(&workload_name)
+    .bind(workload_name)
     .fetch_optional(pool)
     .await
     .map_err(|e| {

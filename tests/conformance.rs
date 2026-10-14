@@ -334,7 +334,7 @@ async fn conf_code_client_binding_client_b_cannot_redeem_client_a_code() {
 
     // Client A authorizes.
     let request_uri = par_push(
-        &app, &client_a, &secret_a, &redirect, "openid", &challenge, "s1",
+        &app, &client_a, &secret_a, &redirect, "openid", challenge, "s1",
     )
     .await;
     let (status, body) = authorize_continue(
@@ -499,7 +499,7 @@ async fn conf_revoke_refresh_introspect_inactive_and_refresh_fails() {
         &secret,
         &redirect,
         "openid%20offline_access",
-        &challenge,
+        challenge,
         "s1",
     )
     .await;
@@ -772,7 +772,7 @@ async fn conf_rotated_out_refresh_token_reuse_fails() {
         &secret,
         &redirect,
         "openid%20offline_access",
-        &challenge,
+        challenge,
         "s1",
     )
     .await;

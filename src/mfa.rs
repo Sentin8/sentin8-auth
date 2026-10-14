@@ -169,7 +169,7 @@ pub async fn enroll(
     match result {
         Ok(_) => {
             crate::events::emit_event_tx(
-        &mut conn,
+                &mut conn,
                 env_id,
                 "sentin8:auth:mfa:enrolled",
                 serde_json::json!({ "user_id": user_id }),
@@ -315,7 +315,7 @@ pub async fn disable(
                 .await;
             }
             crate::events::emit_event_tx(
-        &mut conn,
+                &mut conn,
                 env_id,
                 "sentin8:auth:mfa:disabled",
                 serde_json::json!({ "user_id": user_id }),
@@ -559,8 +559,8 @@ async fn verify_signin(
     // Valkey SETNX with TTL 90s (two 30s steps of drift allowance).
     {
         let replay_key = format!("auth:totp:{}:{}", challenge.user_id, code);
-        if let Ok(conn) = sentin8::middleware::valkey_client(&state.config.valkey_url, "sentin8:auth")
-            .await
+        if let Ok(conn) =
+            sentin8::middleware::valkey_client(&state.config.valkey_url, "sentin8:auth").await
         {
             use glide::AsyncCommands as _;
             let setnx = conn.set_nx::<_, _, i64>(&replay_key, "1").await;

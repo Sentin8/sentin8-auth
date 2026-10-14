@@ -315,7 +315,7 @@ pub async fn delete_endpoint(
     match result {
         Ok(r) if r.rows_affected() > 0 => {
             crate::events::emit_event_tx(
-        &mut conn,
+                &mut conn,
                 auth.env_id,
                 "sentin8:auth:webhook:deleted",
                 serde_json::json!({ "endpoint_id": id }),

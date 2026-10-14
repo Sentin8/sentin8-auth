@@ -545,7 +545,7 @@ pub async fn update_user(
         Some(r) => {
             //— emit user.updated event to Bus outbox.
             crate::events::emit_event_tx(
-        &mut conn,
+                &mut conn,
                 r.env_id,
                 "sentin8:auth:user:updated",
                 serde_json::json!({ "user_id": r.id }),
@@ -613,7 +613,7 @@ pub async fn delete_user(
     } else {
         //— emit user.deleted event to Bus outbox.
         crate::events::emit_event_tx(
-        &mut conn,
+            &mut conn,
             _auth.env_id,
             "sentin8:auth:user:deleted",
             serde_json::json!({ "user_id": id }),
@@ -1024,7 +1024,7 @@ pub async fn update_role(
     match row {
         Some(r) => {
             crate::events::emit_event_tx(
-        &mut conn,
+                &mut conn,
                 r.env_id,
                 "sentin8:auth:role:updated",
                 serde_json::json!({ "role_id": id }),
@@ -1088,7 +1088,7 @@ pub async fn delete_role(
         Err((StatusCode::NOT_FOUND, "role not found".into()))
     } else {
         crate::events::emit_event_tx(
-        &mut conn,
+            &mut conn,
             _auth.env_id,
             "sentin8:auth:role:deleted",
             serde_json::json!({ "role_id": id }),
@@ -1681,7 +1681,7 @@ pub async fn delete_group(
         Err((StatusCode::NOT_FOUND, "group not found".into()))
     } else {
         crate::events::emit_event_tx(
-        &mut conn,
+            &mut conn,
             _auth.env_id,
             "sentin8:auth:group:deleted",
             serde_json::json!({ "group_id": id }),
@@ -2534,7 +2534,7 @@ pub async fn update_oauth_client(
     match row {
         Some(r) => {
             crate::events::emit_event_tx(
-        &mut conn,
+                &mut conn,
                 r.env_id,
                 "sentin8:auth:client:updated",
                 serde_json::json!({ "client_id": id }),
@@ -2602,7 +2602,7 @@ pub async fn delete_oauth_client(
         Err((StatusCode::NOT_FOUND, "OAuth client not found".into()))
     } else {
         crate::events::emit_event_tx(
-        &mut conn,
+            &mut conn,
             _auth.env_id,
             "sentin8:auth:client:deleted",
             serde_json::json!({ "client_id": id }),
@@ -3062,7 +3062,7 @@ pub async fn delete_federated_credential(
         ))
     } else {
         crate::events::emit_event_tx(
-        &mut conn,
+            &mut conn,
             _auth.env_id,
             "sentin8:auth:credential:deleted",
             serde_json::json!({ "credential_id": cred_id, "client_id": client_id }),
@@ -3471,7 +3471,7 @@ pub async fn revoke_api_key(
     } else {
         //— emit apikey.revoked event to Bus outbox.
         crate::events::emit_event_tx(
-        &mut conn,
+            &mut conn,
             _auth.env_id,
             "sentin8:auth:apikey:revoked",
             serde_json::json!({ "api_key_id": id }),
@@ -3674,7 +3674,7 @@ pub async fn terminate_session(
         .await;
         //— emit session.terminated event to Bus outbox.
         crate::events::emit_event_tx(
-        &mut conn,
+            &mut conn,
             _auth.env_id,
             "sentin8:auth:session:terminated",
             serde_json::json!({ "session_id": id }),
@@ -4100,12 +4100,8 @@ async fn sys_proxy_with_actor(
         &cert.cert_path,
         &cert.key_path,
     );
-    let http = sentin8::middleware::mtls::build_mtls_client(&mtls).map_err(|e| {
-        (
-            StatusCode::BAD_GATEWAY,
-            format!("sys proxy transport: {e}"),
-        )
-    })?;
+    let http = sentin8::middleware::mtls::build_mtls_client(&mtls)
+        .map_err(|e| (StatusCode::BAD_GATEWAY, format!("sys proxy transport: {e}")))?;
 
     // Token-exchange: swap the USER's access token for a delegated token
     // carrying `act.sub` = the user (RFC 8693) — the delegated flow keeps

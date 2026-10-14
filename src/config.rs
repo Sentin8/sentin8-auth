@@ -80,7 +80,7 @@ impl AuthConfig {
             valkey_url: env::var("SENTIN8_AUTH_VALKEY_URL")
                 .ok()
                 .filter(|s| !s.trim().is_empty())
-                .unwrap_or_else(|| sentin8::config::service_valkey_url()),
+                .unwrap_or_else(sentin8::config::service_valkey_url),
             sentin8_domain,
             session_ttl_secs: env::var("SENTIN8_AUTH_SESSION_TTL")
                 .unwrap_or("86400".into())
@@ -128,7 +128,7 @@ impl AuthConfig {
             valkey_url: env::var("SENTIN8_AUTH_VALKEY_URL")
                 .ok()
                 .filter(|s| !s.trim().is_empty())
-                .unwrap_or_else(|| sentin8::config::service_valkey_url()),
+                .unwrap_or_else(sentin8::config::service_valkey_url),
             sentin8_domain: "test.sentin8.local".to_string(),
             session_ttl_secs: 3600,
             access_token_ttl_secs: 900,

@@ -275,8 +275,9 @@ pub async fn bc_authorize(
         "act_email": req.act_email,
     });
 
-    let client = sentin8::middleware::valkey_client(&state.config.valkey_url, "sentin8:auth").await
-    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    let client = sentin8::middleware::valkey_client(&state.config.valkey_url, "sentin8:auth")
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
     let conn = client;
 
     let key = format!("auth:ciba:{auth_req_id}");
@@ -370,8 +371,9 @@ pub async fn ciba_assisted_page(
     Path(auth_req_id): Path<String>,
 ) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
     let key = format!("auth:ciba:{auth_req_id}");
-    let client = sentin8::middleware::valkey_client(&state.config.valkey_url, "sentin8:auth").await
-    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    let client = sentin8::middleware::valkey_client(&state.config.valkey_url, "sentin8:auth")
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
     let conn = client;
 
     let data: Option<String> = conn
@@ -439,8 +441,9 @@ pub async fn ciba_assisted_complete(
     }
 
     let key = format!("auth:ciba:{auth_req_id}");
-    let client = sentin8::middleware::valkey_client(&state.config.valkey_url, "sentin8:auth").await
-    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    let client = sentin8::middleware::valkey_client(&state.config.valkey_url, "sentin8:auth")
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
     let conn = client;
 
     let data: Option<String> = conn
@@ -522,8 +525,9 @@ pub async fn ciba_approve(
     let approving_user_id = session.user_id;
 
     let key = format!("auth:ciba:{}", req.auth_req_id);
-    let client = sentin8::middleware::valkey_client(&state.config.valkey_url, "sentin8:auth").await
-    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    let client = sentin8::middleware::valkey_client(&state.config.valkey_url, "sentin8:auth")
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
     let conn = client;
 
     let data: Option<String> = conn
@@ -587,8 +591,9 @@ pub async fn poll_ciba(
     auth_req_id: &str,
 ) -> Result<Option<(Uuid, Option<Uuid>, Option<Uuid>, String)>, String> {
     let key = format!("auth:ciba:{auth_req_id}");
-    let client = sentin8::middleware::valkey_client(&state.config.valkey_url, "sentin8:auth").await
-    .map_err(|e| e.to_string())?;
+    let client = sentin8::middleware::valkey_client(&state.config.valkey_url, "sentin8:auth")
+        .await
+        .map_err(|e| e.to_string())?;
     let conn = client;
 
     let data: Option<String> = conn.get(&key).await.map_err(|e| e.to_string())?;

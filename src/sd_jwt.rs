@@ -326,7 +326,7 @@ fn split_presentation_parts(sd_jwt: &str) -> Result<Compact, SdJwtError> {
     // Per SD-JWT : the KB-JWT is the LAST part; a trailing '~' produces
     // a final empty segment.
     let (disclosure_parts, kb) = match rest.split_last() {
-        Some((last, head)) if *last == "" => (head.to_vec(), None),
+        Some((last, head)) if last.is_empty() => (head.to_vec(), None),
         Some((last, head)) => (head.to_vec(), Some(last.to_string())),
         None => (vec![], None),
     };

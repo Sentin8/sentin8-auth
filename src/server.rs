@@ -61,14 +61,17 @@ pub async fn build_state(core: sentin8::shell::ServiceCore) -> anyhow::Result<Ap
     // (sys's provisioning delegation presents the `auth-sys` certificate;
     // scopes ride the map, not a token). Unavailable at boot → fail-closed
     // until the next boot (same posture as bus/flow).
-    let workload_registry =
-        match sentin8::auth::workload_registry::WorkloadMap::boot_load("sentin8:auth").await {
-            Ok(map) => map,
-            Err(e) => {
-                tracing::warn!(error = %e, "auth: workload registry map unavailable at boot — certificate-workload calls fail-closed until next boot");
-                sentin8::auth::workload_registry::WorkloadMap::boot_load_empty("sentin8:auth")
-            }
-        };
+    let workload_registry = match sentin8::auth::workload_registry::WorkloadMap::boot_load(
+        "sentin8:auth",
+    )
+    .await
+    {
+        Ok(map) => map,
+        Err(e) => {
+            tracing::warn!(error = %e, "auth: workload registry map unavailable at boot — certificate-workload calls fail-closed until next boot");
+            sentin8::auth::workload_registry::WorkloadMap::boot_load_empty("sentin8:auth")
+        }
+    };
 
     let state = AppState {
         config: Arc::new(config.clone()),
@@ -664,9 +667,10 @@ async fn route_guard(
                     // class scope (the map's coarse pre-filter; the
                     // handler's Shield gate enforces the precise action).
                     cert_ok = rec.enabled
-                        && rec.scopes.iter().any(|s| {
-                            s.ends_with(":admin:write") || s == "sentin8:sys:admin"
-                        });
+                        && rec
+                            .scopes
+                            .iter()
+                            .any(|s| s.ends_with(":admin:write") || s == "sentin8:sys:admin");
                 }
             }
         }

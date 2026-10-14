@@ -62,11 +62,10 @@ pub fn spawn_rotation_timer(pool: sqlx::PgPool) {
 
 /// One staleness check + conditional rotation.
 async fn rotation_tick(pool: &sqlx::PgPool) -> anyhow::Result<()> {
-    let newest: Option<chrono::DateTime<chrono::Utc>> = sqlx::query_scalar(
-        r#"SELECT MAX(created_at) FROM auth.signing_keys"#,
-    )
-    .fetch_optional(pool)
-    .await?;
+    let newest: Option<chrono::DateTime<chrono::Utc>> =
+        sqlx::query_scalar(r#"SELECT MAX(created_at) FROM auth.signing_keys"#)
+            .fetch_optional(pool)
+            .await?;
     let Some(newest) = newest else {
         return Ok(()); // no keys yet — boot seeds the first key
     };

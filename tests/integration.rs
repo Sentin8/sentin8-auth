@@ -991,7 +991,7 @@ async fn consent_bypass_client_consent_required_true_serves_consent() {
         .oneshot(
             Request::builder()
                 .method("GET")
-                .uri(&format!(
+                .uri(format!(
                     "/oauth/authorize?client_id={}&request_uri={}",
                     urlencode(&client_id),
                     urlencode(&request_uri)
@@ -1103,7 +1103,7 @@ async fn consent_bypass_client_consent_required_false_skips_consent() {
         .oneshot(
             Request::builder()
                 .method("GET")
-                .uri(&format!(
+                .uri(format!(
                     "/oauth/authorize?client_id={}&request_uri={}",
                     urlencode(&client_id),
                     urlencode(&request_uri)
@@ -1220,7 +1220,7 @@ async fn consent_bypass_dcr_update_applies_new_setting() {
         .oneshot(
             Request::builder()
                 .method("PUT")
-                .uri(&format!("/oauth/register/{}", client_id))
+                .uri(format!("/oauth/register/{}", client_id))
                 .header("content-type", "application/json")
                 .header("authorization", &format!("Bearer {}", rat))
                 .body(Body::from(serde_json::to_vec(&update_body).unwrap()))
@@ -1293,7 +1293,7 @@ async fn dcr_m2m_platform_scope_rejected_without_grant() {
 /// environment; tests provision exactly what they exercise).
 #[tokio::test]
 async fn dcr_m2m_platform_scope_granted_thumbprint_accepted() {
-    let Some((app, pool, _state)) = spawn_server_with_state().await else {
+    let Some((app, _pool, _state)) = spawn_server_with_state().await else {
         return;
     };
     // Seed a grant row for this test's workload CN (unique per run). The

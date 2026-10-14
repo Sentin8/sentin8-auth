@@ -74,11 +74,10 @@ async fn resolve_consent_flow(
             for pattern_val in patterns {
                 if let Some(pattern) = pattern_val.as_str() {
                     // Glob match: "fdx:recipient:*" matches "fdx:recipient:read"
-                    let matched = if pattern.ends_with('*') {
-                        let prefix = &pattern[..pattern.len() - 1];
+                    let matched = if let Some(prefix) = pattern.strip_suffix('*') {
                         scope_list.iter().any(|s| s.starts_with(prefix))
                     } else {
-                        scope_list.iter().any(|s| *s == pattern)
+                        scope_list.contains(&pattern)
                     };
                     if matched {
                         return Some((service_type, ui_endpoint, approve_endpoint, deny_endpoint));
