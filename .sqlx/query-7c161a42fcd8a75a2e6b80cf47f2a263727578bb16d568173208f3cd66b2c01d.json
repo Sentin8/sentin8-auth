@@ -1,0 +1,106 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO security_profiles\n               (scope, org_id, env_id, profile,\n                require_par, require_mtls, require_jarm, require_dpop,\n                require_http_signatures, require_jwt_introspection, require_iss,\n                max_token_lifetime, refresh_rotation)\n           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)\n           ON CONFLICT (scope, org_id, env_id)\n           DO UPDATE SET\n               profile = EXCLUDED.profile,\n               require_par = EXCLUDED.require_par,\n               require_mtls = EXCLUDED.require_mtls,\n               require_jarm = EXCLUDED.require_jarm,\n               require_dpop = EXCLUDED.require_dpop,\n               require_http_signatures = EXCLUDED.require_http_signatures,\n               require_jwt_introspection = EXCLUDED.require_jwt_introspection,\n               require_iss = EXCLUDED.require_iss,\n               max_token_lifetime = EXCLUDED.max_token_lifetime,\n               refresh_rotation = EXCLUDED.refresh_rotation,\n               updated_at = now()\n           RETURNING\n               scope, org_id, env_id, profile,\n               require_par, require_mtls, require_jarm, require_dpop,\n               require_http_signatures, require_jwt_introspection, require_iss,\n               max_token_lifetime, refresh_rotation",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "scope",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 1,
+        "name": "org_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 2,
+        "name": "env_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 3,
+        "name": "profile",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 4,
+        "name": "require_par",
+        "type_info": "Bool"
+      },
+      {
+        "ordinal": 5,
+        "name": "require_mtls",
+        "type_info": "Bool"
+      },
+      {
+        "ordinal": 6,
+        "name": "require_jarm",
+        "type_info": "Bool"
+      },
+      {
+        "ordinal": 7,
+        "name": "require_dpop",
+        "type_info": "Bool"
+      },
+      {
+        "ordinal": 8,
+        "name": "require_http_signatures",
+        "type_info": "Bool"
+      },
+      {
+        "ordinal": 9,
+        "name": "require_jwt_introspection",
+        "type_info": "Bool"
+      },
+      {
+        "ordinal": 10,
+        "name": "require_iss",
+        "type_info": "Bool"
+      },
+      {
+        "ordinal": 11,
+        "name": "max_token_lifetime",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 12,
+        "name": "refresh_rotation",
+        "type_info": "Bool"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Uuid",
+        "Uuid",
+        "Text",
+        "Bool",
+        "Bool",
+        "Bool",
+        "Bool",
+        "Bool",
+        "Bool",
+        "Bool",
+        "Int4",
+        "Bool"
+      ]
+    },
+    "nullable": [
+      false,
+      true,
+      true,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "7c161a42fcd8a75a2e6b80cf47f2a263727578bb16d568173208f3cd66b2c01d"
+}

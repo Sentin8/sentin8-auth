@@ -1,0 +1,32 @@
+// SPDX-FileCopyrightText: Copyright Logically Magic Inc. <hello@logicallymagic.com>
+// SPDX-FileCopyrightText: Copyright Hamid Jahanzad <Hamid@Jahanzad.com>
+// SPDX-FileCopyrightText: Copyright Contributors to the Sentin8:Auth
+// SPDX-License-Identifier: Apache-2.0
+
+//! Sentin8:Policy integration for auth.
+//!
+//! Thin re-export of the shared bridge (`sentin8::shield::runtime`) -
+//! the consolidated implementation every service uses. Nothing is
+//! service-specific here beyond the colon service_type.
+//!
+//! auth is the identity plane itself: policy gates its ADMIN API call
+//! sites, never the protocol endpoints (token issuance must not depend
+//! on a policy table - circular risk).
+//!
+use std::sync::Arc;
+
+// The full bridge is re-exported so handlers and tests can use any
+// piece of the shared surface without reaching into `sentin8::policy`
+// directly. Not every name is referenced by this service today.
+#[allow(unused_imports)]
+pub use sentin8::shield::runtime::{
+    boot_full, check_policy, engine_for, policy_bus_client, request_ctx, require_policy,
+    spawn_hot_reload,
+};
+pub use sentin8::shield::PolicyEngine as Engine;
+
+/// Test helper: build a bare engine for auth (empty until `load` runs - refuse to
+/// start on invalid policy text, design ).
+pub fn engine() -> Arc<Engine> {
+    engine_for("sentin8:auth")
+}

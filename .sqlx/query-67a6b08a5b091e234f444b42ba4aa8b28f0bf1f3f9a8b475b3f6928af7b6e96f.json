@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE webhook_outbox\n               SET retry_count = $2, failed_at = now()\n               WHERE id = $1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Int4"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "67a6b08a5b091e234f444b42ba4aa8b28f0bf1f3f9a8b475b3f6928af7b6e96f"
+}

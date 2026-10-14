@@ -1,0 +1,96 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT scope, org_id, env_id, profile,\n                  require_par, require_mtls, require_jarm, require_dpop,\n                  require_http_signatures, require_jwt_introspection, require_iss,\n                  max_token_lifetime, refresh_rotation\n           FROM security_profiles\n           WHERE scope = $1\n             AND (org_id IS NOT DISTINCT FROM $2)\n             AND (env_id IS NOT DISTINCT FROM $3)\n           LIMIT 1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "scope",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 1,
+        "name": "org_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 2,
+        "name": "env_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 3,
+        "name": "profile",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 4,
+        "name": "require_par",
+        "type_info": "Bool"
+      },
+      {
+        "ordinal": 5,
+        "name": "require_mtls",
+        "type_info": "Bool"
+      },
+      {
+        "ordinal": 6,
+        "name": "require_jarm",
+        "type_info": "Bool"
+      },
+      {
+        "ordinal": 7,
+        "name": "require_dpop",
+        "type_info": "Bool"
+      },
+      {
+        "ordinal": 8,
+        "name": "require_http_signatures",
+        "type_info": "Bool"
+      },
+      {
+        "ordinal": 9,
+        "name": "require_jwt_introspection",
+        "type_info": "Bool"
+      },
+      {
+        "ordinal": 10,
+        "name": "require_iss",
+        "type_info": "Bool"
+      },
+      {
+        "ordinal": 11,
+        "name": "max_token_lifetime",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 12,
+        "name": "refresh_rotation",
+        "type_info": "Bool"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      true,
+      true,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "4847487a3400c65d98adf5c7fe7e42ca38c212244d84b4fec04abde719b093f0"
+}

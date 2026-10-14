@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE users SET status = 'active', updated_at = now()\n           WHERE id = $1 AND status = 'locked'",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "c442332c6c92daa3b197c19355ea9daa778ee679c6dbd4c6ff263fa4f7181c82"
+}

@@ -1,0 +1,148 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT\n               client_id, client_id_issued_at, client_secret_expires_at,\n               client_name, redirect_uris, grant_types, response_types,\n               token_endpoint_auth_method, scopes,\n               software_id, software_statement,\n               logo_uri, client_uri, policy_uri, tos_uri, contacts,\n               jwks_uri, jwks, sector_identifier_uri, application_type,\n               registration_access_token_hash, consent_required\n           FROM oauth_clients\n           WHERE client_id = $1 AND dcr_protected = true",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "client_id",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 1,
+        "name": "client_id_issued_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 2,
+        "name": "client_secret_expires_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 3,
+        "name": "client_name",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 4,
+        "name": "redirect_uris",
+        "type_info": "TextArray"
+      },
+      {
+        "ordinal": 5,
+        "name": "grant_types",
+        "type_info": "TextArray"
+      },
+      {
+        "ordinal": 6,
+        "name": "response_types",
+        "type_info": "TextArray"
+      },
+      {
+        "ordinal": 7,
+        "name": "token_endpoint_auth_method",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 8,
+        "name": "scopes",
+        "type_info": "TextArray"
+      },
+      {
+        "ordinal": 9,
+        "name": "software_id",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 10,
+        "name": "software_statement",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 11,
+        "name": "logo_uri",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 12,
+        "name": "client_uri",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 13,
+        "name": "policy_uri",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 14,
+        "name": "tos_uri",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 15,
+        "name": "contacts",
+        "type_info": "TextArray"
+      },
+      {
+        "ordinal": 16,
+        "name": "jwks_uri",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 17,
+        "name": "jwks",
+        "type_info": "Jsonb"
+      },
+      {
+        "ordinal": 18,
+        "name": "sector_identifier_uri",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 19,
+        "name": "application_type",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 20,
+        "name": "registration_access_token_hash",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 21,
+        "name": "consent_required",
+        "type_info": "Bool"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      true,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      false,
+      true,
+      true,
+      true,
+      false,
+      true,
+      false
+    ]
+  },
+  "hash": "b351587cc5e88dbd86129185ed545e67c103e9fa5a473d5cf632289a9aae10b9"
+}

@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE mfa_factors SET counter = $1\n               WHERE id = $2 AND (counter IS NULL OR counter < $1)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "15639a7cf676081e8f2aefebc9ef202ac290f55112fa8f24d97165af2c0d766d"
+}

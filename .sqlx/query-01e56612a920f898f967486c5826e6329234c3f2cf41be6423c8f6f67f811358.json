@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE sessions SET status = 'revoked', updated_at = now()\n               WHERE token_id = $1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "01e56612a920f898f967486c5826e6329234c3f2cf41be6423c8f6f67f811358"
+}

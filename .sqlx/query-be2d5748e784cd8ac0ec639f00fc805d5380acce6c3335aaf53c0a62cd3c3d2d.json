@@ -1,0 +1,66 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT profile, require_par, require_mtls, require_jarm, require_dpop,\n                  require_http_signatures, require_jwt_introspection, require_iss\n           FROM auth.security_profiles\n           WHERE scope = $1\n             AND (org_id IS NOT DISTINCT FROM $2)\n             AND (env_id IS NOT DISTINCT FROM $3)\n           LIMIT 1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "profile",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 1,
+        "name": "require_par",
+        "type_info": "Bool"
+      },
+      {
+        "ordinal": 2,
+        "name": "require_mtls",
+        "type_info": "Bool"
+      },
+      {
+        "ordinal": 3,
+        "name": "require_jarm",
+        "type_info": "Bool"
+      },
+      {
+        "ordinal": 4,
+        "name": "require_dpop",
+        "type_info": "Bool"
+      },
+      {
+        "ordinal": 5,
+        "name": "require_http_signatures",
+        "type_info": "Bool"
+      },
+      {
+        "ordinal": 6,
+        "name": "require_jwt_introspection",
+        "type_info": "Bool"
+      },
+      {
+        "ordinal": 7,
+        "name": "require_iss",
+        "type_info": "Bool"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "be2d5748e784cd8ac0ec639f00fc805d5380acce6c3335aaf53c0a62cd3c3d2d"
+}

@@ -1,0 +1,18 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO mfa_factors\n             (id, user_id, env_id, factor_kind, name,\n              public_key, credential_id, status, is_default)\n           VALUES ($1, $2, $3, 'webauthn', 'passkey', $4, $5, 'active', true)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Uuid",
+        "Bytea",
+        "Bytea"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "eb0334a3016c4e4b4b1a0084d7066bb820130455860a9c39e5bb5201c0c23b4c"
+}

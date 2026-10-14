@@ -1,0 +1,70 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT registration_access_token_hash, redirect_uris, grant_types, response_types,\n                  token_endpoint_auth_method, scopes, contacts, application_type,\n                  client_name\n           FROM oauth_clients\n           WHERE client_id = $1 AND dcr_protected = true",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "registration_access_token_hash",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 1,
+        "name": "redirect_uris",
+        "type_info": "TextArray"
+      },
+      {
+        "ordinal": 2,
+        "name": "grant_types",
+        "type_info": "TextArray"
+      },
+      {
+        "ordinal": 3,
+        "name": "response_types",
+        "type_info": "TextArray"
+      },
+      {
+        "ordinal": 4,
+        "name": "token_endpoint_auth_method",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 5,
+        "name": "scopes",
+        "type_info": "TextArray"
+      },
+      {
+        "ordinal": 6,
+        "name": "contacts",
+        "type_info": "TextArray"
+      },
+      {
+        "ordinal": 7,
+        "name": "application_type",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 8,
+        "name": "client_name",
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text"
+      ]
+    },
+    "nullable": [
+      true,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "fdd190f893769b4784be7517f9f2405d1c96b4a93716b27ba21ae7bacc206eb8"
+}

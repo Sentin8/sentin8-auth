@@ -1,0 +1,52 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT strategy, issuer_url, discovery_url, client_id, client_secret_cipher, email_attribute\n           FROM enterprise_connections WHERE id = $1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "strategy",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 1,
+        "name": "issuer_url",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 2,
+        "name": "discovery_url",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 3,
+        "name": "client_id",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 4,
+        "name": "client_secret_cipher",
+        "type_info": "Bytea"
+      },
+      {
+        "ordinal": 5,
+        "name": "email_attribute",
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      true,
+      true,
+      true,
+      true,
+      false
+    ]
+  },
+  "hash": "eb8b437a37d204c33b9111453f56535554a765031da8894fe71dc78356720c40"
+}

@@ -1,0 +1,22 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT id FROM mfa_factors\n           WHERE user_id = $1 AND factor_kind = 'totp' AND status = 'active'\n           LIMIT 1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "af0a2f7570b9b34cff7e172f2813202c989217d3eb2ef6339a6bcfd06c19307a"
+}

@@ -1,0 +1,34 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT consent_required, redirect_uris, authorization_details_types\n             FROM oauth_clients WHERE client_id = $1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "consent_required",
+        "type_info": "Bool"
+      },
+      {
+        "ordinal": 1,
+        "name": "redirect_uris",
+        "type_info": "TextArray"
+      },
+      {
+        "ordinal": 2,
+        "name": "authorization_details_types",
+        "type_info": "TextArray"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "022fcb13409370c4bab7c45360c1a3f98fa0d355d88c074c8becb325a21bd536"
+}

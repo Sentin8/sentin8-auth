@@ -1,0 +1,28 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE enterprise_connections SET\n             name = $2,\n             status = 'active',\n             issuer_url = $3,\n             discovery_url = $4,\n             client_id = $5,\n             client_secret_cipher = COALESCE($6, client_secret_cipher),\n             scopes = $7,\n             metadata_url = $8,\n             metadata_xml = $9,\n             entity_id = $10,\n             acs_url = $11,\n             domain_hint = $12,\n             email_attribute = $13,\n             name_attribute = $14,\n             updated_at = now()\n           WHERE id = $1 AND env_id = $15",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Text",
+        "Text",
+        "Text",
+        "Text",
+        "Bytea",
+        "TextArray",
+        "Text",
+        "Text",
+        "Text",
+        "Text",
+        "Text",
+        "Text",
+        "Text",
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "12ef0c4730e806f62499988b607ce3478e3e34a4056e34ad4d2f46ebb8c85c6f"
+}

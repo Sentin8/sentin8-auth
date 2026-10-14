@@ -1,0 +1,119 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT\n               id, name, strategy, status, env_id,\n               issuer_url, discovery_url, client_id, scopes,\n               metadata_url, entity_id, acs_url, domain_hint,\n               email_attribute, name_attribute, created_at, updated_at\n           FROM enterprise_connections WHERE id = $1 AND env_id = $2",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "name",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 2,
+        "name": "strategy",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 3,
+        "name": "status",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 4,
+        "name": "env_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 5,
+        "name": "issuer_url",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 6,
+        "name": "discovery_url",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 7,
+        "name": "client_id",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 8,
+        "name": "scopes",
+        "type_info": "TextArray"
+      },
+      {
+        "ordinal": 9,
+        "name": "metadata_url",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 10,
+        "name": "entity_id",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 11,
+        "name": "acs_url",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 12,
+        "name": "domain_hint",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 13,
+        "name": "email_attribute",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 14,
+        "name": "name_attribute",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 15,
+        "name": "created_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 16,
+        "name": "updated_at",
+        "type_info": "Timestamptz"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      true,
+      true,
+      true,
+      true,
+      false,
+      true,
+      true,
+      true,
+      true,
+      false,
+      true,
+      false,
+      false
+    ]
+  },
+  "hash": "99466c8a4e3b3997ce409af90387d92d95a79378a7ae704ef4f866b278195d14"
+}

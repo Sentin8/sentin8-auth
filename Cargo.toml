@@ -1,0 +1,66 @@
+# SPDX-FileCopyrightText: Copyright Logically Magic Inc. <hello@logicallymagic.com>
+# SPDX-FileCopyrightText: Copyright Hamid Jahanzad <Hamid@Jahanzad.com>
+# SPDX-FileCopyrightText: Copyright Contributors to the Sentin8:Auth
+# SPDX-License-Identifier: Apache-2.0
+
+[package]
+name = "sentin8-auth"
+version = "0.1.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/Sentin8/sentin8-auth"
+rust-version = "1.85"
+description = "Sentin8 Sentin8:Auth — identity, OAuth/OIDC/FAPI, sessions, JWKS authority."
+
+[[bin]]
+name = "sentin8-auth"
+path = "src/main.rs"
+
+[lib]
+name = "sentin8_auth_server"
+path = "src/lib.rs"
+
+[dependencies]
+# THE SDK pin (RS 2.3) - the only cross-repo dependency. It carries the
+# entire shared library workspace (core/identity/tls/bus/shield/shell +
+# every auth-client/contracts SDK crate) behind the `sentin8` facade.
+sentin8 = { git = "https://github.com/Sentin8/sentin8-sdk", tag = "sdk-v0.6.3" }
+
+axum = { version = "0.8", features = ["macros"] }
+tokio = { version = "1", features = ["full"] }
+tower = { version = "0.5", features = ["util"] }
+tower-http = { version = "0.7", features = ["trace", "cors", "compression-gzip", "limit", "fs"] }
+hyper = { version = "1", features = ["full"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+serde_urlencoded = "0.7"
+flate2 = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+sqlx = { version = "0.8", features = ["runtime-tokio", "tls-rustls-ring", "postgres", "uuid", "chrono", "json", "macros"] }
+# Valkey GLIDE — the platform's mandated client engine (group DESIGN.md §3.1).
+valkey-glide = "0.9.0"
+dotenvy = "0.15"
+uuid = { version = "1", features = ["v4", "v5", "serde"] }
+chrono = { version = "0.4", features = ["serde"] }
+thiserror = "1"
+anyhow = "1"
+jsonwebtoken = "9"
+rand = "0.8"
+sha2 = "0.10"
+ring = "0.17"
+base64 = "0.22"
+rsa = { version = "0.9", features = ["sha2"] }
+reqwest = { version = "0.12", features = ["json", "rustls-tls-native-roots-no-provider"], default-features = false }
+bcrypt = "0.15"
+async-trait = "0.1"
+hmac = "0.12"
+sha1 = "0.10"
+p256 = { version = "0.13", features = ["ecdsa", "ecdsa-core", "pem"] }
+ciborium = "0.2"
+rustls = { version = "0.23", features = ["std", "tls12", "logging"], default-features = false }
+rustls-graviola = "0.4"
+ml-dsa = { version = "0.1", features = ["getrandom", "pkcs8", "zeroize"] }
+pkcs8 = { version = "0.11", features = ["pem"] }
+utoipa = { version = "5", features = ["chrono", "uuid"] }
+url = "2"
