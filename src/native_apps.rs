@@ -62,8 +62,10 @@ fn parse_http_uri(uri: &str) -> Option<(String, String, Option<u16>)> {
 ///
 /// Native app redirect URIs must be one of:
 /// 1. A custom scheme (non-`http`/`https`) — e.g. `com.example.app:/oauth2redirect`.
+///
 /// Must use the app's reverse-DNS-style scheme. NOT `http` or `https`.
 /// 2. A loopback redirect — `http://.1:{port}/...` or `http://[::1]:{port}/...`.
+///
 /// Any port is accepted (loopback equivalence).
 ///
 /// Returns `true` if the redirect_uri is valid for a native app.

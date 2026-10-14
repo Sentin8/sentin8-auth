@@ -776,7 +776,6 @@ fn status_list_b64(bit: u8) -> String {
 /// the signer's eIDAS certificate and returns the signed artifact for the
 /// payment record. Auth is request-broker + verifier only — the detailed
 /// message; the flow lives in the calling vertical's design (zero
-///
 /// Store a pending ceremony in Valkey; the wallet completes via
 /// `signature/complete` with the signed challenge ( — the
 /// ceremony-transport integration in the wallet app is pending market

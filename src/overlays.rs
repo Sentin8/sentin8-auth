@@ -104,12 +104,15 @@ pub async fn resolve_overlay(pool: &sqlx::PgPool, env_id: Uuid) -> Option<Regula
 /// Enforce the overlay on a client-authentication attempt.
 ///
 /// - OBIE/Brazil: an SSA must accompany the client's credentials. The SSA
+///
 /// is a JWT issued by the regime directory: verify its signature against
 /// the directory JWKS (Valkey-cached 24h), check `iss`/`exp` freshness,
 /// and require `software_id` to match the client's registration.
 /// - CDR: no SSA — the mTLS constraint is applied at the profile level
+///
 /// (`require_mtls` forced true when the overlay is configured); this
 /// function only verifies that client auth actually used mTLS.
+///
 /// Handle enforce overlay.
 pub async fn enforce_overlay(
     pool: &sqlx::PgPool,

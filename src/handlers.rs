@@ -1134,6 +1134,7 @@ pub async fn consent_accounts(
 ///
 /// 1. Direct roles: rows in `sentin8_auth_user_roles` for the user.
 /// 2. Group roles: roles attached to any group the user is a member of
+///
 /// (`sentin8_auth_group_members` → `sentin8_auth_group_roles`).
 /// 3. Nested roles: `sentin8_auth_role_nesting` lets a parent Role inherit the
 /// scopes of its child Roles; we expand the closure of every role
@@ -1213,8 +1214,10 @@ pub async fn fetch_role_scopes(pool: &PgPool, user_id: Uuid) -> Result<Vec<Strin
 ///
 /// A user has org access if:
 /// - They have a direct role assignment (`sentin8_auth_user_roles`) for a role
+///
 /// scoped to the target org, OR
 /// - They are a member of a group (`sentin8_auth_group_members`) that is scoped
+///
 /// to the target org.
 ///
 /// Platform admins (users with `sentin8:sys:admin` scope) should bypass this check

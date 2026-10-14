@@ -97,6 +97,7 @@ pub async fn fetch_rp_metadata(uri: &str) -> Result<RpMetadata, String> {
 /// Validate an RP metadata document.
 /// - At least one `redirect_uris` entry must be present.
 /// - All redirect URIs must be valid URLs (https or custom scheme).
+///
 /// Validate rp metadata.
 pub fn validate_rp_metadata(meta: &RpMetadata) -> Result<(), String> {
     if meta.redirect_uris.is_empty() {

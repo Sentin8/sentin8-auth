@@ -206,11 +206,14 @@ pub async fn enroll(
 ///
 /// Behavior depends on the request:
 /// - `factor_id` present → enrollment verification: confirm the pending
+///
 /// factor, set status=active, set `mfa_enabled=true` on the user, clear
 /// `secret_preview`.
 /// - `pending_token_id` present → sign-in MFA verification: look up the
+///
 /// user's active TOTP factor, verify the code, and activate the pending
 /// session.
+///
 /// Verify it.
 pub async fn verify(
     State(state): State<AppState>,
@@ -605,6 +608,7 @@ async fn verify_signin(
 ///
 /// 1. Session (cookie or Bearer session token) — the acting user.
 /// 2. Explicit `user_id` — **admin-initiated enrollment only**: requires
+///
 /// a Bearer token with `sentin8:auth:admin:write` (verified). Previously any
 /// caller could enroll/disable MFA for an arbitrary user id.
 async fn resolve_user_id(

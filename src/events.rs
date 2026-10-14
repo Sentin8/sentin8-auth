@@ -23,6 +23,7 @@ use uuid::Uuid;
 /// Append an event to the shared `inbox` table.
 ///
 /// - `env_id` — tenant context (globally unique). Use `Uuid::nil` for
+///
 /// system-scoped operations with no tenant context.
 /// - `event_type` — e.g. `"sentin8:auth:user:created"`.
 /// - `payload` — the JSON event payload.

@@ -90,6 +90,7 @@ fn signature_base_line(
 /// - it covers `@method`, `@target-uri`, AND `content-digest`,
 /// - `created` is within the freshness window,
 /// - the signature verifies against a key from the client's registered
+///
 /// `jwks`/`jwks_uri`,
 /// - the `Content-Digest` header matches the actual body (swap protection).
 ///

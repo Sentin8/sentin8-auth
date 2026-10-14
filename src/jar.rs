@@ -125,6 +125,7 @@ pub fn jwk_thumbprint(jwk_json: &serde_json::Value) -> Result<String, String> {
 /// - `iss` must equal `client_id` (when present).
 /// - `aud` must equal the AS issuer (when present).
 /// - `response_type` is required.
+///
 /// Validate JAR claims.
 pub fn validate_jar_claims(claims: &JarClaims, issuer: &str) -> Result<(), String> {
     if claims.iss.is_some() && claims.iss.as_deref() != Some(&claims.client_id) {

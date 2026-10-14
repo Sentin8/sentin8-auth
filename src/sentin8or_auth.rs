@@ -74,8 +74,10 @@ impl Sentin8orAuthContext {
 /// Access mode for the read/write scope split (SEC-).
 ///
 /// - `Read` endpoints (GET) accept `sentin8:auth:admin:read` OR `sentin8:auth:admin:write`
+///
 /// plus the platform-admin scopes.
 /// - `Write` endpoints (POST/PUT/DELETE/PATCH) accept `sentin8:auth:admin:write`
+///
 /// plus the platform-admin scopes — a read-only operator can no longer
 /// mutate admin resources.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

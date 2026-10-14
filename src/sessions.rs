@@ -86,13 +86,17 @@ impl Session {
     /// session's env is only known AFTER the row is found). The lookup is
     /// therefore a two-step, single-transaction resolve:
     /// 1. under a SYSTEM-context tx, resolve the session's `env_id` by
+///
     /// token (a token id is a random 128-bit secret — the SYSTEM step
     /// leaks nothing a caller doesn't already hold: you must already
     /// possess the token to use it);
     /// 2. re-set the context to THAT env and fetch the full row under
+///
     /// the session's own tenant policy.
+///
     /// `set_config(..., true)` is transaction-local — both steps share one
     /// `pool.begin` ( rule 2).
+///
     /// Handle find by token.
     pub async fn find_by_token(pool: &PgPool, token_id: &str) -> Result<Option<Self>, sqlx::Error> {
         let mut tx = pool.begin().await?;

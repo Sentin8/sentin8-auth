@@ -116,6 +116,7 @@ pub fn jwk_thumbprint(jwk: &serde_json::Value) -> Result<String, String> {
 /// - `htu` must match the HTTP target URI (without query/fragment).
 /// - `iat` must be recent (within ±60 seconds of now).
 /// - `typ` in the header must be `dpop+jwt`.
+///
 /// Validate DPoP proof.
 pub fn validate_dpop_proof(
     proof: &DecodedDpopProof,
@@ -188,13 +189,16 @@ pub fn extract_dpop_header(headers: &axum::http::HeaderMap) -> Option<String> {
 /// 1. decode the proof (header + claims),
 /// 2. validate `typ` / `htm` / `htu` / `iat` via [`validate_dpop_proof`],
 /// 3. **verify the signature** against the JWK embedded in the proof
+///
 /// header (the proof key is client-controlled, so verification is
 /// self-contained — ES256 or RS256),
 /// 4. enforce `jti` replay protection via Valkey SETNX
+///
 /// (`auth:dpop:jti:{jti}`, TTL 300s — the doc-comment contract this
 /// module has always claimed but never implemented until now),
 /// 5. return the key thumbprint (`jkt`) so the issued access token can
 /// be sender-constrained with `cnf.jkt`.
+///
 /// Validate and verify DPoP.
 pub async fn validate_and_verify_dpop(
     state: &crate::handlers::AppState,

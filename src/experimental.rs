@@ -49,6 +49,7 @@ impl Default for FapiCibaProfile {
 /// Validate a FAPI-CIBA request.
 /// - DPoP proof must be present on the token polling request.
 /// - The `bc-authorize` request must include `binding_message`.
+///
 /// Validate FAPI CIBA request.
 pub fn validate_fapi_ciba_request(
     binding_message: Option<&str>,

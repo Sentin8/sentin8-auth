@@ -3139,6 +3139,7 @@ async fn handle_client_credentials(
 /// 2. Look up a matching `sentin8_auth_federated_credentials` row for the client.
 /// 3. Fetch the issuer's JWKS (discovery-driven) and verify the JWT signature.
 /// 4. Resolve the client's entitled scope via `fetch_client_role_scopes`
+///
 /// (own scopes ∪ assigned roles' permissions + nesting).
 /// 5. Issue an M2M token (`sub = client_id`, `token_tp: "m2m"`) with the
 /// entitled scope and an `act` claim recording the external `iss`/`sub`.

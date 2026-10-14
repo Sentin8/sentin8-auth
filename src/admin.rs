@@ -4044,7 +4044,6 @@ where
 }
 
 /// ── Invitations — sys-API proxy ───────────────────────────
-///
 /// Invitations are OWNED by Sentin8:Sys (`sys.invitations` — the lifecycle
 /// lives with org/env provisioning). Auth's admin surface below is a thin
 /// PROXY: the signed-in operator's request is re-issued to sys's
