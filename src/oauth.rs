@@ -2497,10 +2497,9 @@ pub async fn token(
 
     match req.grant_type.as_str() {
         "authorization_code" => {
-            handle_code_exchange(&state, &client, dpop_jkt.as_deref(), &headers, req)
-                .await}
-        "refresh_token" => handle_refresh(&state, &client, dpop_jkt.as_deref(), req)
-            .await,
+            handle_code_exchange(&state, &client, dpop_jkt.as_deref(), &headers, req).await
+        }
+        "refresh_token" => handle_refresh(&state, &client, dpop_jkt.as_deref(), req).await,
         "client_credentials" => handle_client_credentials(&state, &headers, &client, req)
             .await
             .map_err(Into::into),
