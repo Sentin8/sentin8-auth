@@ -1,0 +1,5297 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "sentin8-auth",
+    "description": "Sentin8 Sentin8:Auth — identity, OAuth/OIDC/FAPI, sessions, JWKS authority.",
+    "license": {
+      "name": "MIT OR Apache-2.0",
+      "identifier": "MIT OR Apache-2.0"
+    },
+    "version": "0.1.0"
+  },
+  "paths": {
+    "/v1/actor-tokens/revoke": {
+      "post": {
+        "tags": [
+          "auth"
+        ],
+        "summary": "`POST /v1/actor-tokens/revoke` — revoke an actor token by token_id (jti).\n`POST /v1/actor-tokens/revoke` — revoke an actor token by token_id.\nRevoke actor token.",
+        "operationId": "revoke_actor_token",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RevokeActorTokenRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Actor token revoked"
+          },
+          "404": {
+            "description": "actor token not found"
+          }
+        },
+        "security": [
+          {
+            "sentin8:auth:admin": []
+          }
+        ]
+      }
+    },
+    "/v1/admin/actor-events": {
+      "get": {
+        "tags": [
+          "auth"
+        ],
+        "summary": "`GET /v1/admin/actor-events` — query the actor event audit log.\n`GET /v1/admin/actor-events` — query the actor event audit log.\nList actor events.",
+        "operationId": "list_actor_events",
+        "parameters": [
+          {
+            "name": "target_user_id",
+            "in": "query",
+            "description": "Filter by target user",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "actor_user_id",
+            "in": "query",
+            "description": "Filter by actor user",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "page",
+            "in": "query",
+            "description": "Page number",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          },
+          {
+            "name": "page_size",
+            "in": "query",
+            "description": "Page size",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Actor events",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/ActorEventResponse"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "sentin8:auth:admin": []
+          }
+        ]
+      }
+    },
+    "/v1/admin/actor-tokens": {
+      "get": {
+        "tags": [
+          "auth"
+        ],
+        "summary": "`GET /v1/admin/actor-tokens` — list recent actor token issuances (audit).\n`GET /v1/admin/actor-tokens` — list recent actor token issuances.\nList actor tokens.",
+        "operationId": "list_actor_tokens",
+        "parameters": [
+          {
+            "name": "target_user_id",
+            "in": "query",
+            "description": "Filter by target user",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "actor_user_id",
+            "in": "query",
+            "description": "Filter by actor user",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "page",
+            "in": "query",
+            "description": "Page number",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          },
+          {
+            "name": "page_size",
+            "in": "query",
+            "description": "Page size",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Actor token events",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/ActorEventResponse"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "sentin8:auth:admin": []
+          }
+        ]
+      },
+      "post": {
+        "tags": [
+          "auth"
+        ],
+        "summary": "`POST /v1/admin/actor-tokens` — issue an actor token.",
+        "description": "The caller must be authenticated (session cookie) and have the\n`sentin8:auth:actor:issue` scope via a tenant or platform admin role/group\n(e.g. `sentin8:org:admin`, `sentin8:org:owner`, `sys-admin`).\n`POST /v1/admin/actor-tokens` — issue an actor token.\nIssue actor token.",
+        "operationId": "issue_actor_token",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/IssueActorTokenRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Actor token issued",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ActorTokenResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "reason is required"
+          },
+          "401": {
+            "description": "actor must be authenticated"
+          },
+          "403": {
+            "description": "actor lacks auth:actor:issue scope"
+          },
+          "404": {
+            "description": "target user not found"
+          }
+        },
+        "security": [
+          {
+            "sentin8:auth:admin": []
+          }
+        ]
+      }
+    },
+    "/v1/admin/api-keys": {
+      "get": {
+        "tags": [
+          "auth"
+        ],
+        "summary": "`GET /v1/admin/api-keys` — list API keys (paginated).\nList API keys.",
+        "operationId": "api-key.list",
+        "parameters": [
+          {
+            "name": "target_env_id",
+            "in": "query",
+            "description": "Target env for cross-env admin",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "page",
+            "in": "query",
+            "description": "Page number",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          },
+          {
+            "name": "page_size",
+            "in": "query",
+            "description": "Page size",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Paginated API key list",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiKeyListResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Missing auth:admin scope"
+          }
+        },
+        "security": [
+          {
+            "sentin8:auth:admin": []
+          }
+        ]
+      },
+      "post": {
+        "tags": [
+          "auth"
+        ],
+        "summary": "`POST /v1/admin/api-keys` — create an API key.\nCreate API key.",
+        "operationId": "api-key.create",
+        "parameters": [
+          {
+            "name": "target_env_id",
+            "in": "query",
+            "description": "Target env for cross-env admin",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateApiKeyRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "API key created (includes plaintext key)"
+          },
+          "400": {
+            "description": "name is required"
+          },
+          "403": {
+            "description": "Missing auth:admin scope"
+          }
+        },
+        "security": [
+          {
+            "sentin8:auth:admin": []
+          }
+        ]
+      }
+    },
+    "/v1/admin/api-keys/{id}/revoke": {
+      "post": {
+        "tags": [
+          "auth"
+        ],
+        "summary": "`POST /v1/admin/api-keys/{id}/revoke` — revoke an API key.\nRevoke API key.",
+        "operationId": "api-key.revoke",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "API key ID",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "target_env_id",
+            "in": "query",
+            "description": "Target env for cross-env admin",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "API key revoked"
+          },
+          "403": {
+            "description": "Missing auth:admin scope"
+          },
+          "404": {
+            "description": "API key not found"
+          }
+        },
+        "security": [
+          {
+            "sentin8:auth:admin": []
+          }
+        ]
+      }
+    },
+    "/v1/admin/audit": {
+      "get": {
+        "tags": [
+          "auth"
+        ],
+        "summary": "`GET /v1/admin/audit` — list audit events (paginated).\nList audit events.",
+        "operationId": "audit.list",
+        "parameters": [
+          {
+            "name": "target_env_id",
+            "in": "query",
+            "description": "Target env for cross-env admin",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "action",
+            "in": "query",
+            "description": "Filter by action",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "page",
+            "in": "query",
+            "description": "Page number",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          },
+          {
+            "name": "page_size",
+            "in": "query",
+            "description": "Page size",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Paginated audit events",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AuditListResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Missing auth:admin scope"
+          }
+        },
+        "security": [
+          {
+            "sentin8:auth:admin": []
+          }
+        ]
+      }
+    },
+    "/v1/admin/enterprise-connections": {
+      "get": {
+        "tags": [
+          "auth"
+        ],
+        "summary": "`GET /v1/admin/enterprise-connections` — list enterprise connections.\nList connections.",
+        "operationId": "connection.list",
+        "parameters": [
+          {
+            "name": "env_id",
+            "in": "query",
+            "description": "Filter by env ID",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Enterprise connections",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/ConnectionResponse"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "sentin8:auth:admin": []
+          }
+        ]
+      },
+      "post": {
+        "tags": [
+          "auth"
+        ],
+        "summary": "`POST /v1/admin/enterprise-connections` — create an enterprise connection.\nCreate connection.",
+        "operationId": "connection.create",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateConnectionRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Connection created",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ConnectionResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "strategy must be 'oidc' or 'saml'"
+          },
+          "409": {
+            "description": "connection name already exists"
+          }
+        },
+        "security": [
+          {
+            "sentin8:auth:admin": []
+          }
+        ]
+      }
+    },
+    "/v1/admin/enterprise-connections/{id}": {
+      "get": {
+        "tags": [
+          "auth"
+        ],
+        "summary": "`GET /v1/admin/enterprise-connections/{id}` — get an enterprise connection.\nFetch connection.",
+        "operationId": "get_connection",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Connection ID",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Connection",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ConnectionResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "connection not found"
+          }
+        },
+        "security": [
+          {
+            "sentin8:auth:admin": []
+          }
+        ]
+      },
+      "put": {
+        "tags": [
+          "auth"
+        ],
+        "summary": "`PUT /v1/admin/enterprise-connections/{id}` — update an enterprise connection.\nUpdate connection.",
+        "operationId": "update_connection",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Connection ID",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateConnectionRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "204": {
+            "description": "Connection updated"
+          },
+          "404": {
+            "description": "connection not found"
+          }
+        },
+        "security": [
+          {
+            "sentin8:auth:admin": []
+          }
+        ]
+      },
+      "delete": {
+        "tags": [
+          "auth"
+        ],
+        "summary": "`DELETE /v1/admin/enterprise-connections/{id}` — delete an enterprise connection.\nDelete connection.",
+        "operationId": "delete_connection",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Connection ID",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Connection deleted"
+          },
+          "404": {
+            "description": "connection not found"
+          }
+        },
+        "security": [
+          {
+            "sentin8:auth:admin": []
+          }
+        ]
+      }
+    },
+    "/v1/admin/groups": {
+      "get": {
+        "tags": [
+          "auth"
+        ],
+        "summary": "`GET /v1/admin/groups` — list groups (paginated).\nList groups.",
+        "operationId": "group.list",
+        "parameters": [
+          {
+            "name": "target_env_id",
+            "in": "query",
+            "description": "Target env for cross-env admin",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "page",
+            "in": "query",
+            "description": "Page number",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          },
+          {
+            "name": "page_size",
+            "in": "query",
+            "description": "Page size",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Paginated group list",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GroupListResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Missing auth:admin scope"
+          }
+        },
+        "security": [
+          {
+            "sentin8:auth:admin": []
+          }
+        ]
+      },
+      "post": {
+        "tags": [
+          "auth"
+        ],
+        "summary": "`POST /v1/admin/groups` — create a new group.\nCreate group.",
+        "operationId": "group.create",
+        "parameters": [
+          {
+            "name": "target_env_id",
+            "in": "query",
+            "description": "Target env for cross-env admin",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateGroupRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "Group created",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GroupResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid group name"
+          },
+          "403": {
+            "description": "Missing auth:admin scope"
+          },
+          "409": {
+            "description": "group name already exists"
+          }
+        },
+        "security": [
+          {
+            "sentin8:auth:admin": []
+          }
+        ]
+      }
+    },
+    "/v1/admin/groups/{group_id}/members": {
+      "get": {
+        "tags": [
+          "auth"
+        ],
+        "summary": "`GET /v1/admin/groups/{group_id}/members` — list group members.\nList group members.",
+        "operationId": "group.get",
+        "parameters": [
+          {
+            "name": "group_id",
+            "in": "path",
+            "description": "Group ID",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "target_env_id",
+            "in": "query",
+            "description": "Target env for cross-env admin",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Group members"
+          },
+          "403": {
+            "description": "Missing auth:admin scope"
+          }
+        },
+        "security": [
+          {
+            "sentin8:auth:admin": []
+          }
+        ]
+      },
+      "post": {
+        "tags": [
+          "auth"
+        ],
+        "summary": "`POST /v1/admin/groups/{group_id}/members` — add a member to a group.\nHandle add group member.",
+        "operationId": "group.member-add",
+        "parameters": [
+          {
+            "name": "group_id",
+            "in": "path",
+            "description": "Group ID",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "target_env_id",
+            "in": "query",
+            "description": "Target env for cross-env admin",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AddGroupMemberRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "Member added"
+          },
+          "403": {
+            "description": "Missing auth:admin scope"
+          }
+        },
+        "security": [
+          {
+            "sentin8:auth:admin": []
+          }
+        ]
+      }
+    },
+    "/v1/admin/groups/{group_id}/members/{user_id}": {
+      "delete": {
+        "tags": [
+          "auth"
+        ],
+        "summary": "`DELETE /v1/admin/groups/{group_id}/members/{user_id}` — remove a member from\na group.\nRemove group member.",
+        "operationId": "group.member-remove",
+        "parameters": [
+          {
+            "name": "group_id",
+            "in": "path",
+            "description": "Group ID",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "user_id",
+            "in": "path",
+            "description": "User ID",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "target_env_id",
+            "in": "query",
+            "description": "Target env for cross-env admin",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Member removed"
+          },
+          "403": {
+            "description": "Missing auth:admin scope"
+          }
+        },
+        "security": [
+          {
+            "sentin8:auth:admin": []
+          }
+        ]
+      }
+    },
+    "/v1/admin/groups/{group_id}/roles": {
+      "get": {
+        "tags": [
+          "auth"
+        ],
+        "summary": "`GET /v1/admin/groups/{group_id}/roles` — list roles assigned to a group.\nList group roles.",
+        "operationId": "list_group_roles",
+        "parameters": [
+          {
+            "name": "group_id",
+            "in": "path",
+            "description": "Group ID",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "target_env_id",
+            "in": "query",
+            "description": "Target env for cross-env admin",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Group roles"
+          },
+          "403": {
+            "description": "Missing auth:admin scope"
+          }
+        },
+        "security": [
+          {
+            "sentin8:auth:admin": []
+          }
+        ]
+      },
+      "post": {
+        "tags": [
+          "auth"
+        ],
+        "summary": "`POST /v1/admin/groups/{group_id}/roles` — assign a role to a group.\nHandle add group role.",
+        "operationId": "group.role-assign",
+        "parameters": [
+          {
+            "name": "group_id",
+            "in": "path",
+            "description": "Group ID",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "target_env_id",
+            "in": "query",
+            "description": "Target env for cross-env admin",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AddGroupRoleRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "Role assigned"
+          },
+          "403": {
+            "description": "Missing auth:admin scope"
+          }
+        },
+        "security": [
+          {
+            "sentin8:auth:admin": []
+          }
+        ]
+      }
+    },
+    "/v1/admin/groups/{group_id}/roles/{role_id}": {
+      "delete": {
+        "tags": [
+          "auth"
+        ],
+        "summary": "`DELETE /v1/admin/groups/{group_id}/roles/{role_id}` — remove a role from a group.\nRemove group role.",
+        "operationId": "group.role-unassign",
+        "parameters": [
+          {
+            "name": "group_id",
+            "in": "path",
+            "description": "Group ID",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "role_id",
+            "in": "path",
+            "description": "Role ID",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "target_env_id",
+            "in": "query",
+            "description": "Target env for cross-env admin",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Role removed"
+          },
+          "403": {
+            "description": "Missing auth:admin scope"
+          }
+        },
+        "security": [
+          {
+            "sentin8:auth:admin": []
+          }
+        ]
+      }
+    },
+    "/v1/admin/groups/{id}": {
+      "put": {
+        "tags": [
+          "auth"
+        ],
+        "summary": "`PUT /v1/admin/groups/{id}` — update a group.\nUpdate group.",
+        "operationId": "group.update",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Group ID",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "target_env_id",
+            "in": "query",
+            "description": "Target env for cross-env admin",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UpdateGroupRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Group updated",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GroupResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Missing auth:admin scope"
+          },
+          "404": {
+            "description": "group not found"
+          }
+        },
+        "security": [
+          {
+            "sentin8:auth:admin": []
+          }
+        ]
+      },
+      "delete": {
+        "tags": [
+          "auth"
+        ],
+        "summary": "`DELETE /v1/admin/groups/{id}` — delete a group.\nDelete group.",
+        "operationId": "group.delete",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Group ID",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "target_env_id",
+            "in": "query",
+            "description": "Target env for cross-env admin",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Group deleted"
+          },
+          "403": {
+            "description": "Missing auth:admin scope"
+          },
+          "404": {
+            "description": "group not found"
+          }
+        },
+        "security": [
+          {
+            "sentin8:auth:admin": []
+          }
+        ]
+      }
+    },
+    "/v1/admin/invitations": {
+      "get": {
+        "tags": [
+          "auth"
+        ],
+        "summary": "`GET /v1/admin/invitations` — list invitations (proxy → sys).\nList invitations.",
+        "operationId": "list_invitations",
+        "parameters": [
+          {
+            "name": "target_env_id",
+            "in": "query",
+            "description": "Target env for cross-env admin",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "page",
+            "in": "query",
+            "description": "Page number",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          },
+          {
+            "name": "page_size",
+            "in": "query",
+            "description": "Page size",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Invitations",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/InvitationResponse"
+                  }
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Missing auth:admin scope"
+          }
+        },
+        "security": [
+          {
+            "sentin8:auth:admin": []
+          }
+        ]
+      },
+      "post": {
+        "tags": [
+          "auth"
+        ],
+        "summary": "`POST /v1/admin/invitations` — create an invitation (proxy → sys).\nCreate invitation.",
+        "operationId": "invitation.send",
+        "parameters": [
+          {
+            "name": "target_env_id",
+            "in": "query",
+            "description": "Target env for cross-env admin",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateInvitationRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "Invitation created",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/InvitationResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Missing auth:admin scope"
+          }
+        },
+        "security": [
+          {
+            "sentin8:auth:admin": []
+          }
+        ]
+      }
+    },
+    "/v1/admin/invitations/{id}/revoke": {
+      "post": {
+        "tags": [
+          "auth"
+        ],
+        "summary": "`POST /v1/admin/invitations/{id}/revoke` — revoke an invitation\n(proxy → sys).\nRevoke invitation.",
+        "operationId": "revoke_invitation",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Invitation ID",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "target_env_id",
+            "in": "query",
+            "description": "Target env for cross-env admin",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Invitation revoked"
+          },
+          "403": {
+            "description": "Missing auth:admin scope"
+          }
+        },
+        "security": [
+          {
+            "sentin8:auth:admin": []
+          }
+        ]
+      }
+    },
+    "/v1/admin/memberships": {
+      "get": {
+        "tags": [
+          "auth"
+        ],
+        "summary": "`GET /v1/admin/memberships` — list memberships.\nList memberships.",
+        "operationId": "membership.list",
+        "parameters": [
+          {
+            "name": "target_env_id",
+            "in": "query",
+            "description": "Target env for cross-env admin",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "page",
+            "in": "query",
+            "description": "Page number",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          },
+          {
+            "name": "page_size",
+            "in": "query",
+            "description": "Page size",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Memberships",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/MembershipResponse"
+                  }
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Missing auth:admin scope"
+          }
+        },
+        "security": [
+          {
+            "sentin8:auth:admin": []
+          }
+        ]
+      },
+      "post": {
+        "tags": [
+          "auth"
+        ],
+        "summary": "`POST /v1/admin/memberships` — create a membership.\nCreate membership.",
+        "operationId": "create_membership",
+        "parameters": [
+          {
+            "name": "target_env_id",
+            "in": "query",
+            "description": "Target env for cross-env admin",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateMembershipRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "Membership created",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MembershipResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Missing auth:admin scope"
+          }
+        },
+        "security": [
+          {
+            "sentin8:auth:admin": []
+          }
+        ]
+      }
+    },
+    "/v1/admin/memberships/{id}": {
+      "delete": {
+        "tags": [
+          "auth"
+        ],
+        "summary": "`DELETE /v1/admin/memberships/{id}` — delete a membership.\nDelete membership.",
+        "operationId": "delete_membership",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "User ID",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "target_env_id",
+            "in": "query",
+            "description": "Target env for cross-env admin",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Membership deleted"
+          },
+          "403": {
+            "description": "Missing auth:admin scope"
+          }
+        },
+        "security": [
+          {
+            "sentin8:auth:admin": []
+          }
+        ]
+      }
+    },
+    "/v1/admin/oauth-clients": {
+      "get": {
+        "tags": [
+          "auth"
+        ],
+        "summary": "`GET /v1/admin/oauth-clients` — list OAuth clients (paginated).\nList OAuth clients.",
+        "operationId": "application.list",
+        "parameters": [
+          {
+            "name": "target_env_id",
+            "in": "query",
+            "description": "Target env for cross-env admin",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "page",
+            "in": "query",
+            "description": "Page number",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          },
+          {
+            "name": "page_size",
+            "in": "query",
+            "description": "Page size",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Paginated OAuth client list",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OAuthClientListResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Missing auth:admin scope"
+          }
+        },
+        "security": [
+          {
+            "sentin8:auth:admin": []
+          }
+        ]
+      },
+      "post": {
+        "tags": [
+          "auth"
+        ],
+        "summary": "`POST /v1/admin/oauth-clients` — create an OAuth client.\nCreate OAuth client.",
+        "operationId": "application.register",
+        "parameters": [
+          {
+            "name": "target_env_id",
+            "in": "query",
+            "description": "Target env for cross-env admin",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateOAuthClientRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "OAuth client created",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OAuthClientResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "client_id and client_name are required"
+          },
+          "403": {
+            "description": "Missing auth:admin scope"
+          },
+          "409": {
+            "description": "client_id already exists"
+          }
+        },
+        "security": [
+          {
+            "sentin8:auth:admin": []
+          }
+        ]
+      }
+    },
+    "/v1/admin/oauth-clients/{id}": {
+      "get": {
+        "tags": [
+          "auth"
+        ],
+        "summary": "`GET /v1/admin/oauth-clients/{id}` — get an OAuth client by ID.\nFetch OAuth client.",
+        "operationId": "get_oauth_client",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "OAuth client ID",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "target_env_id",
+            "in": "query",
+            "description": "Target env for cross-env admin",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OAuth client",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OAuthClientResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Missing auth:admin scope"
+          },
+          "404": {
+            "description": "OAuth client not found"
+          }
+        },
+        "security": [
+          {
+            "sentin8:auth:admin": []
+          }
+        ]
+      },
+      "put": {
+        "tags": [
+          "auth"
+        ],
+        "summary": "`PUT /v1/admin/oauth-clients/{id}` — update an OAuth client.\nUpdate OAuth client.",
+        "operationId": "update_oauth_client",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "OAuth client ID",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "target_env_id",
+            "in": "query",
+            "description": "Target env for cross-env admin",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UpdateOAuthClientRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "OAuth client updated",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OAuthClientResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Missing auth:admin scope"
+          },
+          "404": {
+            "description": "OAuth client not found"
+          }
+        },
+        "security": [
+          {
+            "sentin8:auth:admin": []
+          }
+        ]
+      },
+      "delete": {
+        "tags": [
+          "auth"
+        ],
+        "summary": "`DELETE /v1/admin/oauth-clients/{id}` — delete an OAuth client.\nDelete OAuth client.",
+        "operationId": "delete_oauth_client",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "OAuth client ID",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "target_env_id",
+            "in": "query",
+            "description": "Target env for cross-env admin",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "OAuth client deleted"
+          },
+          "403": {
+            "description": "Missing auth:admin scope"
+          },
+          "404": {
+            "description": "OAuth client not found"
+          }
+        },
+        "security": [
+          {
+            "sentin8:auth:admin": []
+          }
+        ]
+      }
+    },
+    "/v1/admin/oauth-clients/{id}/federated-credentials": {
+      "get": {
+        "tags": [
+          "auth"
+        ],
+        "summary": "`GET /v1/admin/oauth-clients/{id}/federated-credentials` — list federated credentials for an OAuth client.\nList federated credentials.",
+        "operationId": "list_federated_credentials",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "OAuth client ID",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "target_env_id",
+            "in": "query",
+            "description": "Target env for cross-env admin",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Federated credentials",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/FederatedCredentialResponse"
+                  }
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Missing auth:admin scope"
+          }
+        },
+        "security": [
+          {
+            "sentin8:auth:admin": []
+          }
+        ]
+      },
+      "post": {
+        "tags": [
+          "auth"
+        ],
+        "summary": "`POST /v1/admin/oauth-clients/{id}/federated-credentials` — create a federated credential.\nCreate federated credential.",
+        "operationId": "create_federated_credential",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "OAuth client ID",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "target_env_id",
+            "in": "query",
+            "description": "Target env for cross-env admin",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateFederatedCredentialRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "Federated credential created",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FederatedCredentialResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "issuer and subject are required"
+          },
+          "403": {
+            "description": "Missing auth:admin scope"
+          },
+          "404": {
+            "description": "OAuth client not found"
+          },
+          "409": {
+            "description": "federated credential already exists"
+          }
+        },
+        "security": [
+          {
+            "sentin8:auth:admin": []
+          }
+        ]
+      }
+    },
+    "/v1/admin/oauth-clients/{id}/federated-credentials/{cred_id}": {
+      "delete": {
+        "tags": [
+          "auth"
+        ],
+        "summary": "`DELETE /v1/admin/oauth-clients/{id}/federated-credentials/{cred_id}` — delete a federated credential.\nDelete federated credential.",
+        "operationId": "delete_federated_credential",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "OAuth client ID",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "cred_id",
+            "in": "path",
+            "description": "Federated credential ID",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "target_env_id",
+            "in": "query",
+            "description": "Target env for cross-env admin",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Federated credential deleted"
+          },
+          "403": {
+            "description": "Missing auth:admin scope"
+          },
+          "404": {
+            "description": "federated credential not found"
+          }
+        },
+        "security": [
+          {
+            "sentin8:auth:admin": []
+          }
+        ]
+      }
+    },
+    "/v1/admin/oauth-clients/{id}/roles": {
+      "get": {
+        "tags": [
+          "auth"
+        ],
+        "summary": "`GET /v1/admin/oauth-clients/{id}/roles` — list roles assigned to an OAuth client.\nList client roles.",
+        "operationId": "list_client_roles",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "OAuth client ID",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "target_env_id",
+            "in": "query",
+            "description": "Target env for cross-env admin",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Client roles",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/ClientRoleResponse"
+                  }
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Missing auth:admin scope"
+          }
+        },
+        "security": [
+          {
+            "sentin8:auth:admin": []
+          }
+        ]
+      },
+      "post": {
+        "tags": [
+          "auth"
+        ],
+        "summary": "`POST /v1/admin/oauth-clients/{id}/roles` — assign a role to an OAuth client.\nHandle add client role.",
+        "operationId": "add_client_role",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "OAuth client ID",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "target_env_id",
+            "in": "query",
+            "description": "Target env for cross-env admin",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AddClientRoleRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "Role assigned"
+          },
+          "403": {
+            "description": "Missing auth:admin scope"
+          },
+          "404": {
+            "description": "OAuth client not found"
+          }
+        },
+        "security": [
+          {
+            "sentin8:auth:admin": []
+          }
+        ]
+      }
+    },
+    "/v1/admin/oauth-clients/{id}/roles/{role_id}": {
+      "delete": {
+        "tags": [
+          "auth"
+        ],
+        "summary": "`DELETE /v1/admin/oauth-clients/{id}/roles/{role_id}` — remove a role from an OAuth client.\nRemove client role.",
+        "operationId": "remove_client_role",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "OAuth client ID",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "role_id",
+            "in": "path",
+            "description": "Role ID",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "target_env_id",
+            "in": "query",
+            "description": "Target env for cross-env admin",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Role removed"
+          },
+          "403": {
+            "description": "Missing auth:admin scope"
+          }
+        },
+        "security": [
+          {
+            "sentin8:auth:admin": []
+          }
+        ]
+      }
+    },
+    "/v1/admin/roles": {
+      "get": {
+        "tags": [
+          "auth"
+        ],
+        "summary": "`GET /v1/admin/roles` — list roles (paginated).\nList roles.",
+        "operationId": "role.list",
+        "parameters": [
+          {
+            "name": "target_env_id",
+            "in": "query",
+            "description": "Target env for cross-env admin",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "page",
+            "in": "query",
+            "description": "Page number",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          },
+          {
+            "name": "page_size",
+            "in": "query",
+            "description": "Page size",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Paginated role list",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RoleListResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Missing auth:admin scope"
+          }
+        },
+        "security": [
+          {
+            "sentin8:auth:admin": []
+          }
+        ]
+      },
+      "post": {
+        "tags": [
+          "auth"
+        ],
+        "summary": "`POST /v1/admin/roles` — create a new role.\nCreate role.",
+        "operationId": "role.create",
+        "parameters": [
+          {
+            "name": "target_env_id",
+            "in": "query",
+            "description": "Target env for cross-env admin",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateRoleRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "Role created",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RoleResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid role name"
+          },
+          "403": {
+            "description": "Missing auth:admin scope"
+          },
+          "409": {
+            "description": "role name already exists"
+          }
+        },
+        "security": [
+          {
+            "sentin8:auth:admin": []
+          }
+        ]
+      }
+    },
+    "/v1/admin/roles/{id}": {
+      "get": {
+        "tags": [
+          "auth"
+        ],
+        "summary": "`GET /v1/admin/roles/{id}` — list role members.\nList role members.",
+        "operationId": "role.get",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Role ID",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "target_env_id",
+            "in": "query",
+            "description": "Target env for cross-env admin",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Role members",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/RoleMemberResponse"
+                  }
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Missing auth:admin scope"
+          }
+        },
+        "security": [
+          {
+            "sentin8:auth:admin": []
+          }
+        ]
+      },
+      "put": {
+        "tags": [
+          "auth"
+        ],
+        "summary": "`PUT /v1/admin/roles/{id}` — update a role.\nUpdate role.",
+        "operationId": "role.update",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Role ID",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "target_env_id",
+            "in": "query",
+            "description": "Target env for cross-env admin",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UpdateRoleRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Role updated",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RoleResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Missing auth:admin scope"
+          },
+          "404": {
+            "description": "role not found"
+          }
+        },
+        "security": [
+          {
+            "sentin8:auth:admin": []
+          }
+        ]
+      },
+      "delete": {
+        "tags": [
+          "auth"
+        ],
+        "summary": "`DELETE /v1/admin/roles/{id}` — delete a role.\nDelete role.",
+        "operationId": "role.delete",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Role ID",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "target_env_id",
+            "in": "query",
+            "description": "Target env for cross-env admin",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Role deleted"
+          },
+          "403": {
+            "description": "Missing auth:admin scope"
+          },
+          "404": {
+            "description": "role not found"
+          }
+        },
+        "security": [
+          {
+            "sentin8:auth:admin": []
+          }
+        ]
+      }
+    },
+    "/v1/admin/roles/{role_id}/members": {
+      "post": {
+        "tags": [
+          "auth"
+        ],
+        "summary": "`POST /v1/admin/roles/{role_id}/members` — add a member to a role.\nHandle add role member.",
+        "operationId": "role.member-add",
+        "parameters": [
+          {
+            "name": "role_id",
+            "in": "path",
+            "description": "Role ID",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "target_env_id",
+            "in": "query",
+            "description": "Target env for cross-env admin",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AddRoleMemberRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "Member added"
+          },
+          "403": {
+            "description": "Missing auth:admin scope"
+          }
+        },
+        "security": [
+          {
+            "sentin8:auth:admin": []
+          }
+        ]
+      }
+    },
+    "/v1/admin/roles/{role_id}/members/{user_id}": {
+      "delete": {
+        "tags": [
+          "auth"
+        ],
+        "summary": "`DELETE /v1/admin/roles/{role_id}/members/{user_id}` — remove a member from a role.\nRemove role member.",
+        "operationId": "role.member-remove",
+        "parameters": [
+          {
+            "name": "role_id",
+            "in": "path",
+            "description": "Role ID",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "user_id",
+            "in": "path",
+            "description": "User ID",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "target_env_id",
+            "in": "query",
+            "description": "Target env for cross-env admin",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Member removed"
+          },
+          "403": {
+            "description": "Missing auth:admin scope"
+          }
+        },
+        "security": [
+          {
+            "sentin8:auth:admin": []
+          }
+        ]
+      }
+    },
+    "/v1/admin/sessions": {
+      "get": {
+        "tags": [
+          "auth"
+        ],
+        "summary": "`GET /v1/admin/sessions` — list sessions (paginated).\nList sessions.",
+        "operationId": "session.list",
+        "parameters": [
+          {
+            "name": "target_env_id",
+            "in": "query",
+            "description": "Target env for cross-env admin",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "user_id",
+            "in": "query",
+            "description": "Filter by user ID",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "page",
+            "in": "query",
+            "description": "Page number",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          },
+          {
+            "name": "page_size",
+            "in": "query",
+            "description": "Page size",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Paginated session list",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SessionListResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Missing auth:admin scope"
+          }
+        },
+        "security": [
+          {
+            "sentin8:auth:admin": []
+          }
+        ]
+      }
+    },
+    "/v1/admin/sessions/{id}": {
+      "delete": {
+        "tags": [
+          "auth"
+        ],
+        "summary": "`DELETE /v1/admin/sessions/{id}` — terminate a session.\nTerminate session.",
+        "operationId": "session.terminate",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Session ID",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "target_env_id",
+            "in": "query",
+            "description": "Target env for cross-env admin",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Session terminated"
+          },
+          "403": {
+            "description": "Missing auth:admin scope"
+          },
+          "404": {
+            "description": "session not found"
+          }
+        },
+        "security": [
+          {
+            "sentin8:auth:admin": []
+          }
+        ]
+      }
+    },
+    "/v1/admin/users": {
+      "get": {
+        "tags": [
+          "auth"
+        ],
+        "summary": "`GET /v1/admin/users` — list users (paginated).\nList users.",
+        "operationId": "user.list",
+        "parameters": [
+          {
+            "name": "target_env_id",
+            "in": "query",
+            "description": "Target env for cross-env admin",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "page",
+            "in": "query",
+            "description": "Page number",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          },
+          {
+            "name": "page_size",
+            "in": "query",
+            "description": "Page size",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Paginated user list",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UserListResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Missing auth:admin scope"
+          }
+        },
+        "security": [
+          {
+            "sentin8:auth:admin": []
+          }
+        ]
+      },
+      "post": {
+        "tags": [
+          "auth"
+        ],
+        "summary": "`POST /v1/admin/users` — create a new user.\nCreate user.",
+        "operationId": "user.create",
+        "parameters": [
+          {
+            "name": "target_env_id",
+            "in": "query",
+            "description": "Target env for cross-env admin",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateUserRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "User created",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UserResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "email is required"
+          },
+          "403": {
+            "description": "Missing auth:admin scope"
+          },
+          "409": {
+            "description": "email already exists"
+          }
+        },
+        "security": [
+          {
+            "sentin8:auth:admin": []
+          }
+        ]
+      }
+    },
+    "/v1/admin/users/{id}": {
+      "get": {
+        "tags": [
+          "auth"
+        ],
+        "summary": "`GET /v1/admin/users/{id}` — get a user by ID.\nFetch user.",
+        "operationId": "user.get",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "User ID",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "target_env_id",
+            "in": "query",
+            "description": "Target env for cross-env admin",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "User",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UserResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Missing auth:admin scope"
+          },
+          "404": {
+            "description": "user not found"
+          }
+        },
+        "security": [
+          {
+            "sentin8:auth:admin": []
+          }
+        ]
+      },
+      "put": {
+        "tags": [
+          "auth"
+        ],
+        "summary": "`PUT /v1/admin/users/{id}` — update a user.\nUpdate user.",
+        "operationId": "user.update",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "User ID",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "target_env_id",
+            "in": "query",
+            "description": "Target env for cross-env admin",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UpdateUserRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "User updated",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UserResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Missing auth:admin scope"
+          },
+          "404": {
+            "description": "user not found"
+          }
+        },
+        "security": [
+          {
+            "sentin8:auth:admin": []
+          }
+        ]
+      },
+      "delete": {
+        "tags": [
+          "auth"
+        ],
+        "summary": "`DELETE /v1/admin/users/{id}` — delete a user.\nDelete user.",
+        "operationId": "user.archive",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "User ID",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "target_env_id",
+            "in": "query",
+            "description": "Target env for cross-env admin",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "User deleted"
+          },
+          "403": {
+            "description": "Missing auth:admin scope"
+          },
+          "404": {
+            "description": "user not found"
+          }
+        },
+        "security": [
+          {
+            "sentin8:auth:admin": []
+          }
+        ]
+      }
+    },
+    "/v1/admin/users/{id}/groups": {
+      "get": {
+        "tags": [
+          "auth"
+        ],
+        "summary": "`GET /v1/admin/users/{id}/groups` — list group names for a user.\nList user groups.",
+        "operationId": "user.groups",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "User ID",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "target_env_id",
+            "in": "query",
+            "description": "Target env for cross-env admin",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Group names",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Missing auth:admin scope"
+          }
+        },
+        "security": [
+          {
+            "sentin8:auth:admin": []
+          }
+        ]
+      }
+    },
+    "/v1/admin/users/{id}/roles": {
+      "get": {
+        "tags": [
+          "auth"
+        ],
+        "summary": "`GET /v1/admin/users/{id}/roles` — list resolved role names for a user.\nList user roles.",
+        "operationId": "user.roles",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "User ID",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "target_env_id",
+            "in": "query",
+            "description": "Target env for cross-env admin",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Resolved role names",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Missing auth:admin scope"
+          }
+        },
+        "security": [
+          {
+            "sentin8:auth:admin": []
+          }
+        ]
+      }
+    },
+    "/v1/admin/webhooks/attempts/{outbox_id}": {
+      "get": {
+        "tags": [
+          "auth"
+        ],
+        "summary": "`GET /v1/admin/webhooks/attempts/{outbox_id}` — list delivery attempts for an outbox entry.\nList attempts.",
+        "operationId": "list_attempts",
+        "parameters": [
+          {
+            "name": "outbox_id",
+            "in": "path",
+            "description": "Outbox entry ID",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Delivery attempts",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/AttemptResponse"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "sentin8:auth:admin": []
+          }
+        ]
+      }
+    },
+    "/v1/admin/webhooks/endpoints": {
+      "get": {
+        "tags": [
+          "auth"
+        ],
+        "summary": "`GET /v1/admin/webhooks/endpoints` — list webhook endpoints.\nList endpoints.",
+        "operationId": "list_endpoints",
+        "parameters": [
+          {
+            "name": "env_id",
+            "in": "query",
+            "description": "Filter by env ID",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Webhook endpoints",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/EndpointResponse"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "sentin8:auth:admin": []
+          }
+        ]
+      },
+      "post": {
+        "tags": [
+          "auth"
+        ],
+        "summary": "`POST /v1/admin/webhooks/endpoints` — create a webhook endpoint.\nCreate endpoint.",
+        "operationId": "create_endpoint",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateEndpointRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Webhook endpoint created (includes signing secret)"
+          },
+          "400": {
+            "description": "url must be an http(s) URL"
+          }
+        },
+        "security": [
+          {
+            "sentin8:auth:admin": []
+          }
+        ]
+      }
+    },
+    "/v1/admin/webhooks/endpoints/{id}": {
+      "get": {
+        "tags": [
+          "auth"
+        ],
+        "summary": "`GET /v1/admin/webhooks/endpoints/{id}` — get a webhook endpoint.\nFetch endpoint.",
+        "operationId": "get_endpoint",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Endpoint ID",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Webhook endpoint",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EndpointResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "endpoint not found"
+          }
+        },
+        "security": [
+          {
+            "sentin8:auth:admin": []
+          }
+        ]
+      },
+      "delete": {
+        "tags": [
+          "auth"
+        ],
+        "summary": "`DELETE /v1/admin/webhooks/endpoints/{id}` — delete a webhook endpoint.\nDelete endpoint.",
+        "operationId": "delete_endpoint",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Endpoint ID",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Endpoint deleted"
+          },
+          "404": {
+            "description": "endpoint not found"
+          }
+        },
+        "security": [
+          {
+            "sentin8:auth:admin": []
+          }
+        ]
+      }
+    },
+    "/v1/admin/webhooks/outbox": {
+      "get": {
+        "tags": [
+          "auth"
+        ],
+        "summary": "`GET /v1/admin/webhooks/outbox` — list recent outbox entries.\nList outbox.",
+        "operationId": "list_outbox",
+        "parameters": [
+          {
+            "name": "env_id",
+            "in": "query",
+            "description": "Filter by env ID",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Outbox entries",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/OutboxEntryResponse"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "sentin8:auth:admin": []
+          }
+        ]
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "ActorClaim": {
+        "type": "object",
+        "description": "The `act` claim embedded in an actor token.\nThe actorclaim type.",
+        "required": [
+          "sub",
+          "reason"
+        ],
+        "properties": {
+          "email": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The email."
+          },
+          "reason": {
+            "type": "string",
+            "description": "The reason."
+          },
+          "sub": {
+            "type": "string",
+            "description": "The sub."
+          }
+        }
+      },
+      "ActorEventResponse": {
+        "type": "object",
+        "description": "Response payload for actorevent.",
+        "required": [
+          "id",
+          "actor_user_id",
+          "target_user_id",
+          "token_id",
+          "scope",
+          "reason",
+          "action",
+          "expires_at",
+          "created_at"
+        ],
+        "properties": {
+          "action": {
+            "type": "string",
+            "description": "The action: `issue` or `revoke`."
+          },
+          "actor_user_id": {
+            "type": "string",
+            "format": "uuid",
+            "description": "actor user identifier."
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "description": "created time."
+          },
+          "expires_at": {
+            "type": "string",
+            "format": "date-time",
+            "description": "expires time."
+          },
+          "id": {
+            "type": "string",
+            "format": "uuid",
+            "description": "Identifier."
+          },
+          "reason": {
+            "type": "string",
+            "description": "The reason."
+          },
+          "scope": {
+            "type": "string",
+            "description": "The scope."
+          },
+          "target_user_id": {
+            "type": "string",
+            "format": "uuid",
+            "description": "target user identifier."
+          },
+          "token_id": {
+            "type": "string",
+            "format": "uuid",
+            "description": "token identifier."
+          }
+        }
+      },
+      "ActorTokenResponse": {
+        "type": "object",
+        "description": "Response payload for actortoken.",
+        "required": [
+          "access_token",
+          "token_id",
+          "expires_in",
+          "target_user_id",
+          "actor_user_id"
+        ],
+        "properties": {
+          "access_token": {
+            "type": "string",
+            "description": "The access token."
+          },
+          "actor_user_id": {
+            "type": "string",
+            "format": "uuid",
+            "description": "actor user identifier."
+          },
+          "expires_in": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The expires in."
+          },
+          "target_user_id": {
+            "type": "string",
+            "format": "uuid",
+            "description": "target user identifier."
+          },
+          "token_id": {
+            "type": "string",
+            "format": "uuid",
+            "description": "token identifier."
+          }
+        }
+      },
+      "AddClientRoleRequest": {
+        "type": "object",
+        "description": "Request body for addclientrole.",
+        "required": [
+          "role_id"
+        ],
+        "properties": {
+          "role_id": {
+            "type": "string",
+            "format": "uuid",
+            "description": "role identifier."
+          }
+        }
+      },
+      "AddGroupMemberRequest": {
+        "type": "object",
+        "description": "Request body for addgroupmember.",
+        "required": [
+          "user_id"
+        ],
+        "properties": {
+          "user_id": {
+            "type": "string",
+            "format": "uuid",
+            "description": "user identifier."
+          }
+        }
+      },
+      "AddGroupRoleRequest": {
+        "type": "object",
+        "description": "Request body for addgrouprole.",
+        "required": [
+          "role_id"
+        ],
+        "properties": {
+          "role_id": {
+            "type": "string",
+            "format": "uuid",
+            "description": "role identifier."
+          }
+        }
+      },
+      "AddRoleMemberRequest": {
+        "type": "object",
+        "description": "Request body for addrolemember.",
+        "required": [
+          "user_id"
+        ],
+        "properties": {
+          "user_id": {
+            "type": "string",
+            "format": "uuid",
+            "description": "user identifier."
+          }
+        }
+      },
+      "ApiKeyListResponse": {
+        "type": "object",
+        "description": "Response payload for apikeylist.",
+        "required": [
+          "api_keys",
+          "total"
+        ],
+        "properties": {
+          "api_keys": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ApiKeyResponse"
+            },
+            "description": "The API keys."
+          },
+          "total": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The total count."
+          }
+        }
+      },
+      "ApiKeyResponse": {
+        "type": "object",
+        "description": "Response payload for apikey.",
+        "required": [
+          "id",
+          "env_id",
+          "name",
+          "key_prefix",
+          "scopes",
+          "status",
+          "created_at"
+        ],
+        "properties": {
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "description": "created time."
+          },
+          "env_id": {
+            "type": "string",
+            "format": "uuid",
+            "description": "env identifier."
+          },
+          "expires_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time",
+            "description": "expires time."
+          },
+          "id": {
+            "type": "string",
+            "format": "uuid",
+            "description": "Identifier."
+          },
+          "key_prefix": {
+            "type": "string",
+            "description": "The key prefix."
+          },
+          "last_used_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time",
+            "description": "The last used at."
+          },
+          "name": {
+            "type": "string",
+            "description": "The name."
+          },
+          "scopes": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "The scopes."
+          },
+          "status": {
+            "type": "string",
+            "description": "The status."
+          },
+          "user_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uuid",
+            "description": "user identifier."
+          }
+        }
+      },
+      "AttemptResponse": {
+        "type": "object",
+        "description": "Response payload for attempt.",
+        "required": [
+          "id",
+          "outbox_id",
+          "attempted_at"
+        ],
+        "properties": {
+          "attempted_at": {
+            "type": "string",
+            "format": "date-time",
+            "description": "The attempted at."
+          },
+          "duration_ms": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "The duration ms."
+          },
+          "error": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The error."
+          },
+          "id": {
+            "type": "string",
+            "format": "uuid",
+            "description": "Identifier."
+          },
+          "outbox_id": {
+            "type": "string",
+            "format": "uuid",
+            "description": "outbox identifier."
+          },
+          "status_code": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "The status code."
+          }
+        }
+      },
+      "AuditEventResponse": {
+        "type": "object",
+        "description": "Response payload for auditevent.",
+        "required": [
+          "id",
+          "action",
+          "timestamp",
+          "schema_version"
+        ],
+        "properties": {
+          "action": {
+            "type": "string",
+            "description": "The action."
+          },
+          "actor_user_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "actor user identifier."
+          },
+          "correlation_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "correlation identifier."
+          },
+          "env_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uuid",
+            "description": "env identifier."
+          },
+          "id": {
+            "type": "string",
+            "format": "uuid",
+            "description": "Identifier."
+          },
+          "schema_version": {
+            "type": "string",
+            "description": "The schema version."
+          },
+          "target_resource_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "target resource identifier."
+          },
+          "target_resource_type": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The target resource type."
+          },
+          "timestamp": {
+            "type": "string",
+            "format": "date-time",
+            "description": "The timestamp."
+          },
+          "token_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "token identifier."
+          }
+        }
+      },
+      "AuditListResponse": {
+        "type": "object",
+        "description": "Response payload for auditlist.",
+        "required": [
+          "events",
+          "total",
+          "page",
+          "page_size"
+        ],
+        "properties": {
+          "events": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AuditEventResponse"
+            },
+            "description": "The events."
+          },
+          "page": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The page."
+          },
+          "page_size": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The page size."
+          },
+          "total": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The total count."
+          }
+        }
+      },
+      "AuditQuery": {
+        "type": "object",
+        "description": "The auditquery type.",
+        "properties": {
+          "action": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The action."
+          },
+          "page": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The page."
+          },
+          "page_size": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The page size."
+          }
+        }
+      },
+      "ClientRoleResponse": {
+        "type": "object",
+        "description": "Response payload for clientrole.",
+        "required": [
+          "client_id",
+          "role_id",
+          "created_at"
+        ],
+        "properties": {
+          "client_id": {
+            "type": "string",
+            "format": "uuid",
+            "description": "client identifier."
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "description": "created time."
+          },
+          "role_id": {
+            "type": "string",
+            "format": "uuid",
+            "description": "role identifier."
+          }
+        }
+      },
+      "ConnectionResponse": {
+        "type": "object",
+        "description": "Response payload for connection.",
+        "required": [
+          "id",
+          "name",
+          "strategy",
+          "status",
+          "scopes",
+          "email_attribute",
+          "created_at",
+          "updated_at"
+        ],
+        "properties": {
+          "acs_url": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The acs URL."
+          },
+          "client_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "client identifier."
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "description": "created time."
+          },
+          "discovery_url": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The discovery URL."
+          },
+          "domain_hint": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The domain hint."
+          },
+          "email_attribute": {
+            "type": "string",
+            "description": "The email attribute."
+          },
+          "entity_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "entity identifier."
+          },
+          "env_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uuid",
+            "description": "env identifier."
+          },
+          "id": {
+            "type": "string",
+            "format": "uuid",
+            "description": "Identifier."
+          },
+          "issuer_url": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The issuer URL."
+          },
+          "metadata_url": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The metadata URL."
+          },
+          "name": {
+            "type": "string",
+            "description": "The name."
+          },
+          "name_attribute": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The name attribute."
+          },
+          "scopes": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "The scopes."
+          },
+          "status": {
+            "type": "string",
+            "description": "The status."
+          },
+          "strategy": {
+            "type": "string",
+            "description": "The strategy."
+          },
+          "updated_at": {
+            "type": "string",
+            "format": "date-time",
+            "description": "updated time."
+          }
+        }
+      },
+      "CreateApiKeyRequest": {
+        "type": "object",
+        "description": "Request body for createapikey.",
+        "required": [
+          "name"
+        ],
+        "properties": {
+          "env_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uuid",
+            "description": "Optional — the RFW form does not send it (env is resolved from the\ntoken's tenant context); the auth-context env is used when absent.\nenv identifier."
+          },
+          "expires_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time",
+            "description": "expires time."
+          },
+          "name": {
+            "type": "string",
+            "description": "The name."
+          },
+          "scopes": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Accepts either a JSON array or a single comma-separated string —\nthe RFW form sends text fields as strings (the field label is\n\"Scopes (comma-separated)\"). Same contract as role permissions.\nThe scopes."
+          },
+          "user_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uuid",
+            "description": "user identifier."
+          }
+        }
+      },
+      "CreateConnectionRequest": {
+        "type": "object",
+        "description": "Request body for createconnection.",
+        "required": [
+          "name",
+          "strategy"
+        ],
+        "properties": {
+          "acs_url": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The acs URL."
+          },
+          "client_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "client identifier."
+          },
+          "client_secret": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The client secret."
+          },
+          "discovery_url": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The discovery URL."
+          },
+          "domain_hint": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The domain hint."
+          },
+          "email_attribute": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The email attribute."
+          },
+          "entity_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "entity identifier."
+          },
+          "env_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uuid",
+            "description": "env identifier."
+          },
+          "issuer_url": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The issuer URL."
+          },
+          "metadata_url": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The metadata URL."
+          },
+          "metadata_xml": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The metadata xml."
+          },
+          "name": {
+            "type": "string",
+            "description": "The name."
+          },
+          "name_attribute": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The name attribute."
+          },
+          "scopes": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "string"
+            },
+            "description": "The scopes."
+          },
+          "strategy": {
+            "type": "string",
+            "description": "Federation protocol: `oidc` or `saml`."
+          }
+        }
+      },
+      "CreateEndpointRequest": {
+        "type": "object",
+        "description": "Request body for createendpoint.",
+        "required": [
+          "url"
+        ],
+        "properties": {
+          "env_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uuid",
+            "description": "env identifier."
+          },
+          "event_types": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "string"
+            },
+            "description": "Event types to subscribe to ('*' = all).\nThe event types."
+          },
+          "name": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The name."
+          },
+          "url": {
+            "type": "string",
+            "description": "The URL."
+          }
+        }
+      },
+      "CreateFederatedCredentialRequest": {
+        "type": "object",
+        "description": "Request body for createfederatedcredential.",
+        "required": [
+          "issuer",
+          "subject"
+        ],
+        "properties": {
+          "audience": {
+            "type": "string",
+            "description": "The audience."
+          },
+          "description": {
+            "type": "string",
+            "description": "The description."
+          },
+          "issuer": {
+            "type": "string",
+            "description": "The issuer."
+          },
+          "subject": {
+            "type": "string",
+            "description": "The subject."
+          }
+        }
+      },
+      "CreateGroupRequest": {
+        "type": "object",
+        "description": "Request body for creategroup.",
+        "required": [
+          "name"
+        ],
+        "properties": {
+          "name": {
+            "type": "string",
+            "description": "The name."
+          }
+        }
+      },
+      "CreateInvitationRequest": {
+        "type": "object",
+        "description": "Request body for createinvitation.",
+        "required": [
+          "email"
+        ],
+        "properties": {
+          "email": {
+            "type": "string",
+            "description": "The email."
+          },
+          "org_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uuid",
+            "description": "org identifier."
+          },
+          "role": {
+            "type": "string",
+            "description": "The role."
+          },
+          "ttl_days": {
+            "type": "integer",
+            "format": "int64",
+            "description": "TTL in days. RFW forms submit number fields as strings (\"7\") —\naccept both JSON numbers and numeric strings.\nThe ttl days."
+          }
+        }
+      },
+      "CreateMembershipRequest": {
+        "type": "object",
+        "description": "Request body for createmembership.",
+        "required": [
+          "user_id",
+          "org_id"
+        ],
+        "properties": {
+          "org_id": {
+            "type": "string",
+            "format": "uuid",
+            "description": "org identifier."
+          },
+          "role": {
+            "type": "string",
+            "description": "The role."
+          },
+          "user_id": {
+            "type": "string",
+            "format": "uuid",
+            "description": "user identifier."
+          }
+        }
+      },
+      "CreateOAuthClientRequest": {
+        "type": "object",
+        "description": "Request body for createoauthclient.",
+        "required": [
+          "client_id",
+          "client_name"
+        ],
+        "properties": {
+          "client_id": {
+            "type": "string",
+            "description": "client identifier."
+          },
+          "client_name": {
+            "type": "string",
+            "description": "The client name."
+          },
+          "client_secret": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The client secret."
+          },
+          "consent_required": {
+            "type": "boolean",
+            "description": "First-party consent bypass . When false, the authorize\nendpoint issues the code directly without consent. Default true (safe).\nThe consent required."
+          },
+          "env_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uuid",
+            "description": "env identifier."
+          },
+          "grant_types": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "The grant types."
+          },
+          "redirect_uris": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "The redirect uris."
+          },
+          "response_types": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "The response types."
+          },
+          "scopes": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "The scopes."
+          },
+          "token_endpoint_auth_method": {
+            "type": "string",
+            "description": "The token endpoint auth method."
+          }
+        }
+      },
+      "CreateRoleRequest": {
+        "type": "object",
+        "description": "Request body for createrole.",
+        "required": [
+          "name"
+        ],
+        "properties": {
+          "name": {
+            "type": "string",
+            "description": "The name."
+          },
+          "permissions": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "The permissions."
+          }
+        }
+      },
+      "CreateUserRequest": {
+        "type": "object",
+        "description": "Request body for createuser.",
+        "required": [
+          "email"
+        ],
+        "properties": {
+          "email": {
+            "type": "string",
+            "description": "The email."
+          },
+          "env_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uuid",
+            "description": "env identifier."
+          },
+          "first_name": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The first name."
+          },
+          "group_ids": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "The group ids."
+          },
+          "last_name": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The last name."
+          },
+          "password": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The password."
+          },
+          "status": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The status."
+          }
+        }
+      },
+      "EndpointResponse": {
+        "type": "object",
+        "description": "Response payload for endpoint.",
+        "required": [
+          "id",
+          "url",
+          "name",
+          "status",
+          "event_types",
+          "created_at"
+        ],
+        "properties": {
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "description": "created time."
+          },
+          "env_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uuid",
+            "description": "env identifier."
+          },
+          "event_types": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "The event types."
+          },
+          "id": {
+            "type": "string",
+            "format": "uuid",
+            "description": "Identifier."
+          },
+          "name": {
+            "type": "string",
+            "description": "The name."
+          },
+          "status": {
+            "type": "string",
+            "description": "The status."
+          },
+          "url": {
+            "type": "string",
+            "description": "The URL."
+          }
+        }
+      },
+      "FederatedCredentialResponse": {
+        "type": "object",
+        "description": "Response payload for federatedcredential.",
+        "required": [
+          "id",
+          "client_id",
+          "issuer",
+          "subject",
+          "audience",
+          "description",
+          "created_at"
+        ],
+        "properties": {
+          "audience": {
+            "type": "string",
+            "description": "The audience."
+          },
+          "client_id": {
+            "type": "string",
+            "format": "uuid",
+            "description": "client identifier."
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "description": "created time."
+          },
+          "description": {
+            "type": "string",
+            "description": "The description."
+          },
+          "id": {
+            "type": "string",
+            "format": "uuid",
+            "description": "Identifier."
+          },
+          "issuer": {
+            "type": "string",
+            "description": "The issuer."
+          },
+          "subject": {
+            "type": "string",
+            "description": "The subject."
+          }
+        }
+      },
+      "GroupListResponse": {
+        "type": "object",
+        "description": "Response payload for grouplist.",
+        "required": [
+          "groups",
+          "total"
+        ],
+        "properties": {
+          "groups": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/GroupResponse"
+            },
+            "description": "The groups."
+          },
+          "total": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The total count."
+          }
+        }
+      },
+      "GroupMemberResponse": {
+        "type": "object",
+        "description": "Response payload for groupmember.",
+        "required": [
+          "group_id",
+          "user_id",
+          "created_at"
+        ],
+        "properties": {
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "description": "created time."
+          },
+          "group_id": {
+            "type": "string",
+            "format": "uuid",
+            "description": "group identifier."
+          },
+          "user_id": {
+            "type": "string",
+            "format": "uuid",
+            "description": "user identifier."
+          }
+        }
+      },
+      "GroupResponse": {
+        "type": "object",
+        "description": "Response payload for group.",
+        "required": [
+          "id",
+          "env_id",
+          "name",
+          "created_at",
+          "updated_at"
+        ],
+        "properties": {
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "description": "created time."
+          },
+          "env_id": {
+            "type": "string",
+            "format": "uuid",
+            "description": "env identifier."
+          },
+          "id": {
+            "type": "string",
+            "format": "uuid",
+            "description": "Identifier."
+          },
+          "name": {
+            "type": "string",
+            "description": "The name."
+          },
+          "updated_at": {
+            "type": "string",
+            "format": "date-time",
+            "description": "updated time."
+          }
+        }
+      },
+      "GroupRoleResponse": {
+        "type": "object",
+        "description": "Response payload for grouprole.",
+        "required": [
+          "group_id",
+          "role_id",
+          "created_at"
+        ],
+        "properties": {
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "description": "created time."
+          },
+          "group_id": {
+            "type": "string",
+            "format": "uuid",
+            "description": "group identifier."
+          },
+          "role_id": {
+            "type": "string",
+            "format": "uuid",
+            "description": "role identifier."
+          }
+        }
+      },
+      "InvitationResponse": {
+        "type": "object",
+        "description": "Response payload for invitation.",
+        "required": [
+          "id",
+          "org_id",
+          "email",
+          "role",
+          "status",
+          "token",
+          "expires_at",
+          "created_at"
+        ],
+        "properties": {
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "description": "created time."
+          },
+          "email": {
+            "type": "string",
+            "description": "The email."
+          },
+          "expires_at": {
+            "type": "string",
+            "format": "date-time",
+            "description": "expires time."
+          },
+          "id": {
+            "type": "string",
+            "format": "uuid",
+            "description": "Identifier."
+          },
+          "org_id": {
+            "type": "string",
+            "format": "uuid",
+            "description": "org identifier."
+          },
+          "role": {
+            "type": "string",
+            "description": "The role."
+          },
+          "status": {
+            "type": "string",
+            "description": "The status."
+          },
+          "token": {
+            "type": "string",
+            "description": "The token."
+          }
+        }
+      },
+      "IssueActorTokenRequest": {
+        "type": "object",
+        "description": "Request body for issueactortoken.",
+        "required": [
+          "target_user_id",
+          "reason"
+        ],
+        "properties": {
+          "reason": {
+            "type": "string",
+            "description": "Free-text reason for the impersonation (required, audited).\nThe reason."
+          },
+          "scope": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Requested scope (must be a subset of the impersonated user's scopes).\nThe scope."
+          },
+          "target_user_id": {
+            "type": "string",
+            "format": "uuid",
+            "description": "The user to impersonate.\ntarget user identifier."
+          },
+          "ttl_secs": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "Token lifetime in seconds (bounded to MAX_ACTOR_TOKEN_TTL_SECS).\nThe ttl secs."
+          }
+        }
+      },
+      "ListActorTokensQuery": {
+        "type": "object",
+        "description": "The listactortokensquery type.",
+        "properties": {
+          "actor_user_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uuid",
+            "description": "actor user identifier."
+          },
+          "page": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The page."
+          },
+          "page_size": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The page size."
+          },
+          "target_user_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uuid",
+            "description": "target user identifier."
+          }
+        }
+      },
+      "ListConnectionsQuery": {
+        "type": "object",
+        "description": "The listconnectionsquery type.",
+        "properties": {
+          "env_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uuid",
+            "description": "env identifier."
+          },
+          "target_env_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Target env (BFF proxy contract — design Fix A/B/C: admin\nendpoints resolve their tenant from this param; required).\ntarget env identifier."
+          }
+        }
+      },
+      "ListEndpointsQuery": {
+        "type": "object",
+        "description": "The listendpointsquery type.",
+        "properties": {
+          "env_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uuid",
+            "description": "env identifier."
+          }
+        }
+      },
+      "ListUsersQuery": {
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/PaginationQuery",
+            "description": "The pagination."
+          }
+        ],
+        "description": "Query params for `GET /v1/admin/users` — extends [PaginationQuery].\nThe listusersquery type."
+      },
+      "MembershipResponse": {
+        "type": "object",
+        "description": "Response payload for membership.",
+        "required": [
+          "id",
+          "user_id",
+          "org_id",
+          "role",
+          "created_at"
+        ],
+        "properties": {
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "description": "created time."
+          },
+          "id": {
+            "type": "string",
+            "format": "uuid",
+            "description": "Identifier."
+          },
+          "org_id": {
+            "type": "string",
+            "format": "uuid",
+            "description": "org identifier."
+          },
+          "role": {
+            "type": "string",
+            "description": "The role."
+          },
+          "user_id": {
+            "type": "string",
+            "format": "uuid",
+            "description": "user identifier."
+          }
+        }
+      },
+      "OAuthClientListResponse": {
+        "type": "object",
+        "description": "Response payload for oauthclientlist.",
+        "required": [
+          "clients",
+          "total"
+        ],
+        "properties": {
+          "clients": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/OAuthClientResponse"
+            },
+            "description": "The clients."
+          },
+          "total": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The total count."
+          }
+        }
+      },
+      "OAuthClientResponse": {
+        "type": "object",
+        "description": "Response payload for oauthclient.",
+        "required": [
+          "id",
+          "env_id",
+          "client_id",
+          "client_name",
+          "redirect_uris",
+          "grant_types",
+          "response_types",
+          "token_endpoint_auth_method",
+          "scopes",
+          "status",
+          "created_at",
+          "updated_at"
+        ],
+        "properties": {
+          "client_id": {
+            "type": "string",
+            "description": "client identifier."
+          },
+          "client_name": {
+            "type": "string",
+            "description": "The client name."
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "description": "created time."
+          },
+          "env_id": {
+            "type": "string",
+            "format": "uuid",
+            "description": "env identifier."
+          },
+          "grant_types": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "The grant types."
+          },
+          "id": {
+            "type": "string",
+            "format": "uuid",
+            "description": "Identifier."
+          },
+          "redirect_uris": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "The redirect uris."
+          },
+          "response_types": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "The response types."
+          },
+          "scopes": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "The scopes."
+          },
+          "status": {
+            "type": "string",
+            "description": "The status."
+          },
+          "token_endpoint_auth_method": {
+            "type": "string",
+            "description": "The token endpoint auth method."
+          },
+          "updated_at": {
+            "type": "string",
+            "format": "date-time",
+            "description": "updated time."
+          }
+        }
+      },
+      "OutboxEntryResponse": {
+        "type": "object",
+        "description": "Response payload for outboxentry.",
+        "required": [
+          "id",
+          "endpoint_id",
+          "event_type",
+          "payload",
+          "retry_count",
+          "created_at"
+        ],
+        "properties": {
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "description": "created time."
+          },
+          "delivered_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time",
+            "description": "The delivered at."
+          },
+          "endpoint_id": {
+            "type": "string",
+            "format": "uuid",
+            "description": "endpoint identifier."
+          },
+          "event_type": {
+            "type": "string",
+            "description": "The event type."
+          },
+          "failed_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time",
+            "description": "The failed at."
+          },
+          "id": {
+            "type": "string",
+            "format": "uuid",
+            "description": "Identifier."
+          },
+          "payload": {
+            "description": "The payload."
+          },
+          "retry_count": {
+            "type": "integer",
+            "format": "int32",
+            "description": "The retry count."
+          }
+        }
+      },
+      "PaginationQuery": {
+        "type": "object",
+        "description": "The paginationquery type.",
+        "properties": {
+          "page": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The page."
+          },
+          "page_size": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The page size."
+          }
+        }
+      },
+      "RevokeActorTokenRequest": {
+        "type": "object",
+        "description": "Request body for revokeactortoken.",
+        "required": [
+          "token_id"
+        ],
+        "properties": {
+          "token_id": {
+            "type": "string",
+            "format": "uuid",
+            "description": "token identifier."
+          }
+        }
+      },
+      "RoleListResponse": {
+        "type": "object",
+        "description": "Response payload for rolelist.",
+        "required": [
+          "roles",
+          "total"
+        ],
+        "properties": {
+          "roles": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/RoleResponse"
+            },
+            "description": "The roles."
+          },
+          "total": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The total count."
+          }
+        }
+      },
+      "RoleMemberResponse": {
+        "type": "object",
+        "description": "Response payload for rolemember.",
+        "required": [
+          "role_id",
+          "user_id",
+          "created_at"
+        ],
+        "properties": {
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "description": "created time."
+          },
+          "role_id": {
+            "type": "string",
+            "format": "uuid",
+            "description": "role identifier."
+          },
+          "user_id": {
+            "type": "string",
+            "format": "uuid",
+            "description": "user identifier."
+          }
+        }
+      },
+      "RoleResponse": {
+        "type": "object",
+        "description": "Response payload for role.",
+        "required": [
+          "id",
+          "env_id",
+          "name",
+          "permissions",
+          "created_at",
+          "updated_at"
+        ],
+        "properties": {
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "description": "created time."
+          },
+          "env_id": {
+            "type": "string",
+            "format": "uuid",
+            "description": "env identifier."
+          },
+          "id": {
+            "type": "string",
+            "format": "uuid",
+            "description": "Identifier."
+          },
+          "includes": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Names of child roles nested under this role (from sentin8_auth_role_nesting).\nThe role inherits all permissions of these child roles recursively.\nThe includes."
+          },
+          "name": {
+            "type": "string",
+            "description": "The name."
+          },
+          "permissions": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "The permissions."
+          },
+          "updated_at": {
+            "type": "string",
+            "format": "date-time",
+            "description": "updated time."
+          }
+        }
+      },
+      "SessionAdminResponse": {
+        "type": "object",
+        "description": "Response payload for sessionadmin.",
+        "required": [
+          "id",
+          "user_id",
+          "env_id",
+          "token_id",
+          "status",
+          "expires_at",
+          "created_at",
+          "updated_at"
+        ],
+        "properties": {
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "description": "created time."
+          },
+          "env_id": {
+            "type": "string",
+            "format": "uuid",
+            "description": "env identifier."
+          },
+          "expires_at": {
+            "type": "string",
+            "format": "date-time",
+            "description": "expires time."
+          },
+          "id": {
+            "type": "string",
+            "format": "uuid",
+            "description": "Identifier."
+          },
+          "status": {
+            "type": "string",
+            "description": "The status."
+          },
+          "token_id": {
+            "type": "string",
+            "description": "token identifier."
+          },
+          "updated_at": {
+            "type": "string",
+            "format": "date-time",
+            "description": "updated time."
+          },
+          "user_id": {
+            "type": "string",
+            "format": "uuid",
+            "description": "user identifier."
+          }
+        }
+      },
+      "SessionListResponse": {
+        "type": "object",
+        "description": "Response payload for sessionlist.",
+        "required": [
+          "sessions",
+          "total"
+        ],
+        "properties": {
+          "sessions": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/SessionAdminResponse"
+            },
+            "description": "The sessions."
+          },
+          "total": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The total count."
+          }
+        }
+      },
+      "SessionQuery": {
+        "type": "object",
+        "description": "The sessionquery type.",
+        "properties": {
+          "page": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The page."
+          },
+          "page_size": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The page size."
+          },
+          "user_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uuid",
+            "description": "user identifier."
+          }
+        }
+      },
+      "TargetEnvQuery": {
+        "type": "object",
+        "description": "Optional `target_env_id` query parameter for cross-env admin access.\nWhen present, the auth context is resolved for the target env instead\nof the caller's own env (subject to RBAC validation).\nThe targetenvquery type.",
+        "properties": {
+          "target_env_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "target env identifier."
+          }
+        }
+      },
+      "UpdateGroupRequest": {
+        "type": "object",
+        "description": "Request body for updategroup.",
+        "properties": {
+          "name": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The name."
+          },
+          "role_ids": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "description": "Optional list of role IDs — replaces the full set of roles.\nThe role ids."
+          },
+          "user_ids": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "description": "Optional list of user IDs — replaces the full set of members.\nThe user ids."
+          }
+        }
+      },
+      "UpdateOAuthClientRequest": {
+        "type": "object",
+        "description": "Request body for updateoauthclient.",
+        "properties": {
+          "client_name": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The client name."
+          },
+          "consent_required": {
+            "type": [
+              "boolean",
+              "null"
+            ],
+            "description": "The consent required."
+          },
+          "grant_types": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "string"
+            },
+            "description": "The grant types."
+          },
+          "redirect_uris": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "string"
+            },
+            "description": "The redirect uris."
+          },
+          "response_types": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "string"
+            },
+            "description": "The response types."
+          },
+          "scopes": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "string"
+            },
+            "description": "The scopes."
+          },
+          "status": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The status."
+          }
+        }
+      },
+      "UpdateRoleRequest": {
+        "type": "object",
+        "description": "Request body for updaterole.",
+        "properties": {
+          "name": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The name."
+          },
+          "permissions": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "string"
+            },
+            "description": "The permissions."
+          }
+        }
+      },
+      "UpdateUserRequest": {
+        "type": "object",
+        "description": "Request body for updateuser.",
+        "properties": {
+          "email_verified": {
+            "type": [
+              "boolean",
+              "null"
+            ],
+            "description": "The email verified."
+          },
+          "first_name": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The first name."
+          },
+          "last_name": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The last name."
+          },
+          "mfa_enabled": {
+            "type": [
+              "boolean",
+              "null"
+            ],
+            "description": "The MFA enabled."
+          },
+          "status": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The status."
+          }
+        }
+      },
+      "UserListResponse": {
+        "type": "object",
+        "description": "Response payload for userlist.",
+        "required": [
+          "users",
+          "total",
+          "page",
+          "page_size"
+        ],
+        "properties": {
+          "page": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The page."
+          },
+          "page_size": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The page size."
+          },
+          "total": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The total count."
+          },
+          "users": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/UserResponse"
+            },
+            "description": "The users."
+          }
+        }
+      },
+      "UserResponse": {
+        "type": "object",
+        "description": "Response payload for user.",
+        "required": [
+          "id",
+          "env_id",
+          "email",
+          "status",
+          "email_verified",
+          "mfa_enabled",
+          "created_at",
+          "updated_at"
+        ],
+        "properties": {
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "description": "created time."
+          },
+          "email": {
+            "type": "string",
+            "description": "The email."
+          },
+          "email_verified": {
+            "type": "boolean",
+            "description": "The email verified."
+          },
+          "env_id": {
+            "type": "string",
+            "format": "uuid",
+            "description": "env identifier."
+          },
+          "first_name": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The first name."
+          },
+          "id": {
+            "type": "string",
+            "format": "uuid",
+            "description": "Identifier."
+          },
+          "last_name": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The last name."
+          },
+          "mfa_enabled": {
+            "type": "boolean",
+            "description": "The MFA enabled."
+          },
+          "status": {
+            "type": "string",
+            "description": "The status."
+          },
+          "updated_at": {
+            "type": "string",
+            "format": "date-time",
+            "description": "updated time."
+          }
+        }
+      }
+    }
+  },
+  "security": [],
+  "tags": [
+    {
+      "name": "auth",
+      "description": "auth admin API"
+    }
+  ]
+}
