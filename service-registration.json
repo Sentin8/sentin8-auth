@@ -4,7 +4,11 @@
     {
       "service_type": "sentin8:auth",
       "subdomain": "auth",
-      "binary": "sentin8-auth"
+      "binary": "sentin8-auth",
+      "telemetry_property": {
+        "slug": "auth",
+        "name": "Sentin8:Auth Platform Telemetry"
+      }
     }
   ]
 }
