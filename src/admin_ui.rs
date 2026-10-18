@@ -19,6 +19,21 @@ use sentin8::rfw::widget::*;
 use sqlx::Row;
 
 /// Fetch admin ui.
+#[utoipa::path(
+    get,
+    path = "/v1/admin/ui/{page}",
+    params(
+        ("page" = String, Path, description = "RFW page name (overview, users, roles, …)"),
+        ("target_env_id" = String, Query, description = "Target env (RLS context)")
+    ),
+    responses(
+        (status = 200, description = "RFW page definition (rendered by Sentin8:Dash)", body = serde_json::Value),
+        (status = 403, description = "Caller lacks the admin scope"),
+        (status = 404, description = "Unknown page"),
+    ),
+    security(("sentin8:auth:admin" = [])),
+    tag = "admin-ui",
+)]
 pub async fn get_admin_ui(
     State(state): State<AppState>,
     headers: HeaderMap,

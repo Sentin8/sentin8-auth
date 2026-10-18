@@ -34,7 +34,7 @@ use crate::handlers::AppState;
 // ── RFC 7591 Registration Request ─────────────────────────────────────
 
 /// Client metadata sent by the registrant (RFC 7591 ).
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
 /// Request body for register.
 pub struct RegisterRequest {
     #[serde(default)]
@@ -110,7 +110,7 @@ pub struct RegisterRequest {
 /// Client metadata returned after registration (RFC 7591 ).
 /// Includes `client_secret`, `client_id_issued_at`, `client_secret_expires_at`,
 /// and the `registration_access_token` (RFC 7592).
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, utoipa::ToSchema)]
 /// Response payload for register.
 pub struct RegisterResponse {
     /// client identifier.
@@ -171,7 +171,7 @@ pub struct RegisterResponse {
 
 /// Update request (RFC 7592 ) — same shape as RegisterRequest but all
 /// fields are optional since the client may only update a subset.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
 /// Request body for update.
 pub struct UpdateRequest {
     #[serde(default)]
@@ -461,6 +461,17 @@ fn is_m2m_only_grants(grant_types: &[String]) -> bool {
 // ── POST /oauth/register (RFC 7591) ───────────────────────────────────
 
 /// Register it.
+#[utoipa::path(
+    post,
+    path = "/oauth/register",
+    request_body = RegisterRequest,
+    responses(
+        (status = 201, description = "Client registered (registration_access_token returned)", body = RegisterResponse),
+        (status = 400, description = "invalid_client_metadata / invalid_redirect_uri (RFC 7591 §3.3)"),
+    ),
+    security(),
+    tag = "oauth",
+)]
 pub async fn register(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -661,6 +672,18 @@ pub async fn register(
 // ── GET /oauth/register/{client_id} (RFC 7592 ) ────────────────────
 
 /// Fetch client.
+#[utoipa::path(
+    get,
+    path = "/oauth/register/{client_id}",
+    params(("client_id" = String, Path, description = "Client id")),
+    responses(
+        (status = 200, description = "Client configuration (RFC 7592 §2.2)", body = RegisterResponse),
+        (status = 401, description = "Missing/invalid registration access token"),
+        (status = 404, description = "Unknown client"),
+    ),
+    security(),
+    tag = "oauth",
+)]
 pub async fn get_client(
     State(state): State<AppState>,
     Path(client_id): Path<String>,
@@ -726,6 +749,19 @@ pub async fn get_client(
 // ── PUT /oauth/register/{client_id} (RFC 7592 ) ────────────────────
 
 /// Update client.
+#[utoipa::path(
+    put,
+    path = "/oauth/register/{client_id}",
+    params(("client_id" = String, Path, description = "Client id")),
+    request_body = UpdateRequest,
+    responses(
+        (status = 200, description = "Client configuration updated", body = RegisterResponse),
+        (status = 401, description = "Missing/invalid registration access token"),
+        (status = 404, description = "Unknown client"),
+    ),
+    security(),
+    tag = "oauth",
+)]
 pub async fn update_client(
     State(state): State<AppState>,
     Path(client_id): Path<String>,
@@ -898,6 +934,18 @@ pub async fn update_client(
 // ── DELETE /oauth/register/{client_id} (RFC 7592 ) ─────────────────
 
 /// Delete client.
+#[utoipa::path(
+    delete,
+    path = "/oauth/register/{client_id}",
+    params(("client_id" = String, Path, description = "Client id")),
+    responses(
+        (status = 204, description = "Client deleted"),
+        (status = 401, description = "Missing/invalid registration access token"),
+        (status = 404, description = "Unknown client"),
+    ),
+    security(),
+    tag = "oauth",
+)]
 pub async fn delete_client(
     State(state): State<AppState>,
     Path(client_id): Path<String>,

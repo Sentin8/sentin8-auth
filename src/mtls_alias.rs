@@ -28,6 +28,20 @@ fn require_mtls_header(headers: &HeaderMap) -> Result<(), (axum::http::StatusCod
 /// `POST /mtls/oauth/token` — the standard token handler behind a
 /// client-certificate-presence guard. Delegates to `oauth::token` so
 /// behavior is identical to `POST /oauth/token` apart from the guard.
+#[utoipa::path(
+    post,
+    path = "/mtls/oauth/token",
+    params(
+        ("grant_type" = String, Query, description = "Client credentials grant (certificate-bound clients)"),
+        ("scope" = String, Query, description = "Requested scope"),
+    ),
+    responses(
+        (status = 200, description = "Token issued (identical contract to /oauth/token)", body = crate::oauth::TokenResponse),
+        (status = 401, description = "invalid_client — no client certificate presented / thumbprint not registered"),
+    ),
+    security(),
+    tag = "oauth",
+)]
 pub async fn mtls_token(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -46,6 +60,20 @@ pub async fn mtls_token(
 
 /// `POST /mtls/oauth/revoke` — the standard revocation handler behind a
 /// client-certificate-presence guard.
+#[utoipa::path(
+    post,
+    path = "/mtls/oauth/revoke",
+    params(
+        ("token" = String, Query, description = "The token to revoke"),
+        ("client_id" = String, Query, description = "Caller client"),
+    ),
+    responses(
+        (status = 200, description = "Revoked (RFC 7009)"),
+        (status = 401, description = "invalid_client — no verified client certificate"),
+    ),
+    security(),
+    tag = "oauth",
+)]
 pub async fn mtls_revoke(
     State(state): State<AppState>,
     headers: HeaderMap,

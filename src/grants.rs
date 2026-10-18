@@ -34,7 +34,7 @@ use crate::handlers::AppState;
 use crate::sentin8or_auth::require_sentin8or_access_with_env;
 
 /// A grant record (API shape).
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, utoipa::ToSchema)]
 /// Response payload for grant.
 pub struct GrantResponse {
     /// Identifier.
@@ -58,7 +58,7 @@ pub struct GrantResponse {
     pub updated_at: chrono::DateTime<chrono::Utc>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
 /// Request body for creategrant.
 pub struct CreateGrantRequest {
     /// user identifier.
@@ -76,7 +76,7 @@ pub struct CreateGrantRequest {
     pub env_id: Uuid,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
 /// Request body for patchgrant.
 pub struct PatchGrantRequest {
     /// The scope.
@@ -172,7 +172,17 @@ pub async fn record_grant(
 }
 
 /// `POST /oauth/grants` — create/record a grant (admin/client API).
-/// Create grant.
+#[utoipa::path(
+    post,
+    path = "/oauth/grants",
+    request_body = CreateGrantRequest,
+    responses(
+        (status = 200, description = "Grant recorded", body = GrantResponse),
+        (status = 403, description = "Caller lacks the required admin/client scope"),
+    ),
+    security(("sentin8:auth:admin" = [])),
+    tag = "oauth",
+)]
 pub async fn create_grant(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -245,7 +255,18 @@ async fn fetch_grant(
 }
 
 /// `GET /oauth/grants/{id}` — query a grant's status/actions.
-/// Fetch grant.
+#[utoipa::path(
+    get,
+    path = "/oauth/grants/{id}",
+    params(("id" = Uuid, Path, description = "Grant id")),
+    responses(
+        (status = 200, description = "The grant", body = GrantResponse),
+        (status = 404, description = "Unknown grant"),
+        (status = 401, description = "Unauthenticated"),
+    ),
+    security(),
+    tag = "oauth",
+)]
 pub async fn get_grant(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -261,6 +282,20 @@ pub async fn get_grant(
 /// The new scope must be a subset-or-superset of the current one; the
 /// caller must be the grant's user or an env admin.
 /// Handle patch grant.
+#[utoipa::path(
+    patch,
+    path = "/oauth/grants/{id}",
+    params(("id" = Uuid, Path, description = "Grant id")),
+    request_body = PatchGrantRequest,
+    responses(
+        (status = 200, description = "Scope updated", body = GrantResponse),
+        (status = 400, description = "Invalid scope transition"),
+        (status = 403, description = "Caller is not the grant's user or an env admin"),
+        (status = 404, description = "Unknown grant"),
+    ),
+    security(),
+    tag = "oauth",
+)]
 pub async fn patch_grant(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -297,7 +332,18 @@ pub async fn patch_grant(
 /// path treats a revoked grant as a hard 401 (checked via the Valkey
 /// `auth:grant:revoked:{grant_id}` key — same read path as the jti
 /// denylist, so no DB hit on the hot path).
-/// Delete grant.
+#[utoipa::path(
+    delete,
+    path = "/oauth/grants/{id}",
+    params(("id" = Uuid, Path, description = "Grant id")),
+    responses(
+        (status = 200, description = "Grant revoked (dependent tokens cascade-revoked)"),
+        (status = 403, description = "Caller is not the grant's user or an env admin"),
+        (status = 404, description = "Unknown grant"),
+    ),
+    security(),
+    tag = "oauth",
+)]
 pub async fn delete_grant(
     State(state): State<AppState>,
     headers: HeaderMap,

@@ -33,7 +33,7 @@ use crate::handlers::AppState;
 use crate::jwt::AuthClaims;
 
 /// Request body for `POST /delegate/access-token`.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
 /// Request body for delegateaccesstoken.
 pub struct DelegateAccessTokenRequest {
     /// The staff user's Auth user ID (the `act.sub`).
@@ -55,7 +55,7 @@ pub struct DelegateAccessTokenRequest {
 }
 
 /// Response — same shape as OAuth token response.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, utoipa::ToSchema)]
 /// Response payload for delegateaccesstoken.
 pub struct DelegateAccessTokenResponse {
     /// The access token.
@@ -77,6 +77,18 @@ pub struct DelegateAccessTokenResponse {
 /// with `sentin8:delegate:read` scope. A cert-bound M2M token keeps its
 /// `cnf` propagated to the delegated token so it inherits the binding.
 /// Handle delegate access token.
+#[utoipa::path(
+    post,
+    path = "/delegate/access-token",
+    request_body = DelegateAccessTokenRequest,
+    responses(
+        (status = 200, description = "Delegated token issued (act claim carried, downscoped)", body = DelegateAccessTokenResponse),
+        (status = 400, description = "Malformed request"),
+        (status = 401, description = "Caller not authorized to delegate (BFF cert + scope, or M2M bearer with sentin8:delegate:read)"),
+    ),
+    security(),
+    tag = "delegation",
+)]
 pub async fn delegate_access_token(
     State(state): State<AppState>,
     headers: HeaderMap,

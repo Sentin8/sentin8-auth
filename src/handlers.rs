@@ -52,7 +52,7 @@ pub struct AppState {
 
 // ── Sign-in ────────────────────────────────────────────────────────────
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
 /// Request body for signin.
 pub struct SignInRequest {
     /// The email.
@@ -61,7 +61,7 @@ pub struct SignInRequest {
     pub password: String,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, utoipa::ToSchema)]
 /// Response payload for signin.
 pub struct SignInResponse {
     /// user identifier.
@@ -83,6 +83,19 @@ pub struct SignInResponse {
 }
 
 /// Sign in.
+#[utoipa::path(
+    post,
+    path = "/v1/sign-in",
+    request_body = SignInRequest,
+    responses(
+        (status = 200, description = "Session established (also set as the `__session` HttpOnly cookie)", body = SignInResponse),
+        (status = 400, description = "Email and password are required"),
+        (status = 401, description = "Unknown email or wrong password"),
+        (status = 429, description = "Sign-in rate limit (bot protection) exceeded"),
+    ),
+    security(),
+    tag = "auth",
+)]
 pub async fn sign_in(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -287,7 +300,7 @@ pub async fn sign_in(
 
 // ── Sign-up ────────────────────────────────────────────────────────────
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
 /// Request body for signup.
 pub struct SignUpRequest {
     /// The email.
@@ -303,6 +316,18 @@ pub struct SignUpRequest {
 }
 
 /// Sign up.
+#[utoipa::path(
+    post,
+    path = "/v1/sign-up",
+    request_body = SignUpRequest,
+    responses(
+        (status = 200, description = "User created and signed in (session cookie set)", body = SignInResponse),
+        (status = 400, description = "Invalid email or password"),
+        (status = 409, description = "Email already registered for this environment"),
+    ),
+    security(),
+    tag = "auth",
+)]
 pub async fn sign_up(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -532,7 +557,7 @@ pub async fn sign_up(
 
 // ── Session ────────────────────────────────────────────────────────────
 
-#[derive(Serialize)]
+#[derive(Serialize, utoipa::ToSchema)]
 /// session information.
 pub struct SessionInfo {
     /// user identifier.
@@ -557,6 +582,16 @@ pub struct SessionInfo {
 }
 
 /// Fetch session.
+#[utoipa::path(
+    get,
+    path = "/v1/session",
+    responses(
+        (status = 200, description = "The caller's session", body = SessionInfo),
+        (status = 401, description = "No session or the session expired"),
+    ),
+    security(),
+    tag = "auth",
+)]
 pub async fn get_session(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -601,6 +636,16 @@ pub async fn get_session(
 // ── Sign-out ────────────────────────────────────────────────────────────
 
 /// Sign out.
+#[utoipa::path(
+    post,
+    path = "/v1/sign-out",
+    responses(
+        (status = 200, description = "Session revoked"),
+        (status = 403, description = "Missing X-Sentin8-CSRF header for a cookie-authenticated call"),
+    ),
+    security(),
+    tag = "auth",
+)]
 pub async fn sign_out(State(state): State<AppState>, headers: HeaderMap) -> Response {
     if let Some(token_id) = extract_session_token(&headers) {
         // SEC- — mutating session endpoint: CSRF-gated (Bearer exempt).
@@ -866,6 +911,17 @@ pub(crate) async fn auto_add_to_app_groups(pool: &PgPool, user_id: Uuid, env_id:
 }
 
 /// Handle branding.
+/// Merged org→env branding for the hosted Auth UI (env overrides org per-field).
+#[utoipa::path(
+    get,
+    path = "/v1/branding",
+    responses(
+        (status = 200, description = "The merged branding payload for the resolved tenant", body = serde_json::Value),
+        (status = 401, description = "No valid tenant context could be resolved from the request"),
+    ),
+    security(),
+    tag = "auth",
+)]
 pub async fn branding(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -972,6 +1028,16 @@ async fn fetch_merged_branding(
 // ── Health ──────────────────────────────────────────────────────────────
 
 /// Handle health.
+/// Liveness (captain monitor payload: status, service, version, build).
+#[utoipa::path(
+    get,
+    path = "/v1/health",
+    responses(
+        (status = 200, description = "The service is live", body = serde_json::Value),
+    ),
+    security(),
+    tag = "meta",
+)]
 pub async fn health() -> Json<serde_json::Value> {
     let mut payload = serde_json::json!({"status": "ok", "version": sentin8::build_info::id(), "build": sentin8::build_info::build_hash()});
     if let Some(n) = sentin8::middleware::traffic_counter::process_active_connections() {
@@ -985,7 +1051,7 @@ pub async fn health() -> Json<serde_json::Value> {
 /// Query params for `GET /v1/auth/consent/accounts` — fetch the customer's
 /// accounts at this Data Provider so the consent screen can show
 /// them for selection.
-#[derive(Debug, serde::Deserialize)]
+#[derive(Debug, serde::Deserialize, utoipa::IntoParams, utoipa::ToSchema)]
 /// The consentaccountsquery type.
 pub struct ConsentAccountsQuery {
     /// The session token (from the sign-in flow) to authenticate the request.
@@ -1011,6 +1077,17 @@ pub struct ConsentAccountsQuery {
 /// calls the registered service via its platform domain URL.
 /// No vertical service URLs, paths, or scopes are hardcoded in auth.
 /// Handle consent accounts.
+#[utoipa::path(
+    get,
+    path = "/v1/auth/consent/accounts",
+    params(ConsentAccountsQuery),
+    responses(
+        (status = 200, description = "The consent flow's customer accounts (per scope selection)", body = serde_json::Value),
+        (status = 401, description = "Session invalid or expired"),
+    ),
+    security(),
+    tag = "auth",
+)]
 pub async fn consent_accounts(
     State(state): State<AppState>,
     axum::extract::Query(q): axum::extract::Query<ConsentAccountsQuery>,

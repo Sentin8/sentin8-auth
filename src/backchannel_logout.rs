@@ -33,7 +33,7 @@ use crate::handlers::AppState;
 use crate::jwks::SigningKeys;
 
 /// Trigger request — fired when a session ends.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
 /// The backchannellogouttrigger type.
 pub struct BackchannelLogoutTrigger {
     /// session identifier.
@@ -47,7 +47,7 @@ pub struct BackchannelLogoutTrigger {
 }
 
 /// Response describing the fan-out results.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, utoipa::ToSchema)]
 /// Response payload for backchannellogout.
 pub struct BackchannelLogoutResponse {
     /// The sent.
@@ -58,7 +58,7 @@ pub struct BackchannelLogoutResponse {
     pub details: Vec<ClientResult>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, utoipa::ToSchema)]
 /// The clientresult type.
 pub struct ClientResult {
     /// client identifier.
@@ -110,6 +110,17 @@ fn issue_logout_token(
 
 /// Handler — `POST /oauth/backchannel-logout` / `POST /v1/backchannel-logout/trigger`.
 /// Handle trigger backchannel logout.
+#[utoipa::path(
+    post,
+    path = "/oauth/backchannel-logout",
+    request_body = BackchannelLogoutTrigger,
+    responses(
+        (status = 200, description = "OIDC Back-Channel Logout token minted and delivered", body = BackchannelLogoutResponse),
+        (status = 403, description = "Admin guard — internal trigger"),
+    ),
+    security(("sentin8:auth:admin" = [])),
+    tag = "oauth",
+)]
 pub async fn trigger_backchannel_logout(
     State(state): State<AppState>,
     headers: axum::http::HeaderMap,

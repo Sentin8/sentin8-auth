@@ -192,7 +192,7 @@ pub fn build_router(state: AppState) -> Router {
         ) // POST alias for RFW row_action_post
         .route(
             "/v1/admin/enterprise-connections/{id}/delete",
-            post(enterprise_connections::delete_connection),
+            post(crate::rfw_aliases::enterprise_connection_delete),
         )
         .route(
             "/v1/sso/{connection_id}/authorize",
@@ -332,7 +332,7 @@ pub fn build_router(state: AppState) -> Router {
                 .delete(admin::delete_user),
         )
         // POST alias for RFW row_action_post (renderer only supports POST)
-        .route("/v1/admin/users/{id}/delete", post(admin::delete_user))
+        .route("/v1/admin/users/{id}/delete", post(crate::rfw_aliases::user_delete))
         // Admin API — Roles
         .route(
             "/v1/admin/roles",
@@ -345,7 +345,7 @@ pub fn build_router(state: AppState) -> Router {
                 .delete(admin::delete_role),
         )
         // POST alias for RFW form submission (renderer only supports POST)
-        .route("/v1/admin/roles/{id}/update", post(admin::update_role))
+        .route("/v1/admin/roles/{id}/update", post(crate::rfw_aliases::role_update))
         .route(
             "/v1/admin/roles/{role_id}/members",
             post(admin::add_role_member),
@@ -355,7 +355,7 @@ pub fn build_router(state: AppState) -> Router {
             delete(admin::remove_role_member),
         )
         // POST alias for RFW row_action_post
-        .route("/v1/admin/roles/{id}/delete", post(admin::delete_role))
+        .route("/v1/admin/roles/{id}/delete", post(crate::rfw_aliases::role_delete))
         // Admin API — Groups (user-grouping)
         .route(
             "/v1/admin/groups",
@@ -363,12 +363,12 @@ pub fn build_router(state: AppState) -> Router {
         )
         .route(
             "/v1/admin/groups/{id}",
-            get(admin::list_group_members)
-                .put(admin::update_group)
-                .delete(admin::delete_group),
+            get(crate::rfw_aliases::group_members_alias)
+                .put(crate::rfw_aliases::group_update)
+                .delete(crate::rfw_aliases::group_delete),
         )
         // POST alias for RFW form submission (renderer only supports POST)
-        .route("/v1/admin/groups/{id}/update", post(admin::update_group))
+        .route("/v1/admin/groups/{id}/update", post(crate::rfw_aliases::group_update))
         .route(
             "/v1/admin/groups/{group_id}/members",
             get(admin::list_group_members).post(admin::add_group_member),
@@ -386,7 +386,7 @@ pub fn build_router(state: AppState) -> Router {
             delete(admin::remove_group_role),
         )
         // POST alias for RFW row_action_post
-        .route("/v1/admin/groups/{id}/delete", post(admin::delete_group))
+        .route("/v1/admin/groups/{id}/delete", post(crate::rfw_aliases::group_delete))
         // Admin API — OAuth Clients
         .route(
             "/v1/admin/oauth-clients",
@@ -401,7 +401,7 @@ pub fn build_router(state: AppState) -> Router {
         // POST alias for RFW row_action_post
         .route(
             "/v1/admin/oauth-clients/{id}/delete",
-            post(admin::delete_oauth_client),
+            post(crate::rfw_aliases::oauth_client_delete),
         )
         // Admin API — OAuth Client Roles (app-role assignments to M2M clients)
         .route(
@@ -439,7 +439,7 @@ pub fn build_router(state: AppState) -> Router {
         // POST alias for RFW row_action_post
         .route(
             "/v1/admin/sessions/{id}/revoke",
-            post(admin::terminate_session),
+            post(crate::rfw_aliases::session_revoke),
         )
         // Admin API — Memberships & Invitations
         .route(
@@ -532,48 +532,49 @@ pub fn build_router(state: AppState) -> Router {
         // /sign-in, /sign-up), it falls back to serving index.html so the
         // Flutter router can handle the route.
         // ── Sentin8:Policy admin API ( — shared implementation,
-        // one surface per service; handlers are generic over this AppState).
+        // one surface per service; the routes bind the annotated wrappers
+        // in `policy_docs` (utoipa cannot path a generic handler).
         .route(
             "/v1/admin/policy-sets",
-            get(sentin8::shield::admin::list_policy_sets::<crate::handlers::AppState>),
+            get(crate::policy_docs::policy_list_sets),
         )
         .route(
             "/v1/admin/policy-sets/{name}",
-            get(sentin8::shield::admin::get_policy_set::<crate::handlers::AppState>)
-                .put(sentin8::shield::admin::put_policy_set::<crate::handlers::AppState>)
-                .delete(sentin8::shield::admin::delete_policy_set::<crate::handlers::AppState>),
+            get(crate::policy_docs::policy_get_set)
+                .put(crate::policy_docs::policy_put_set)
+                .delete(crate::policy_docs::policy_delete_set),
         )
         .route(
             "/v1/admin/policy-sets/{name}/test",
-            post(sentin8::shield::admin::test_policy_set::<crate::handlers::AppState>),
+            post(crate::policy_docs::policy_test_set),
         )
         .route(
             "/v1/admin/policy-sets/enforce",
-            post(sentin8::shield::admin::admin_enforce_policy_set::<crate::handlers::AppState>),
+            post(crate::policy_docs::policy_enforce),
         )
         .route(
             "/v1/admin/policy-sets/shadow",
-            post(sentin8::shield::admin::admin_shadow_policy_set::<crate::handlers::AppState>),
+            post(crate::policy_docs::policy_shadow),
         )
         .route(
             "/v1/admin/policy-sets/disable",
-            post(sentin8::shield::admin::admin_disable_policy_set::<crate::handlers::AppState>),
+            post(crate::policy_docs::policy_disable),
         )
         .route(
             "/v1/admin/relations",
-            get(sentin8::shield::admin::list_relations::<crate::handlers::AppState>)
-                .put(sentin8::shield::admin::put_relation::<crate::handlers::AppState>)
-                .delete(sentin8::shield::admin::delete_relation::<crate::handlers::AppState>),
+            get(crate::policy_docs::policy_relations)
+                .put(crate::policy_docs::policy_put_relation)
+                .delete(crate::policy_docs::policy_delete_relation),
         )
         .route(
             "/v1/admin/relations/check",
-            get(sentin8::shield::admin::check_relation::<crate::handlers::AppState>),
+            get(crate::policy_docs::policy_check_relation),
         )
         .route(
             "/v1/admin/attributes",
-            get(sentin8::shield::admin::list_attributes::<crate::handlers::AppState>)
-                .put(sentin8::shield::admin::put_attribute::<crate::handlers::AppState>)
-                .delete(sentin8::shield::admin::delete_attribute::<crate::handlers::AppState>),
+            get(crate::policy_docs::policy_attributes)
+                .put(crate::policy_docs::policy_put_attribute)
+                .delete(crate::policy_docs::policy_delete_attribute),
         )
         .fallback_service(tower_http::services::ServeDir::new(&ui_dir).fallback(
             tower_http::services::ServeFile::new(format!("{ui_dir}/index.html")),
@@ -765,6 +766,17 @@ async fn internal_keys_rotate(
     })))
 }
 
+/// OIDC JSON Web Key Set — the verification keys for every ID/access
+/// token this issuer mints (fetched by every service + third-party IdP).
+#[utoipa::path(
+    get,
+    path = "/.well-known/jwks.json",
+    responses(
+        (status = 200, description = "The active signing keys (JWK Set RFC 7517)", body = JwksResponse),
+    ),
+    security(),
+    tag = "oauth",
+)]
 async fn jwks_endpoint(State(state): State<AppState>) -> Json<JwksResponse> {
     Json(JwksResponse::from_keys(&state.keys))
 }

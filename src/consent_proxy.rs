@@ -22,7 +22,7 @@ use sqlx::Row;
 use crate::handlers::AppState;
 
 /// Query params for the consent UI proxy request.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::IntoParams, utoipa::ToSchema)]
 /// The consentproxyquery type.
 pub struct ConsentProxyQuery {
     /// The consent flow.
@@ -169,6 +169,18 @@ async fn require_consent_session(
 /// matches, returns a 404 (auth-ui falls back to the platform-default
 /// consent page).
 /// Handle proxy consent ui.
+#[utoipa::path(
+    get,
+    path = "/v1/auth/consent/ui",
+    params(ConsentProxyQuery),
+    responses(
+        (status = 200, description = "The vertical's consent RFW page descriptor", body = serde_json::Value),
+        (status = 401, description = "Session validation failed"),
+        (status = 404, description = "No consent flow registered for the requested scopes"),
+    ),
+    security(),
+    tag = "auth",
+)]
 pub async fn proxy_consent_ui(
     State(state): State<AppState>,
     Query(q): Query<ConsentProxyQuery>,
@@ -227,7 +239,7 @@ pub async fn proxy_consent_ui(
 }
 
 /// `POST /v1/auth/consent/approve` — proxy consent approval to the vertical service.
-#[derive(Debug, Deserialize, serde::Serialize)]
+#[derive(Debug, Deserialize, serde::Serialize, utoipa::ToSchema)]
 /// Request body for consentapproveproxy.
 pub struct ConsentApproveProxyRequest {
     /// The consent flow.
@@ -250,6 +262,18 @@ pub struct ConsentApproveProxyRequest {
 }
 
 /// Handle proxy consent approve.
+#[utoipa::path(
+    post,
+    path = "/v1/auth/consent/approve",
+    request_body = ConsentApproveProxyRequest,
+    responses(
+        (status = 200, description = "Approval recorded by the owning vertical service", body = serde_json::Value),
+        (status = 401, description = "Session validation failed"),
+        (status = 404, description = "No consent flow registered for the requested scopes"),
+    ),
+    security(),
+    tag = "auth",
+)]
 pub async fn proxy_consent_approve(
     State(state): State<AppState>,
     Json(req): Json<ConsentApproveProxyRequest>,
@@ -300,7 +324,7 @@ pub async fn proxy_consent_approve(
 }
 
 /// `POST /v1/auth/consent/deny` — proxy consent denial to the vertical service.
-#[derive(Debug, Deserialize, serde::Serialize)]
+#[derive(Debug, Deserialize, serde::Serialize, utoipa::ToSchema)]
 /// Request body for consentdenyproxy.
 pub struct ConsentDenyProxyRequest {
     /// The consent flow.
@@ -317,6 +341,18 @@ pub struct ConsentDenyProxyRequest {
 }
 
 /// Handle proxy consent deny.
+#[utoipa::path(
+    post,
+    path = "/v1/auth/consent/deny",
+    request_body = ConsentDenyProxyRequest,
+    responses(
+        (status = 200, description = "Denial recorded by the owning vertical service", body = serde_json::Value),
+        (status = 401, description = "Session validation failed"),
+        (status = 404, description = "No consent flow registered for the requested scopes"),
+    ),
+    security(),
+    tag = "auth",
+)]
 pub async fn proxy_consent_deny(
     State(state): State<AppState>,
     Json(req): Json<ConsentDenyProxyRequest>,

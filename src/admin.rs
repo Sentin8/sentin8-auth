@@ -16,7 +16,7 @@ use axum::{
 };
 use bcrypt::{hash as bcrypt_hash, DEFAULT_COST};
 use serde::{Deserialize, Serialize};
-use utoipa::ToSchema;
+use utoipa::{IntoParams, ToSchema};
 use uuid::Uuid;
 
 use crate::handlers::fetch_role_scopes;
@@ -26,7 +26,7 @@ use crate::sentin8or_auth::{require_sentin8or_access_with_env, require_sentin8or
 /// Optional `target_env_id` query parameter for cross-env admin access.
 /// When present, the auth context is resolved for the target env instead
 /// of the caller's own env (subject to RBAC validation).
-#[derive(Debug, Deserialize, ToSchema)]
+#[derive(Debug, Deserialize, ToSchema, IntoParams)]
 /// The targetenvquery type.
 pub struct TargetEnvQuery {
     #[serde(default)]

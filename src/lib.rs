@@ -69,6 +69,8 @@ pub mod oauth;
 pub mod overlays;
 /// Passkey (WebAuthn) enrollment and verification.
 pub mod passkey;
+pub mod policy_docs;
+pub mod rfw_aliases;
 /// Shield (Sentin8:Policy) integration — shared bridge re-exports.
 pub mod policy;
 /// Membership provisioning API (used by peers; no table access).

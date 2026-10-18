@@ -43,14 +43,14 @@ const EMAIL_VERIFY_TTL_SECS: i64 = 86400;
 
 // ── Password reset ─────────────────────────────────────────────────────
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
 /// Request body for passwordreset.
 pub struct PasswordResetRequest {
     /// The email.
     pub email: String,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, utoipa::ToSchema)]
 /// Response payload for passwordreset.
 pub struct PasswordResetResponse {
     /// The status.
@@ -73,6 +73,17 @@ pub struct PasswordResetResponse {
 /// `Host` / TLS headers) because the same email can exist as a
 /// separate user in each tenant.
 /// Handle password reset request.
+#[utoipa::path(
+    post,
+    path = "/v1/password/reset",
+    request_body = PasswordResetRequest,
+    responses(
+        (status = 200, description = "Always `status: sent` (enumeration-safe); short_code present in dev mode", body = PasswordResetResponse),
+        (status = 429, description = "Rate limit exceeded"),
+    ),
+    security(),
+    tag = "auth",
+)]
 pub async fn password_reset_request(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -164,7 +175,7 @@ pub async fn password_reset_request(
     }
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
 /// Request body for passwordresetconfirm.
 pub struct PasswordResetConfirmRequest {
     /// The token.
@@ -173,7 +184,7 @@ pub struct PasswordResetConfirmRequest {
     pub new_password: String,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, utoipa::ToSchema)]
 /// Response payload for passwordresetconfirm.
 pub struct PasswordResetConfirmResponse {
     /// The status.
@@ -182,6 +193,18 @@ pub struct PasswordResetConfirmResponse {
 
 /// `POST /v1/password/reset/confirm` — set a new password with a reset token.
 /// Handle password reset confirm.
+#[utoipa::path(
+    post,
+    path = "/v1/password/reset/confirm",
+    request_body = PasswordResetConfirmRequest,
+    responses(
+        (status = 200, description = "Password updated", body = PasswordResetConfirmResponse),
+        (status = 400, description = "Token required or password too short"),
+        (status = 400, description = "Invalid or expired token"),
+    ),
+    security(),
+    tag = "auth",
+)]
 pub async fn password_reset_confirm(
     State(state): State<AppState>,
     Json(req): Json<PasswordResetConfirmRequest>,
@@ -293,7 +316,7 @@ pub async fn password_reset_confirm(
 
 // ── Email verification ─────────────────────────────────────────────────
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
 /// Request body for emailverify.
 pub struct EmailVerifyRequest {
     /// Email to verify. The user must already exist.
@@ -301,7 +324,7 @@ pub struct EmailVerifyRequest {
     pub email: String,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, utoipa::ToSchema)]
 /// Response payload for emailverify.
 pub struct EmailVerifyResponse {
     /// The status.
@@ -322,6 +345,17 @@ pub struct EmailVerifyResponse {
 /// no longer returned to unauthenticated callers (SEC-) —
 /// it is logged for dev workflows and delivered via Sentin8:Post.
 /// Handle email verify request.
+#[utoipa::path(
+    post,
+    path = "/v1/email/verify",
+    request_body = EmailVerifyRequest,
+    responses(
+        (status = 200, description = "Always `status: sent` (enumeration-safe)", body = EmailVerifyResponse),
+        (status = 429, description = "Rate limit exceeded"),
+    ),
+    security(),
+    tag = "auth",
+)]
 pub async fn email_verify_request(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -368,14 +402,14 @@ pub async fn email_verify_request(
     .into_response())
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
 /// Request body for emailverifyconfirm.
 pub struct EmailVerifyConfirmRequest {
     /// The token.
     pub token: String,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, utoipa::ToSchema)]
 /// Response payload for emailverifyconfirm.
 pub struct EmailVerifyConfirmResponse {
     /// The status.
@@ -386,6 +420,17 @@ pub struct EmailVerifyConfirmResponse {
 
 /// `POST /v1/email/verify/confirm` — confirm email verification with a token.
 /// Handle email verify confirm.
+#[utoipa::path(
+    post,
+    path = "/v1/email/verify/confirm",
+    request_body = EmailVerifyConfirmRequest,
+    responses(
+        (status = 200, description = "Email verified", body = EmailVerifyConfirmResponse),
+        (status = 400, description = "Token required, invalid, or expired"),
+    ),
+    security(),
+    tag = "auth",
+)]
 pub async fn email_verify_confirm(
     State(state): State<AppState>,
     Json(req): Json<EmailVerifyConfirmRequest>,

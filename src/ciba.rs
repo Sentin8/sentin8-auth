@@ -48,7 +48,7 @@ use crate::handlers::{extract_session_token, AppState};
 use crate::sessions::Session;
 
 /// CIBA authorization request (POST /oauth/bc-authorize).
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
 /// Request body for CIBA.
 pub struct CibaRequest {
     /// client identifier.
@@ -126,7 +126,7 @@ pub struct CibaRequest {
 }
 
 /// CIBA authorization response.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, utoipa::ToSchema)]
 /// Response payload for CIBA.
 pub struct CibaResponse {
     /// auth req identifier.
@@ -160,7 +160,7 @@ pub struct CibaTokenRequest {
 /// The approving user is the session's user; `user_id` /
 /// `org_id` / `env_id` in the body are ignored (kept as legacy wire fields
 /// for wire compatibility with the authenticator app).
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
 /// Request body for cibaapproval.
 pub struct CibaApprovalRequest {
     /// auth req identifier.
@@ -176,7 +176,18 @@ const DEFAULT_INTERVAL: u64 = 5;
 const DEFAULT_EXPIRY: u64 = 600;
 
 /// `POST /oauth/bc-authorize` — issue a CIBA auth_req_id.
-/// Handle bc authorize.
+#[utoipa::path(
+    post,
+    path = "/oauth/bc-authorize",
+    request_body = CibaRequest,
+    responses(
+        (status = 200, description = "Auth request issued (CIBA backchannel)", body = CibaResponse),
+        (status = 400, description = "Unknown client or invalid delivery mode"),
+        (status = 401, description = "Client authentication failed"),
+    ),
+    security(),
+    tag = "ciba",
+)]
 pub async fn bc_authorize(
     State(state): State<AppState>,
     headers: axum::http::HeaderMap,
@@ -366,6 +377,17 @@ pub async fn bc_authorize(
 /// and requested scopes. The UI then calls `POST /v1/ciba/assisted/complete`
 /// after the customer signs in.
 /// Handle CIBA assisted page.
+#[utoipa::path(
+    get,
+    path = "/v1/ciba/assisted/{auth_req_id}",
+    params(("auth_req_id" = String, Path, description = "CIBA auth request id")),
+    responses(
+        (status = 200, description = "Assisted sign-in page details (binding_message, short_code, client, scopes)", body = serde_json::Value),
+        (status = 404, description = "Unknown or expired auth_req_id"),
+    ),
+    security(),
+    tag = "ciba",
+)]
 pub async fn ciba_assisted_page(
     State(state): State<AppState>,
     Path(auth_req_id): Path<String>,
@@ -413,6 +435,19 @@ pub async fn ciba_assisted_page(
 /// `org_id` / `env_id`, and marks the CIBA request `approved`. Single-use:
 /// a second call returns the existing status without re-binding.
 /// Handle CIBA assisted complete.
+#[utoipa::path(
+    post,
+    path = "/v1/ciba/assisted/{auth_req_id}/complete",
+    params(("auth_req_id" = String, Path, description = "CIBA auth request id")),
+    responses(
+        (status = 200, description = "CIBA request bound to the signed-in customer (single-use)", body = serde_json::Value),
+        (status = 401, description = "No customer session"),
+        (status = 404, description = "Unknown auth_req_id"),
+        (status = 409, description = "Already completed (status returned, no re-bind)"),
+    ),
+    security(),
+    tag = "ciba",
+)]
 pub async fn ciba_assisted_complete(
     State(state): State<AppState>,
     headers: axum::http::HeaderMap,
@@ -503,6 +538,18 @@ pub async fn ciba_assisted_complete(
 /// `user_id` field in the body is ignored. Knowledge of an `auth_req_id`
 /// alone can no longer bind an arbitrary user to a CIBA request.
 /// Handle CIBA approve.
+#[utoipa::path(
+    post,
+    path = "/v1/ciba/approve",
+    request_body = CibaApprovalRequest,
+    responses(
+        (status = 200, description = "Approval recorded (the approving user is the SESSION's user)", body = serde_json::Value),
+        (status = 400, description = "Unknown auth_req_id"),
+        (status = 401, description = "No session — approval requires an authenticated user"),
+    ),
+    security(),
+    tag = "ciba",
+)]
 pub async fn ciba_approve(
     State(state): State<AppState>,
     headers: axum::http::HeaderMap,

@@ -43,7 +43,7 @@ use crate::handlers::AppState;
 // ── SCIM resource types ─────────────────────────────────────────────────
 
 /// SCIM 2.0 list response (RFC 7644 ).
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, utoipa::ToSchema)]
 /// Response payload for scimlist.
 pub struct ScimListResponse {
     /// The schemas.
@@ -63,7 +63,7 @@ pub struct ScimListResponse {
 }
 
 /// SCIM 2.0 user resource (RFC 7643 — subset).
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, utoipa::ToSchema)]
 /// The scimuser type.
 pub struct ScimUser {
     /// The schemas.
@@ -98,7 +98,7 @@ pub struct ScimUser {
     pub last_modified: Option<String>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, utoipa::ToSchema)]
 /// The scimname type.
 pub struct ScimName {
     #[serde(skip_serializing_if = "Option::is_none", rename = "givenName")]
@@ -109,7 +109,7 @@ pub struct ScimName {
     pub family_name: Option<String>,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, utoipa::ToSchema)]
 /// The scimemail type.
 pub struct ScimEmail {
     /// The value.
@@ -119,7 +119,7 @@ pub struct ScimEmail {
     pub primary: bool,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, utoipa::ToSchema)]
 /// The scimphone type.
 pub struct ScimPhone {
     /// The value.
@@ -131,7 +131,7 @@ fn default_true() -> bool {
 }
 
 /// SCIM 2.0 error response (RFC 7644 ).
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, utoipa::ToSchema)]
 /// Errors returned by SCIM.
 pub struct ScimError {
     /// The schemas.
@@ -145,7 +145,7 @@ pub struct ScimError {
 
 // ── Query params ─────────────────────────────────────────────────────────
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::IntoParams, utoipa::ToSchema)]
 /// The scimquery type.
 pub struct ScimQuery {
     #[serde(default)]
@@ -161,7 +161,7 @@ pub struct ScimQuery {
 
 // ── Create user request ──────────────────────────────────────────────────
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
 /// The scimcreateuser type.
 pub struct ScimCreateUser {
     #[serde(default)]
@@ -184,7 +184,7 @@ pub struct ScimCreateUser {
     pub external_id: Option<String>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
 /// The scimcreatename type.
 pub struct ScimCreateName {
     #[serde(default, rename = "givenName")]
@@ -197,7 +197,7 @@ pub struct ScimCreateName {
 
 // ── Patch request (RFC 7644 ) ──────────────────────────────────────
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
 /// The scimpatchop type.
 pub struct ScimPatchOp {
     /// The op.
@@ -209,7 +209,7 @@ pub struct ScimPatchOp {
     pub value: Option<serde_json::Value>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
 /// Request body for scimpatch.
 pub struct ScimPatchRequest {
     #[serde(default)]
@@ -224,6 +224,18 @@ pub struct ScimPatchRequest {
 /// Supports SCIM filter: `userName eq "email"`, `emails.value co "text"`,
 /// `name.familyName sw "prefix"`. Falls back to listing all if no filter.
 /// List users.
+#[utoipa::path(
+    get,
+    path = "/scim/v2/Users",
+    params(ScimQuery),
+    responses(
+        (status = 200, description = "SCIM ListResponse (filter supported: userName eq, emails.value co, name.familyName sw)", body = ScimListResponse),
+        (status = 400, description = "Unsupported filter"),
+        (status = 401, description = "Caller authentication failed (M2M or bearer)"),
+    ),
+    security(("sentin8:auth:scim" = [])),
+    tag = "scim",
+)]
 pub async fn list_users(
     State(state): State<AppState>,
     headers: axum::http::HeaderMap,
@@ -308,7 +320,18 @@ pub async fn list_users(
 }
 
 /// `POST /scim/v2/Users` — create a user.
-/// Create user.
+#[utoipa::path(
+    post,
+    path = "/scim/v2/Users",
+    request_body = ScimCreateUser,
+    responses(
+        (status = 201, description = "User created", body = ScimUser),
+        (status = 401, description = "Caller authentication failed"),
+        (status = 409, description = "User already exists"),
+    ),
+    security(("sentin8:auth:scim" = [])),
+    tag = "scim",
+)]
 pub async fn create_user(
     State(state): State<AppState>,
     headers: axum::http::HeaderMap,
@@ -368,7 +391,18 @@ pub async fn create_user(
 }
 
 /// `GET /scim/v2/Users/{id}` — get a user.
-/// Fetch user.
+#[utoipa::path(
+    get,
+    path = "/scim/v2/Users/{id}",
+    params(("id" = String, Path, description = "SCIM user id")),
+    responses(
+        (status = 200, description = "The SCIM user", body = ScimUser),
+        (status = 404, description = "No such user"),
+        (status = 401, description = "Caller authentication failed"),
+    ),
+    security(("sentin8:auth:scim" = [])),
+    tag = "scim",
+)]
 pub async fn get_user(
     State(state): State<AppState>,
     headers: axum::http::HeaderMap,
@@ -393,7 +427,19 @@ pub async fn get_user(
 }
 
 /// `PUT /scim/v2/Users/{id}` — replace a user.
-/// Handle replace user.
+#[utoipa::path(
+    put,
+    path = "/scim/v2/Users/{id}",
+    params(("id" = String, Path, description = "SCIM user id")),
+    request_body = ScimCreateUser,
+    responses(
+        (status = 200, description = "User replaced", body = ScimUser),
+        (status = 404, description = "No such user"),
+        (status = 401, description = "Caller authentication failed"),
+    ),
+    security(("sentin8:auth:scim" = [])),
+    tag = "scim",
+)]
 pub async fn replace_user(
     State(state): State<AppState>,
     headers: axum::http::HeaderMap,
@@ -447,7 +493,20 @@ pub async fn replace_user(
 }
 
 /// `PATCH /scim/v2/Users/{id}` — partial update.
-/// Handle patch user.
+#[utoipa::path(
+    patch,
+    path = "/scim/v2/Users/{id}",
+    params(("id" = String, Path, description = "SCIM user id")),
+    request_body = ScimPatchRequest,
+    responses(
+        (status = 200, description = "User patched", body = ScimUser),
+        (status = 400, description = "Unsupported patch op"),
+        (status = 404, description = "No such user"),
+        (status = 401, description = "Caller authentication failed"),
+    ),
+    security(("sentin8:auth:scim" = [])),
+    tag = "scim",
+)]
 pub async fn patch_user(
     State(state): State<AppState>,
     headers: axum::http::HeaderMap,
@@ -552,7 +611,18 @@ pub async fn patch_user(
 }
 
 /// `DELETE /scim/v2/Users/{id}` — deactivate a user.
-/// Delete user.
+#[utoipa::path(
+    delete,
+    path = "/scim/v2/Users/{id}",
+    params(("id" = String, Path, description = "SCIM user id")),
+    responses(
+        (status = 204, description = "User deactivated"),
+        (status = 404, description = "No such user"),
+        (status = 401, description = "Caller authentication failed"),
+    ),
+    security(("sentin8:auth:scim" = [])),
+    tag = "scim",
+)]
 pub async fn delete_user(
     State(state): State<AppState>,
     headers: axum::http::HeaderMap,
@@ -586,7 +656,15 @@ pub async fn delete_user(
 }
 
 /// `GET /scim/v2/ServiceProviderConfig` — capabilities metadata.
-/// Handle service provider config.
+#[utoipa::path(
+    get,
+    path = "/scim/v2/ServiceProviderConfig",
+    responses(
+        (status = 200, description = "SCIM service-provider capabilities", body = serde_json::Value),
+    ),
+    security(("sentin8:auth:scim" = [])),
+    tag = "scim",
+)]
 pub async fn service_provider_config() -> Json<serde_json::Value> {
     Json(serde_json::json!({
         "schemas": ["urn:ietf:params:scim:schemas:core:2.0:ServiceProviderConfig"],
@@ -610,6 +688,17 @@ pub async fn service_provider_config() -> Json<serde_json::Value> {
 /// memberships to mirror them. Group *management* (create/update/delete)
 /// stays on the Auth admin API — SCIM group writes are not exposed.
 /// List groups.
+#[utoipa::path(
+    get,
+    path = "/scim/v2/Groups",
+    params(ScimQuery),
+    responses(
+        (status = 200, description = "SCIM ListResponse of group mirrors (read-only directory sync)", body = serde_json::Value),
+        (status = 401, description = "Caller authentication failed"),
+    ),
+    security(("sentin8:auth:scim" = [])),
+    tag = "scim",
+)]
 pub async fn list_groups(
     State(state): State<AppState>,
     headers: axum::http::HeaderMap,
@@ -644,7 +733,15 @@ pub async fn list_groups(
 }
 
 /// `GET /scim/v2/ResourceTypes` — supported resource types.
-/// Handle resource types.
+#[utoipa::path(
+    get,
+    path = "/scim/v2/ResourceTypes",
+    responses(
+        (status = 200, description = "SCIM resource types (Users, Groups)", body = serde_json::Value),
+    ),
+    security(("sentin8:auth:scim" = [])),
+    tag = "scim",
+)]
 pub async fn resource_types() -> Json<serde_json::Value> {
     Json(serde_json::json!({
         "schemas": ["urn:ietf:params:scim:api:messages:2.0:ListResponse"],
@@ -824,7 +921,7 @@ fn row_to_scim_user(r: &sqlx::postgres::PgRow) -> ScimUser {
 /// (`POST /scim/v2/Users`, `PUT/PATCH/DELETE /scim/v2/Users/{id}`),
 /// `bulkId` correlates a create response back to the caller's batch
 /// entries, `data` is the operation's request body.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
 pub struct ScimBulkOperation {
     /// The HTTP verb of the wrapped per-user operation.
     pub method: String,
@@ -840,7 +937,7 @@ pub struct ScimBulkOperation {
 
 /// Request body of `POST /scim/v2/Bulk`.
 /// Request body of `POST /scim/v2/Bulk`.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
 pub struct ScimBulkRequest {
     /// SCIM schema URIs (caller-supplied, informational).
     #[serde(default)]
@@ -855,7 +952,7 @@ pub struct ScimBulkRequest {
 
 /// Per-operation result entry.
 /// Per-operation result entry.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct ScimBulkOperationResult {
     /// The echoed HTTP verb.
     pub method: String,
@@ -873,7 +970,7 @@ pub struct ScimBulkOperationResult {
 
 /// Response body of `POST /scim/v2/Bulk`.
 /// Response body of `POST /scim/v2/Bulk`.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct ScimBulkResponse {
     /// SCIM schema URIs.
     pub schemas: Vec<String>,
@@ -893,6 +990,17 @@ pub struct ScimBulkResponse {
 /// individual endpoints run (create/replace/delete; patch maps to
 /// replace) — no second write path, no partial-batch semantics beyond
 /// `failOnErrors`. Authenticated once for the whole batch.
+#[utoipa::path(
+    post,
+    path = "/scim/v2/Bulk",
+    request_body = ScimBulkRequest,
+    responses(
+        (status = 200, description = "Per-operation results", body = ScimBulkResponse),
+        (status = 401, description = "Caller authentication failed"),
+    ),
+    security(("sentin8:auth:scim" = [])),
+    tag = "scim",
+)]
 pub async fn bulk(
     State(state): State<AppState>,
     headers: axum::http::HeaderMap,

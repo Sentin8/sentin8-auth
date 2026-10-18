@@ -123,7 +123,7 @@ fn trusted_jwks(cfg: &WalletConnectionConfig) -> Vec<(String, Vec<serde_json::Va
 
 const VP_PENDING_TTL_SECS: u64 = 600;
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::IntoParams, utoipa::ToSchema)]
 /// The walletauthorizequery type.
 pub struct WalletAuthorizeQuery {
     /// The OAuth client starting the sign-in (bound into the issued code).
@@ -141,6 +141,17 @@ pub struct WalletAuthorizeQuery {
 /// `GET /oauth/authorize?prompt=wallet` — build the OID4VP authorization
 /// request as a signed request object + `openid4vp://` deep link.
 /// Handle wallet authorize.
+#[utoipa::path(
+    get,
+    path = "/oauth/authorize",
+    params(WalletAuthorizeQuery),
+    responses(
+        (status = 200, description = "OID4VP authorization request (signed request object + openid4vp:// deep link)", body = serde_json::Value),
+        (status = 404, description = "No wallet connection configured for this env"),
+    ),
+    security(),
+    tag = "wallet",
+)]
 pub async fn wallet_authorize(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -203,7 +214,7 @@ pub async fn wallet_authorize(
     })))
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
 /// Request body for vpresponse.
 pub struct VpResponseRequest {
     /// The vp token.
@@ -218,6 +229,18 @@ pub struct VpResponseRequest {
 
 /// `POST /oauth/vp/response` — the wallet's `direct_post` callback.
 /// Handle vp response.
+#[utoipa::path(
+    post,
+    path = "/oauth/vp/response",
+    request_body = VpResponseRequest,
+    responses(
+        (status = 200, description = "Presentation accepted (single-use pending request resolved)", body = serde_json::Value),
+        (status = 400, description = "Unknown or expired presentation request"),
+        (status = 401, description = "Presentation verification failed"),
+    ),
+    security(),
+    tag = "wallet",
+)]
 pub async fn vp_response(
     State(state): State<AppState>,
     _headers: HeaderMap,
@@ -492,6 +515,15 @@ fn sha_hex(input: &str) -> String {
 /// `GET /v1/auth/wallet/metadata` — public wallet metadata (formats, trusted
 /// issuers, the required presentation definition, the response endpoint).
 /// Handle wallet metadata.
+#[utoipa::path(
+    get,
+    path = "/v1/auth/wallet/metadata",
+    responses(
+        (status = 200, description = "Wallet connection metadata (formats, trusted issuers, presentation definition, response endpoint)", body = serde_json::Value),
+    ),
+    security(),
+    tag = "wallet",
+)]
 pub async fn wallet_metadata(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -521,7 +553,7 @@ pub async fn wallet_metadata(
 /// `POST /oauth/credentials` — credential offer: records the issuance
 /// intent and returns the offer the wallet presents at its issuer.
 /// Authenticated via the user's session (the credential is about THEM).
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
 /// Request body for credentialoffer.
 pub struct CredentialOfferRequest {
     /// The credential type (e.g. 'VerifiedPersonCredential').
@@ -537,6 +569,18 @@ pub struct CredentialOfferRequest {
 }
 
 /// Handle credential offer.
+#[utoipa::path(
+    post,
+    path = "/oauth/credentials",
+    request_body = CredentialOfferRequest,
+    responses(
+        (status = 200, description = "Credential offer created for the signed-in user", body = serde_json::Value),
+        (status = 400, description = "Unknown credential type"),
+        (status = 401, description = "Session required"),
+    ),
+    security(),
+    tag = "wallet",
+)]
 pub async fn credential_offer(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -585,7 +629,7 @@ pub async fn credential_offer(
 
 /// `POST /oauth/credentials/issue` — the wallet presents its authorization
 /// (the pending credential id + its key) and receives the signed SD-JWT.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
 /// Request body for credentialissue.
 pub struct CredentialIssueRequest {
     /// credential identifier.
@@ -596,6 +640,18 @@ pub struct CredentialIssueRequest {
 }
 
 /// Handle credential issue.
+#[utoipa::path(
+    post,
+    path = "/oauth/credentials/issue",
+    request_body = CredentialIssueRequest,
+    responses(
+        (status = 200, description = "Credential issued (with Status List 2021 enrollment)", body = serde_json::Value),
+        (status = 401, description = "Session required"),
+        (status = 404, description = "Unknown offer"),
+    ),
+    security(),
+    tag = "wallet",
+)]
 pub async fn credential_issue(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -693,6 +749,17 @@ pub async fn credential_issue(
 /// compressed bitstring for this issuer's credentials (index = the
 /// credential's issuance ordinal, per-credential status lists).
 /// Handle credential status.
+#[utoipa::path(
+    get,
+    path = "/oauth/credentials/status/{id}",
+    params(("id" = Uuid, Path, description = "Issuance ordinal (status list id)")),
+    responses(
+        (status = 200, description = "Status List 2021 compressed bitstring", body = serde_json::Value),
+        (status = 404, description = "Unknown status list"),
+    ),
+    security(),
+    tag = "wallet",
+)]
 pub async fn credential_status(
     State(state): State<AppState>,
     Path(id): Path<Uuid>,
@@ -714,6 +781,18 @@ pub async fn credential_status(
 
 /// `POST /oauth/credentials/revoke/{id}` — revoke (admin).
 /// Handle credential revoke.
+#[utoipa::path(
+    post,
+    path = "/oauth/credentials/revoke/{id}",
+    params(("id" = Uuid, Path, description = "Issuance ordinal (status list id)")),
+    responses(
+        (status = 200, description = "Credential revoked in its status list", body = serde_json::Value),
+        (status = 403, description = "Admin scope required"),
+        (status = 404, description = "Unknown status list"),
+    ),
+    security(("sentin8:auth:admin" = [])),
+    tag = "wallet",
+)]
 pub async fn credential_revoke(
     State(state): State<AppState>,
     headers: HeaderMap,

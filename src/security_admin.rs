@@ -29,7 +29,7 @@ use crate::handlers::AppState;
 use crate::sentin8or_auth::require_sentin8or_access_with_env;
 
 /// The high-level selection (form body of the security page).
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
 /// Request body for securityselection.
 pub struct SecuritySelectionRequest {
     /// The profile.
@@ -45,7 +45,7 @@ pub struct SecuritySelectionRequest {
 }
 
 /// The detail-flags write (form body of the detail page).
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
 /// Request body for securitydetail.
 pub struct SecurityDetailRequest {
     /// The require par.
@@ -69,7 +69,7 @@ pub struct SecurityDetailRequest {
 }
 
 /// The rendered high-level selection (page prefill / CLI verify shape).
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, utoipa::ToSchema)]
 /// Response payload for securityselection.
 pub struct SecuritySelectionResponse {
     /// env identifier.
@@ -237,7 +237,17 @@ pub async fn read_detail_flags(
 
 /// `GET /v1/admin/security` — read the current high-level selection
 /// (prefill for the security page + CLI verify).
-/// Fetch security selection.
+#[utoipa::path(
+    get,
+    path = "/v1/admin/security",
+    params(crate::admin::TargetEnvQuery),
+    responses(
+        (status = 200, description = "The env's security selection", body = SecuritySelectionResponse),
+        (status = 403, description = "Caller lacks the auth admin scope"),
+    ),
+    security(("sentin8:auth:admin" = [])),
+    tag = "auth",
+)]
 pub async fn get_security_selection(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -253,7 +263,19 @@ pub async fn get_security_selection(
 /// profile / extensions / overlay **resets the detail flags** to the
 /// profile's defaults (adjusted for the chosen extensions/overlay),
 /// then upserts the env row. The overlay row is written alongside.
-/// Handle PUT security selection.
+#[utoipa::path(
+    post,
+    path = "/v1/admin/security",
+    params(crate::admin::TargetEnvQuery),
+    request_body = SecuritySelectionRequest,
+    responses(
+        (status = 200, description = "Selection stored (detail flags reset to the profile defaults)", body = SecuritySelectionResponse),
+        (status = 400, description = "Unknown profile or extension"),
+        (status = 403, description = "Caller lacks the auth admin scope"),
+    ),
+    security(("sentin8:auth:admin" = [])),
+    tag = "auth",
+)]
 pub async fn put_security_selection(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -386,7 +408,18 @@ pub async fn put_security_selection(
 /// `POST /v1/admin/security/detail` — the detail-page submit: write the
 /// individual `require_*` flags onto the env row **without** touching the
 /// high-level selection. Only the provided fields change (partial update).
-/// Handle PUT security detail.
+#[utoipa::path(
+    post,
+    path = "/v1/admin/security/detail",
+    params(crate::admin::TargetEnvQuery),
+    request_body = SecurityDetailRequest,
+    responses(
+        (status = 200, description = "Detail flags stored (partial update)", body = SecuritySelectionResponse),
+        (status = 403, description = "Caller lacks the auth admin scope"),
+    ),
+    security(("sentin8:auth:admin" = [])),
+    tag = "auth",
+)]
 pub async fn put_security_detail(
     State(state): State<AppState>,
     headers: HeaderMap,

@@ -53,7 +53,7 @@ pub const COSE_ALG_ES256: i64 = -7;
 
 // ── Requests / Responses ───────────────────────────────────────────────
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
 /// Request body for enrollbegin.
 pub struct EnrollBeginRequest {
     #[serde(default)]
@@ -65,7 +65,7 @@ pub struct EnrollBeginRequest {
     pub authenticator_attachment: Option<String>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, utoipa::ToSchema)]
 /// Response payload for enrollbegin.
 pub struct EnrollBeginResponse {
     /// Base64url-encoded challenge.
@@ -91,7 +91,7 @@ pub struct EnrollBeginResponse {
     pub attestation: String,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, utoipa::ToSchema)]
 /// The publickeycredentialparam type.
 pub struct PublicKeyCredentialParam {
     /// Credential type (`public-key`).
@@ -100,7 +100,7 @@ pub struct PublicKeyCredentialParam {
     pub alg: i64,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
 /// Request body for enrollfinish.
 pub struct EnrollFinishRequest {
     /// challenge identifier.
@@ -116,7 +116,7 @@ pub struct EnrollFinishRequest {
     pub client_data_json: String,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, utoipa::ToSchema)]
 /// Response payload for enrollfinish.
 pub struct EnrollFinishResponse {
     /// factor identifier.
@@ -125,7 +125,7 @@ pub struct EnrollFinishResponse {
     pub status: String,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
 /// Request body for verifybegin.
 pub struct VerifyBeginRequest {
     /// Pending session token id returned by `POST /v1/sign-in` when MFA is
@@ -134,7 +134,7 @@ pub struct VerifyBeginRequest {
     pub pending_token_id: String,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, utoipa::ToSchema)]
 /// Response payload for verifybegin.
 pub struct VerifyBeginResponse {
     /// The challenge.
@@ -149,7 +149,7 @@ pub struct VerifyBeginResponse {
     pub user_verification: String,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
 /// Request body for verifyfinish.
 pub struct VerifyFinishRequest {
     /// challenge identifier.
@@ -167,7 +167,7 @@ pub struct VerifyFinishRequest {
     pub signature: String,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, utoipa::ToSchema)]
 /// Response payload for verifyfinish.
 pub struct VerifyFinishResponse {
     /// The status.
@@ -180,7 +180,17 @@ pub struct VerifyFinishResponse {
 // ── Handlers ───────────────────────────────────────────────────────────
 
 /// `POST /v1/passkey/enroll/begin` — start passkey enrollment.
-/// Enroll begin.
+#[utoipa::path(
+    post,
+    path = "/v1/passkey/enroll/begin",
+    request_body = EnrollBeginRequest,
+    responses(
+        (status = 200, description = "WebAuthn creation options for the enrollment ceremony", body = EnrollBeginResponse),
+        (status = 401, description = "Not authenticated (bearer or session)"),
+    ),
+    security(),
+    tag = "passkey",
+)]
 pub async fn enroll_begin(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -267,7 +277,20 @@ pub async fn enroll_begin(
 }
 
 /// `POST /v1/passkey/enroll/finish` — validate attestation, store public key.
-/// Enroll finish.
+#[utoipa::path(
+    post,
+    path = "/v1/passkey/enroll/finish",
+    request_body = EnrollFinishRequest,
+    responses(
+        (status = 200, description = "Passkey stored and factor activated", body = EnrollFinishResponse),
+        (status = 400, description = "Invalid attestation or client data"),
+        (status = 404, description = "Challenge not found"),
+        (status = 409, description = "Challenge already consumed"),
+        (status = 410, description = "Challenge expired"),
+    ),
+    security(),
+    tag = "passkey",
+)]
 pub async fn enroll_finish(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -424,7 +447,17 @@ pub async fn enroll_finish(
 }
 
 /// `POST /v1/passkey/verify/begin` — start passkey sign-in.
-/// Verify begin.
+#[utoipa::path(
+    post,
+    path = "/v1/passkey/verify/begin",
+    request_body = VerifyBeginRequest,
+    responses(
+        (status = 200, description = "WebAuthn assertion options for the sign-in ceremony", body = VerifyBeginResponse),
+        (status = 404, description = "Pending session not found or no active passkey factor"),
+    ),
+    security(),
+    tag = "passkey",
+)]
 pub async fn verify_begin(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -487,7 +520,21 @@ pub async fn verify_begin(
 }
 
 /// `POST /v1/passkey/verify/finish` — validate assertion, activate session.
-/// Verify finish.
+#[utoipa::path(
+    post,
+    path = "/v1/passkey/verify/finish",
+    request_body = VerifyFinishRequest,
+    responses(
+        (status = 200, description = "Assertion verified: the pending sign-in session is activated", body = VerifyFinishResponse),
+        (status = 400, description = "Invalid assertion or client data"),
+        (status = 401, description = "Signature verification failed"),
+        (status = 404, description = "Challenge not found"),
+        (status = 409, description = "Challenge already consumed"),
+        (status = 410, description = "Challenge expired"),
+    ),
+    security(),
+    tag = "passkey",
+)]
 pub async fn verify_finish(
     State(state): State<AppState>,
     headers: HeaderMap,

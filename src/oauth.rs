@@ -731,7 +731,7 @@ impl IntoResponse for TokenError {
 
 // ── OIDC Discovery ─────────────────────────────────────────────────────
 
-#[derive(Serialize)]
+#[derive(Serialize, utoipa::ToSchema)]
 /// The discoverydocument type.
 pub struct DiscoveryDocument {
     /// The issuer.
@@ -801,7 +801,7 @@ pub struct DiscoveryDocument {
 }
 
 /// mTLS endpoint aliases per RFC 8705.
-#[derive(Serialize)]
+#[derive(Serialize, utoipa::ToSchema)]
 /// The mtlsendpointaliases type.
 pub struct MtlsEndpointAliases {
     /// The token endpoint.
@@ -811,6 +811,15 @@ pub struct MtlsEndpointAliases {
 }
 
 /// Handle discovery.
+#[utoipa::path(
+    get,
+    path = "/.well-known/openid-configuration",
+    responses(
+        (status = 200, description = "OIDC discovery document (issuer-resolved)", body = DiscoveryDocument),
+    ),
+    security(),
+    tag = "oauth",
+)]
 pub async fn discovery(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -1124,7 +1133,7 @@ async fn fetch_profile_row(
 // ── Security Profile Admin API─────────────────────────
 
 /// Response for `GET /v1/security-profile`.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, utoipa::ToSchema)]
 /// Response payload for securityprofile.
 pub struct SecurityProfileResponse {
     /// The scope.
@@ -1158,7 +1167,7 @@ pub struct SecurityProfileResponse {
 }
 
 /// Query params for `GET /v1/security-profile`.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::IntoParams, utoipa::ToSchema)]
 /// The securityprofilequery type.
 pub struct SecurityProfileQuery {
     /// `platform`, `org`, or `env`.
@@ -1168,7 +1177,7 @@ pub struct SecurityProfileQuery {
 }
 
 /// Request body for `PUT /v1/security-profile`.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
 /// Request body for updatesecurityprofile.
 pub struct UpdateSecurityProfileRequest {
     /// The scope.
@@ -1215,7 +1224,16 @@ pub struct UpdateSecurityProfileRequest {
 
 /// `GET /v1/security-profile` — return the effective security profile for
 /// the resolved tenant (platform/org/env).
-/// Fetch security profile API.
+#[utoipa::path(
+    get,
+    path = "/v1/security-profile",
+    params(SecurityProfileQuery),
+    responses(
+        (status = 200, description = "The effective security profile", body = SecurityProfileResponse),
+    ),
+    security(),
+    tag = "oauth",
+)]
 pub async fn get_security_profile_api(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -1286,6 +1304,18 @@ pub async fn get_security_profile_api(
 /// the caller to have access to that org/env (RBAC) — enforced by passing
 /// the target as `target_env_id` for env-scoped rows.
 /// Handle PUT security profile API.
+#[utoipa::path(
+    put,
+    path = "/v1/security-profile",
+    request_body = UpdateSecurityProfileRequest,
+    responses(
+        (status = 200, description = "Profile stored (admin-guarded; platform operators manage any scope row, org/env rows are RBAC-checked)", body = SecurityProfileResponse),
+        (status = 400, description = "Unknown profile name"),
+        (status = 403, description = "Caller lacks the write-mode admin scope"),
+    ),
+    security(("sentin8:sys:admin" = [])),
+    tag = "oauth",
+)]
 pub async fn put_security_profile_api(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -1476,7 +1506,7 @@ fn resolve_issuer(config: &crate::config::AuthConfig, headers: &HeaderMap) -> St
 
 // ── Authorize ──────────────────────────────────────────────────────────
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::IntoParams, utoipa::ToSchema)]
 /// The authorizequery type.
 pub struct AuthorizeQuery {
     /// Required for non-PAR flows; optional when using PAR (resolved from Valkey).
@@ -1598,7 +1628,7 @@ async fn resolve_par_request(state: &AppState, request_uri: &str) -> Option<serd
 }
 
 /// PAR endpoint (RFC 9126) — accepts a pushed authorization request.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
 /// Request body for par.
 pub struct ParRequest {
     /// The response type.
@@ -1641,7 +1671,7 @@ pub struct ParRequest {
     pub client_assertion: Option<String>,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, utoipa::ToSchema)]
 /// Response payload for par.
 pub struct ParResponse {
     /// The request URI.
@@ -1651,6 +1681,28 @@ pub struct ParResponse {
 }
 
 /// Handle pushed authorization request.
+#[utoipa::path(
+    post,
+    path = "/oauth/par",
+    params(
+        ("response_type" = String, Query, description = "Only `code`"),
+        ("client_id" = String, Query, description = "Client id"),
+        ("redirect_uri" = String, Query, description = "Registered redirect URI"),
+        ("scope" = String, Query, description = "Requested scope"),
+        ("state" = String, Query, description = "Caller state"),
+        ("code_challenge" = String, Query, description = "PKCE challenge"),
+        ("code_challenge_method" = String, Query, description = "PKCE method"),
+        ("nonce" = String, Query, description = "OIDC nonce"),
+        ("resource" = String, Query, description = "RFC 8707 resource indicator"),
+    ),
+    responses(
+        (status = 200, description = "Request URI issued (RFC 9126)", body = ParResponse),
+        (status = 400, description = "Unsupported response_type or invalid client"),
+        (status = 401, description = "Client authentication failed"),
+    ),
+    security(),
+    tag = "oauth",
+)]
 pub async fn pushed_authorization_request(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -1755,6 +1807,17 @@ struct AuthorizeParams {
 /// the UI calls back to issue an auth code. For non-interactive flows (already
 /// has a session), it issues the code directly.
 /// Authorize it.
+#[utoipa::path(
+    get,
+    path = "/oauth/authorize",
+    params(AuthorizeQuery),
+    responses(
+        (status = 302, description = "Redirect to the hosted sign-in UI (params preserved) or straight back to the client with the code when a session exists"),
+        (status = 400, description = "Invalid authorization request (unknown client, bad redirect_uri/response_type)"),
+    ),
+    security(),
+    tag = "oauth",
+)]
 pub async fn authorize(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -2078,7 +2141,7 @@ pub async fn authorize(
 
 /// Continue the authorize flow after the user has authenticated via the hosted UI.
 /// This is called by the UI after sign-in to issue the authorization code.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
 /// Request body for authorizecontinue.
 pub struct AuthorizeContinueRequest {
     /// client identifier.
@@ -2123,6 +2186,18 @@ pub struct AuthorizeContinueRequest {
 }
 
 /// Authorize continue.
+#[utoipa::path(
+    post,
+    path = "/oauth/authorize/continue",
+    request_body = AuthorizeContinueRequest,
+    responses(
+        (status = 302, description = "Redirect to the client's redirect_uri with the issued code (or an error response per response_mode)"),
+        (status = 400, description = "Invalid request (unknown client/session, bad redirect_uri or scope)"),
+        (status = 401, description = "Session invalid or expired"),
+    ),
+    security(),
+    tag = "oauth",
+)]
 pub async fn authorize_continue(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -2271,7 +2346,7 @@ pub async fn authorize_continue(
 
 // ── Token ──────────────────────────────────────────────────────────────
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
 /// Request body for token.
 pub struct TokenRequest {
     /// The grant type.
@@ -2336,7 +2411,7 @@ pub struct TokenRequest {
     pub client_assertion_type: Option<String>,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, utoipa::ToSchema)]
 /// Response payload for token.
 pub struct TokenResponse {
     /// The access token.
@@ -2357,6 +2432,29 @@ pub struct TokenResponse {
 }
 
 /// Handle token.
+#[utoipa::path(
+    post,
+    path = "/oauth/token",
+    params(
+        ("grant_type" = String, Query, description = "authorization_code | refresh_token | client_credentials | urn:ietf:params:oauth:grant-type:device_code | urn:openid:params:grant-type:ciba"),
+        ("code" = String, Query, description = "Authorization code (authorization_code grant)"),
+        ("redirect_uri" = String, Query, description = "The redirect URI used at authorize"),
+        ("client_id" = String, Query, description = "Client id (or Basic auth)"),
+        ("client_secret" = String, Query, description = "Client secret (confidential clients, or Basic auth)"),
+        ("code_verifier" = String, Query, description = "PKCE verifier"),
+        ("refresh_token" = String, Query, description = "Refresh token (refresh_token grant)"),
+        ("scope" = String, Query, description = "Requested scope (client_credentials)"),
+        ("auth_req_id" = String, Query, description = "CIBA auth_req_id"),
+        ("device_code" = String, Query, description = "Device code (device_code grant)"),
+    ),
+    responses(
+        (status = 200, description = "Token response (access_token, token_type, expires_in, refresh_token?, id_token?)", body = TokenResponse),
+        (status = 400, description = "invalid_request / invalid_grant / unsupported_grant_type (RFC 6749 §5.2 error JSON)"),
+        (status = 401, description = "invalid_client (Basic auth rejected)"),
+    ),
+    security(),
+    tag = "oauth",
+)]
 pub async fn token(
     State(state): State<AppState>,
     headers: axum::http::HeaderMap,
@@ -3717,7 +3815,7 @@ async fn handle_publisher_token_exchange(
 
 // ── Introspect ──────────────────────────────────────────────────────────
 
-#[derive(Serialize)]
+#[derive(Serialize, utoipa::ToSchema)]
 /// Response payload for introspection.
 pub struct IntrospectionResponse {
     /// The active.
@@ -3749,6 +3847,21 @@ pub struct IntrospectionResponse {
 }
 
 /// Introspect it.
+#[utoipa::path(
+    post,
+    path = "/oauth/introspect",
+    params(
+        ("token" = String, Query, description = "The token to introspect"),
+        ("client_id" = String, Query, description = "Caller client (or Basic auth)"),
+        ("client_secret" = String, Query, description = "Caller secret (or Basic auth)"),
+    ),
+    responses(
+        (status = 200, description = "RFC 7662 introspection response (active + claims when active)", body = IntrospectionResponse),
+        (status = 401, description = "Caller authentication failed (RFC 7662 requires client auth)"),
+    ),
+    security(),
+    tag = "oauth",
+)]
 pub async fn introspect(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -3919,7 +4032,7 @@ async fn render_introspection(
     }
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
 /// Request body for introspect.
 pub struct IntrospectRequest {
     /// The token.
@@ -3934,7 +4047,7 @@ pub struct IntrospectRequest {
 
 // ── Revoke (RFC 7009 — SEC-) ─────────────────────────────────
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
 /// Request body for revoke.
 pub struct RevokeRequest {
     /// The token.
@@ -3959,6 +4072,21 @@ pub struct RevokeRequest {
 /// lifetime. Per RFC 7009 the endpoint returns 200 even for unknown
 /// tokens (after client auth) — never an oracle.
 /// Revoke it.
+#[utoipa::path(
+    post,
+    path = "/oauth/revoke",
+    params(
+        ("token" = String, Query, description = "The token to revoke"),
+        ("client_id" = String, Query, description = "Caller client (or Basic auth)"),
+        ("client_secret" = String, Query, description = "Caller secret (or Basic auth)"),
+    ),
+    responses(
+        (status = 200, description = "Revoked (RFC 7009: 200 even for unknown tokens)"),
+        (status = 401, description = "Client authentication failed"),
+    ),
+    security(),
+    tag = "oauth",
+)]
 pub async fn revoke(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -4046,6 +4174,16 @@ pub async fn revoke(
 // ── UserInfo ────────────────────────────────────────────────────────────
 
 /// Handle userinfo.
+#[utoipa::path(
+    get,
+    path = "/oauth/userinfo",
+    responses(
+        (status = 200, description = "OIDC Standard Claims for the bearer subject", body = serde_json::Value),
+        (status = 401, description = "Missing/invalid/expired bearer token"),
+    ),
+    security(),
+    tag = "oauth",
+)]
 pub async fn userinfo(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -4270,6 +4408,16 @@ pub async fn userinfo(
 // ── Logout ──────────────────────────────────────────────────────────────
 
 /// Handle logout.
+#[utoipa::path(
+    get,
+    path = "/oauth/logout",
+    params(LogoutQuery),
+    responses(
+        (status = 302, description = "Redirect to the registered post_logout_redirect_uri (or the local sign-in page when unregistered)"),
+    ),
+    security(),
+    tag = "oauth",
+)]
 pub async fn logout(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -4343,7 +4491,7 @@ pub async fn logout(
         .into_response()
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::IntoParams, utoipa::ToSchema)]
 /// The logoutquery type.
 pub struct LogoutQuery {
     #[serde(default)]
@@ -4544,6 +4692,21 @@ fn glob_match_impl(p: &[char], pi: usize, t: &[char], ti: usize) -> bool {
 /// the device code is bound to it — the polling grant must present the
 /// same client.
 /// Handle device authorization.
+#[utoipa::path(
+    post,
+    path = "/oauth/device",
+    params(
+        ("client_id" = String, Query, description = "Requesting client id"),
+        ("scope" = String, Query, description = "Requested scope"),
+    ),
+    responses(
+        (status = 200, description = "Device code + user_code + verification_uri (RFC 8628 §3.2)", body = DeviceAuthResponse),
+        (status = 400, description = "Unknown client"),
+        (status = 401, description = "Client authentication failed"),
+    ),
+    security(),
+    tag = "oauth",
+)]
 pub async fn device_authorization(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -4977,6 +5140,19 @@ async fn handle_ciba_token(
 /// so knowledge of a user_code alone can no longer mint tokens for an
 /// arbitrary user.
 /// Handle device verify.
+#[utoipa::path(
+    post,
+    path = "/device/verify",
+    request_body = DeviceVerifyRequest,
+    responses(
+        (status = 200, description = "Device sign-in approved (polling grant armed for this user)", body = serde_json::Value),
+        (status = 400, description = "Unknown user_code"),
+        (status = 401, description = "No session — approval requires an authenticated user"),
+        (status = 410, description = "user_code expired"),
+    ),
+    security(),
+    tag = "oauth",
+)]
 pub async fn device_verify(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -5037,7 +5213,7 @@ pub async fn device_verify(
     Ok(Json(serde_json::json!({"status": "approved"})))
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
 /// Request body for deviceauth.
 pub struct DeviceAuthRequest {
     /// client identifier.
@@ -5052,7 +5228,7 @@ pub struct DeviceAuthRequest {
     pub audience: Option<String>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, utoipa::ToSchema)]
 /// Response payload for deviceauth.
 pub struct DeviceAuthResponse {
     /// The device code.
@@ -5069,7 +5245,7 @@ pub struct DeviceAuthResponse {
     pub interval: u64,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
 /// Request body for deviceverify.
 pub struct DeviceVerifyRequest {
     /// The device user_code being approved. The approving user identity

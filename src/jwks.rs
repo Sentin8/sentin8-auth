@@ -812,7 +812,7 @@ impl SigningKeys {
 }
 
 /// JWKS response document.
-#[derive(Serialize)]
+#[derive(Serialize, utoipa::ToSchema)]
 /// Response payload for JWKS.
 pub struct JwksResponse {
     /// The keys.
@@ -823,7 +823,7 @@ pub struct JwksResponse {
 ///
 /// In PQ mode: `kty: "MLWE"`, `alg: "MLDSA65"`, `x` = base64url public key.
 /// In classical mode: `kty: "RSA"`, `alg: "RS256"`, `n`/`e` = RSA components.
-#[derive(Serialize)]
+#[derive(Serialize, utoipa::ToSchema)]
 /// The jwk type.
 pub struct Jwk {
     /// The kty.

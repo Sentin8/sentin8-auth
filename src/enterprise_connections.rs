@@ -612,6 +612,19 @@ pub struct SsoAuthorizeQuery {
 /// connections, redirects to the IdP's SSO URL (extracted from the
 /// metadata — when not available, returns 501).
 /// Handle sso authorize.
+#[utoipa::path(
+    get,
+    path = "/v1/sso/{connection_id}/authorize",
+    params(("connection_id" = Uuid, Path, description = "Enterprise connection id")),
+    responses(
+        (status = 302, description = "Redirect to the IdP (OIDC authorize URL with PKCE, or the SAML SSO URL)"),
+        (status = 400, description = "Connection not in active state"),
+        (status = 404, description = "Unknown connection id"),
+        (status = 501, description = "SAML connection without a usable SSO URL in metadata"),
+    ),
+    security(),
+    tag = "sso",
+)]
 pub async fn sso_authorize(
     State(state): State<AppState>,
     Path(connection_id): Path<Uuid>,
@@ -714,7 +727,18 @@ pub struct SsoCallbackQuery {
 }
 
 /// `GET /v1/sso/{connection_id}/callback` — OIDC code exchange callback.
-/// Handle sso callback.
+#[utoipa::path(
+    get,
+    path = "/v1/sso/{connection_id}/callback",
+    params(("connection_id" = Uuid, Path, description = "Enterprise connection id")),
+    responses(
+        (status = 302, description = "Redirect into the app with the issued platform session (code exchanged, user upserted)"),
+        (status = 400, description = "State mismatch or connection inactive"),
+        (status = 502, description = "IdP returned an error or token exchange failed"),
+    ),
+    security(),
+    tag = "sso",
+)]
 pub async fn sso_callback(
     State(state): State<AppState>,
     Path(connection_id): Path<Uuid>,
@@ -966,7 +990,17 @@ pub async fn sso_callback(
 // ── SAML SP metadata ───────────────────────────────────────────────────
 
 /// `GET /v1/saml/metadata/{connection_id}` — return the SP metadata XML.
-/// Handle SAML metadata.
+#[utoipa::path(
+    get,
+    path = "/v1/saml/metadata/{connection_id}",
+    params(("connection_id" = Uuid, Path, description = "Enterprise connection id")),
+    responses(
+        (status = 200, description = "SP metadata XML (entity id + ACS URL)", body = serde_json::Value),
+        (status = 404, description = "Unknown or non-SAML connection"),
+    ),
+    security(),
+    tag = "sso",
+)]
 pub async fn saml_metadata(
     State(state): State<AppState>,
     Path(connection_id): Path<Uuid>,
@@ -1017,6 +1051,22 @@ pub async fn saml_metadata(
 /// signature validation remains a documented gap — SAML connections are
 /// not used by any vertical today; use OIDC connections for SSO.
 /// Handle SAML acs.
+#[utoipa::path(
+    post,
+    path = "/v1/saml/acs/{connection_id}",
+    params(("connection_id" = Uuid, Path, description = "Enterprise connection id")),
+    params(
+        ("SAMLResponse" = String, Query, description = "Base64 SAML response (form-post binding)"),
+        ("RelayState" = String, Query, description = "SSO session handle"),
+    ),
+    responses(
+        (status = 302, description = "Redirect into the app with the issued platform session"),
+        (status = 400, description = "Malformed/invalid SAML response"),
+        (status = 404, description = "Unknown or non-SAML connection"),
+    ),
+    security(),
+    tag = "sso",
+)]
 pub async fn saml_acs(
     State(state): State<AppState>,
     Path(connection_id): Path<Uuid>,

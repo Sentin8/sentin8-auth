@@ -60,7 +60,7 @@ async fn require_self(
 
 /// `POST /v1/me/app-passwords` — mint a new app password. Returns the
 /// raw secret ONCE; only the bcrypt hash is stored.
-#[derive(Debug, serde::Deserialize)]
+#[derive(Debug, serde::Deserialize, utoipa::ToSchema)]
 /// Request body for createapppassword.
 pub struct CreateAppPasswordRequest {
     /// The label.
@@ -73,6 +73,17 @@ pub struct CreateAppPasswordRequest {
 }
 
 /// Create app password.
+#[utoipa::path(
+    post,
+    path = "/v1/me/app-passwords",
+    request_body = CreateAppPasswordRequest,
+    responses(
+        (status = 200, description = "Created — the raw secret is returned ONCE", body = serde_json::Value),
+        (status = 401, description = "Not the caller's own identity (self-service only)"),
+    ),
+    security(),
+    tag = "app-passwords",
+)]
 pub async fn create_app_password(
     State(state): State<crate::handlers::AppState>,
     headers: HeaderMap,
@@ -121,6 +132,16 @@ pub async fn create_app_password(
 /// `GET /v1/me/app-passwords` — list the user's app passwords (no
 /// hashes, no secrets).
 /// List app passwords.
+#[utoipa::path(
+    get,
+    path = "/v1/me/app-passwords",
+    responses(
+        (status = 200, description = "The caller's app passwords (no hashes, no secrets)", body = serde_json::Value),
+        (status = 401, description = "Not the caller's own identity"),
+    ),
+    security(),
+    tag = "app-passwords",
+)]
 pub async fn list_app_passwords(
     State(state): State<crate::handlers::AppState>,
     headers: HeaderMap,
@@ -156,6 +177,17 @@ pub async fn list_app_passwords(
 
 /// `DELETE /v1/me/app-passwords/{id}` — revoke one app password.
 /// Revoke app password.
+#[utoipa::path(
+    delete,
+    path = "/v1/me/app-passwords/{id}",
+    params(("id" = Uuid, Path, description = "App password id")),
+    responses(
+        (status = 200, description = "Revoked", body = serde_json::Value),
+        (status = 401, description = "Not the caller's own identity"),
+    ),
+    security(),
+    tag = "app-passwords",
+)]
 pub async fn revoke_app_password(
     State(state): State<crate::handlers::AppState>,
     headers: HeaderMap,

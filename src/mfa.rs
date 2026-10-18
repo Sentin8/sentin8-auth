@@ -47,7 +47,7 @@ const ENROLL_CHALLENGE_TTL_SECS: i64 = 600;
 
 // ── Requests / Responses ───────────────────────────────────────────────
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
 /// Request body for enroll.
 pub struct EnrollRequest {
     /// Bearer access token or session cookie identifies the user. We also
@@ -61,7 +61,7 @@ pub struct EnrollRequest {
     pub name: Option<String>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, utoipa::ToSchema)]
 /// Response payload for enroll.
 pub struct EnrollResponse {
     /// factor identifier.
@@ -74,7 +74,7 @@ pub struct EnrollResponse {
     pub secret: String,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
 /// Request body for verify.
 pub struct VerifyRequest {
     /// 6-digit TOTP code.
@@ -91,7 +91,7 @@ pub struct VerifyRequest {
     pub pending_token_id: Option<String>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, utoipa::ToSchema)]
 /// Response payload for verify.
 pub struct VerifyResponse {
     /// The status.
@@ -104,7 +104,7 @@ pub struct VerifyResponse {
     pub session_cookie: Option<String>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
 /// Request body for disable.
 pub struct DisableRequest {
     /// factor identifier.
@@ -123,6 +123,18 @@ pub struct DisableRequest {
 /// must then call `/v1/mfa/verify` with a valid TOTP code to confirm
 /// enrollment.
 /// Enroll it.
+#[utoipa::path(
+    post,
+    path = "/v1/mfa/enroll",
+    request_body = EnrollRequest,
+    responses(
+        (status = 200, description = "Enrollment started: the otpauth:// URL + base32 secret for the QR code", body = EnrollResponse),
+        (status = 401, description = "Not authenticated (bearer or session)"),
+        (status = 403, description = "Admin-initiated enrollment requires the admin scope"),
+    ),
+    security(),
+    tag = "mfa",
+)]
 pub async fn enroll(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -215,6 +227,19 @@ pub async fn enroll(
 /// session.
 ///
 /// Verify it.
+#[utoipa::path(
+    post,
+    path = "/v1/mfa/verify",
+    request_body = VerifyRequest,
+    responses(
+        (status = 200, description = "Code verified: factor activated or pending sign-in session activated", body = VerifyResponse),
+        (status = 400, description = "Code must be 6 digits / missing factor or pending token"),
+        (status = 401, description = "Invalid code or expired pending session"),
+        (status = 429, description = "Verify rate limit exceeded"),
+    ),
+    security(),
+    tag = "mfa",
+)]
 pub async fn verify(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -246,6 +271,19 @@ pub async fn verify(
 
 /// `POST /v1/mfa/disable` — disable an MFA factor (password re-confirmation).
 /// Handle disable.
+#[utoipa::path(
+    post,
+    path = "/v1/mfa/disable",
+    request_body = DisableRequest,
+    responses(
+        (status = 200, description = "Factor disabled"),
+        (status = 400, description = "Missing factor id or password"),
+        (status = 401, description = "Not authenticated"),
+        (status = 403, description = "Password re-confirmation failed or CSRF check failed"),
+    ),
+    security(),
+    tag = "mfa",
+)]
 pub async fn disable(
     State(state): State<AppState>,
     headers: HeaderMap,
