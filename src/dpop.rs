@@ -3,22 +3,22 @@
 // SPDX-FileCopyrightText: Copyright Contributors to the Sentin8:Auth
 // SPDX-License-Identifier: Apache-2.0
 
-//! DPoP — Demonstrating Proof-of-Possession (RFC 9449)
+//! DPoP - Demonstrating Proof-of-Possession (RFC 9449)
 //!
 //! DPoP allows clients to sender-constrain their tokens by providing a
 //! proof-of-possession JWT (the `DPoP` header) signed by the client's
 //! private key. The AS verifies the proof and issues tokens with a `cnf.jkt`
-//! claim — the thumbprint of the client's public JWK.
+//! claim - the thumbprint of the client's public JWK.
 //!
 //! DPoP proof JWT claims (RFC 9449 ):
-//! - `htm` — the HTTP method (uppercase)
-//! - `htu` — the HTTP target URI (without query/fragment)
-//! - `jti` — unique token ID (replay protection)
-//! - `iat` — issued-at timestamp
-//! - `ath` — the base64url SHA-256 hash of the access token (required on
+//! - `htm` - the HTTP method (uppercase)
+//! - `htu` - the HTTP target URI (without query/fragment)
+//! - `jti` - unique token ID (replay protection)
+//! - `iat` - issued-at timestamp
+//! - `ath` - the base64url SHA-256 hash of the access token (required on
 //! DPoP-bound token requests to resource servers)
-//! - `typ` — must be `dpop+jwt`
-//! - `jwk` — the client's public key (in the header, not the claims)
+//! - `typ` - must be `dpop+jwt`
+//! - `jwk` - the client's public key (in the header, not the claims)
 //!
 //! The AS stores `jti` values in Valkey (replay prevention, TTL = exp).
 
@@ -31,7 +31,7 @@ use sha2::{Digest, Sha256};
 pub struct DpopProofClaims {
     /// HTTP method (uppercase, e.g. "POST").
     ///
-    /// RFC 9449 defines the claim as `htm` — the previous `httm` rename
+    /// RFC 9449 defines the claim as `htm` - the previous `httm` rename
     /// made every standards-compliant proof fail claims parsing
     /// ("claims parse failed") and was rejected as a client bug.
     /// The htm.
@@ -46,7 +46,7 @@ pub struct DpopProofClaims {
     /// Issued-at timestamp.
     /// The iat.
     pub iat: i64,
-    /// Access token hash (base64url SHA-256) — required on protected-resource requests.
+    /// Access token hash (base64url SHA-256) - required on protected-resource requests.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     /// The ath.
     pub ath: Option<String>,
@@ -104,7 +104,7 @@ pub fn decode_dpop_proof_unverified(token: &str) -> Result<DecodedDpopProof, Str
     })
 }
 
-/// Compute the JWK thumbprint (RFC 7638) — SHA-256 thumbprint of the public key.
+/// Compute the JWK thumbprint (RFC 7638) - SHA-256 thumbprint of the public key.
 /// This is used as the `cnf.jkt` value in access tokens.
 /// Handle jwk thumbprint.
 pub fn jwk_thumbprint(jwk: &serde_json::Value) -> Result<String, String> {
@@ -132,7 +132,7 @@ pub fn validate_dpop_proof(
     if proof.claims.htm.to_uppercase() != http_method.to_uppercase() {
         return Err("DPoP htm mismatch".into());
     }
-    // Check htu — compare without query/fragment.
+    // Check htu - compare without query/fragment.
     let expected_htu = strip_query_fragment(http_uri);
     let claimed_htu = strip_query_fragment(&proof.claims.htu);
     if claimed_htu != expected_htu {
@@ -156,7 +156,7 @@ fn strip_query_fragment(uri: &str) -> String {
 }
 
 /// Build the `cnf` claim for a DPoP-bound access token.
-/// Per RFC 9449 , the `cnf` claim contains `jkt` — the thumbprint of the
+/// Per RFC 9449 , the `cnf` claim contains `jkt` - the thumbprint of the
 /// client's public key.
 /// Build DPoP cnf claim.
 pub fn build_dpop_cnf_claim(jwk_thumbprint: &str) -> serde_json::Value {
@@ -191,10 +191,10 @@ pub fn extract_dpop_header(headers: &axum::http::HeaderMap) -> Option<String> {
 /// 3. **verify the signature** against the JWK embedded in the proof
 ///
 /// header (the proof key is client-controlled, so verification is
-/// self-contained — ES256 or RS256),
+/// self-contained - ES256 or RS256),
 /// 4. enforce `jti` replay protection via Valkey SETNX
 ///
-/// (`auth:dpop:jti:{jti}`, TTL 300s — the doc-comment contract this
+/// (`auth:dpop:jti:{jti}`, TTL 300s - the doc-comment contract this
 /// module has always claimed but never implemented until now),
 /// 5. return the key thumbprint (`jkt`) so the issued access token can
 /// be sender-constrained with `cnf.jkt`.

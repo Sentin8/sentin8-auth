@@ -3,7 +3,7 @@
 // SPDX-FileCopyrightText: Copyright Contributors to the Sentin8:Auth
 // SPDX-License-Identifier: Apache-2.0
 
-//! SD-JWT (Selective Disclosure JWT) verification — EUDI.1.1.
+//! SD-JWT (Selective Disclosure JWT) verification - EUDI.1.1.
 //!
 //! Basis for the OID4VP wallet sign-in flow (EUDI.) and OID4VCI issuance
 //! (EUDI.). Format per draft-ietf-oauth-selective-disclosure-jwt:
@@ -19,18 +19,18 @@
 //! position in the claim tree.
 //!
 //! This module verifies:
-//! 1. **Issuer signature** — via a trusted-issuer JWKS (or the platform
+//! 1. **Issuer signature** - via a trusted-issuer JWKS (or the platform
 //! JWKS when the credential is self-issued; EUDI issuer keys come from
 //! the EU trust list in production).
-//! 2. **Disclosures** — every `_sd` digest resolves to a decoded
+//! 2. **Disclosures** - every `_sd` digest resolves to a decoded
 //! disclosure; hash mismatch → reject.
-//! 3. **Key binding** — `cnf.jwk` in the issuer-signed part must equal the
+//! 3. **Key binding** - `cnf.jwk` in the issuer-signed part must equal the
 //! wallet's presented key; the optional Key-Binding JWT (KB-JWT) is
 //! signed with that key over `{aud, nonce, sd_hash}`.
-//! 4. **Status** — Status List 2021 (`status.status_list.uri/index`):
+//! 4. **Status** - Status List 2021 (`status.status_list.uri/index`):
 //! compressed bitstring fetch + Valkey cache (5 min); bit set = revoked.
 //!
-//! Note: this module verifies the **flat top-level disclosure set** — the
+//! Note: this module verifies the **flat top-level disclosure set** - the
 //! common wallet shape (`_sd` at the root and inside simple subobjects).
 //! Recursive array-element disclosures are Phase-2 (EUDI.2.x) work.
 
@@ -47,7 +47,7 @@ pub struct VerifiedPresentation {
     /// The credential's issuer (`iss` claim).
     /// The issuer.
     pub issuer: String,
-    /// The wallet key binding (`cnf` claim) — proven by the KB-JWT.
+    /// The wallet key binding (`cnf` claim) - proven by the KB-JWT.
     /// The cnf.
     pub cnf: serde_json::Value,
 }
@@ -129,9 +129,9 @@ fn decode_disclosure(disclosure: &str) -> Result<(String, serde_json::Value), Sd
 /// trusted-issuer list / DID document / Auth's own JWKS for self-issued
 /// credentials). Each key is a JWK JSON object.
 /// `kb_nonce`: the expected challenge inside the KB-JWT (present when the
-/// verifier sent a challenge — always for OID4VP).
+/// verifier sent a challenge - always for OID4VP).
 /// `presentation_key`: the wallet's public JWK (from `cnf.jwk` of the
-/// presentation request/registration) — required when a KB-JJWT is present.
+/// presentation request/registration) - required when a KB-JJWT is present.
 /// Verify presentation.
 pub fn verify_presentation(
     sd_jwt: &str,
@@ -229,7 +229,7 @@ pub fn verify_presentation(
     let cnf = payload.get("cnf").cloned().ok_or(SdJwtError::KeyBinding)?;
     if let Some(kb) = kb_jwt {
         // SD-JWT KB-JWT: signed by the WALLET key over {iss: ..., nonce,
-        // iat, aud, sd_hash} — sd_hash = SHA256 of the presentation WITHOUT
+        // iat, aud, sd_hash} - sd_hash = SHA256 of the presentation WITHOUT
         // the KB-JWT (everything before the final '~').
         let Some(expected_key) = kb_jwt_key else {
             return Err(SdJwtError::KeyBindingJwt(
@@ -356,7 +356,7 @@ use base64::Engine as _;
 
 /// Fetch + decode a Status List 2021 document and read the revocation bit
 /// for `entry`. The bitstring is deflate-compressed, base64url-encoded.
-/// Cached in Valkey (5 min) by the caller wrapper — this fn is pure.
+/// Cached in Valkey (5 min) by the caller wrapper - this fn is pure.
 /// Handle status list bit.
 pub fn status_list_bit(status_list_b64: &str, entry: u32) -> Result<bool, String> {
     let raw = base64::engine::general_purpose::URL_SAFE_NO_PAD

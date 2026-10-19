@@ -15,11 +15,11 @@ use serde::{Deserialize, Serialize};
 /// The `token_tp` field distinguishes token types: `"m2m"`, `"access"`, `"id"`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AuthClaims {
-    /// Subject — user ID (for user tokens) or client_id (for M2M tokens).
+    /// Subject - user ID (for user tokens) or client_id (for M2M tokens).
     pub sub: String,
-    /// Issuer — Auth issuer URL.
+    /// Issuer - Auth issuer URL.
     pub iss: String,
-    /// Audience — the intended recipient (for ID tokens, the client_id).
+    /// Audience - the intended recipient (for ID tokens, the client_id).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub aud: Option<String>,
     /// JWT ID (unique per token).
@@ -34,7 +34,7 @@ pub struct AuthClaims {
     /// Scope string (space-separated).
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub scope: String,
-    /// Environment ID (tenant binding — globally unique, sole tenant key).
+    /// Environment ID (tenant binding - globally unique, sole tenant key).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub env_id: Option<String>,
     /// Email (for user tokens).
@@ -44,29 +44,29 @@ pub struct AuthClaims {
     /// signed in through, or which M2M client is calling). See.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub client_id: Option<String>,
-    /// FAPI 2.0 Grant Management `grant_id` — references an
+    /// FAPI 2.0 Grant Management `grant_id` - references an
     /// `grants` row; revoking the grant revokes tokens carrying it.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub grant_id: Option<String>,
-    /// `act` claim (RFC 8693 ) — records the original actor for
+    /// `act` claim (RFC 8693 ) - records the original actor for
     /// token-exchange / delegated tokens, or the external IdP `iss`/`sub`
     /// for federated-credential M2M tokens. See.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub act: Option<serde_json::Value>,
-    /// `cnf` claim (RFC 8705) — certificate thumbprint for cert-bound tokens.
+    /// `cnf` claim (RFC 8705) - certificate thumbprint for cert-bound tokens.
     /// Present only for M2M tokens issued via `/mtls/oauth/token`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cnf: Option<serde_json::Value>,
     /// The vertical this workload belongs to (VDC-2, design/
     /// sentin8-vertical-data-plane-contract.md §VDC.4). Set on M2M tokens
-    /// from the `auth.m2m_scope_grants.vertical` stamp — Bus's event-ownership
+    /// from the `auth.m2m_scope_grants.vertical` stamp - Bus's event-ownership
     /// gate rejects produce when the event_type's first colon segment
     /// disagrees (e.g. only `sentin8:sys` may produce `sentin8:sys:*`).
     /// Absent on user/delegated tokens (they never produce).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub vertical: Option<String>,
     /// The service this M2M workload performs work FOR (VDC-4, design/
-    /// sentin8-vertical-data-plane-contract.md §VDC.5) — stamped from the
+    /// sentin8-vertical-data-plane-contract.md §VDC.5) - stamped from the
     /// same enroll row as `vertical` (workload names are inconsistent, so
     /// the registry is the source of truth). Consumers use it for scoped
     /// discovery WITHOUT cross-schema reads: Sys's tenant-snapshot API
@@ -120,7 +120,7 @@ impl AuthClaims {
     /// Issued by Auth's `POST /delegate/access-token` endpoint when BFF
     /// (acting as Delegation Gateway) requests a cross-realm token on behalf
     /// of a staff user. The token is:
-    /// - `sub` = BFF client_id (machine identity — not the staff user)
+    /// - `sub` = BFF client_id (machine identity - not the staff user)
     /// - `realm` = "delegated"
     /// - `act` = `{sub, email, realm}` (the staff user who initiated)
     /// - `cnf` = cert thumbprint (cert-bound, RFC 8705 sender-constrained)
@@ -249,7 +249,7 @@ impl AuthClaims {
     /// OAuth client_id, short-lived (≤ access token TTL), with `auth_time`
     /// (the sign-in time), `nonce` (from the authorize request, when
     /// provided), and `at_hash` (left half of SHA-256 of the access token,
-    /// base64url — binds the ID token to its access token).
+    /// base64url - binds the ID token to its access token).
     ///
     /// Email/profile claims are added conditionally by the caller based on
     /// the granted scopes (`email`, `profile`).
@@ -285,7 +285,7 @@ impl AuthClaims {
     ///build a delegated token from a **publisher** token's
     /// claims (token exchange). Unlike `delegated` (freeform act), this
     /// handles act-chain **nesting**: when the publisher itself is a
-    /// delegated token (BFF-issued), its act chain nests — the new act is
+    /// delegated token (BFF-issued), its act chain nests - the new act is
     /// {sub: publisher_sub, act: {sub: original_staff_sub, email}} so the
     /// full delegation chain stays auditable.
     pub fn delegated_from_publisher(
@@ -353,7 +353,7 @@ impl AuthClaims {
                    "iat": now.timestamp(),
                    "exp": (now + ttl).timestamp(),
                    "auth_time": auth_time,
-        // at_hash — OIDC Core : base64url of the left half of
+        // at_hash - OIDC Core : base64url of the left half of
         // SHA-256(access_token ASCII bytes).
                    "at_hash": at_hash(access_token),
                });
@@ -369,7 +369,7 @@ impl AuthClaims {
                 claims["name"] = serde_json::json!(n);
             }
         }
-        // RFC 9396 — the ID token carries the granted
+        // RFC 9396 - the ID token carries the granted
         // authorization_details so the client can verify what it asked for.
         if let Some(details) = authorization_details {
             claims["authorization_details"] = details.clone();

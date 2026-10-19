@@ -3,7 +3,7 @@
 // SPDX-FileCopyrightText: Copyright Contributors to the Sentin8:Auth
 // SPDX-License-Identifier: Apache-2.0
 
-//! Sentin8 Auth — identity, OAuth/OIDC/FAPI, sessions, JWKS authority.
+//! Sentin8 Auth - identity, OAuth/OIDC/FAPI, sessions, JWKS authority.
 //!
 //! See.
 //!

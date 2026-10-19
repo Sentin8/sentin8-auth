@@ -3,15 +3,15 @@
 // SPDX-FileCopyrightText: Copyright Contributors to the Sentin8:Auth
 // SPDX-License-Identifier: Apache-2.0
 
-//! OAuth/OIDC endpoints — authorize, token, introspect, revoke, userinfo.
+//! OAuth/OIDC endpoints - authorize, token, introspect, revoke, userinfo.
 //!
 //! Implements the core OAuth 2.0 + OIDC endpoints:
-//! - `GET /oauth/authorize` — PKCE authorize, issues auth code stored in Valkey
-//! - `POST /oauth/token` — code exchange, refresh, client_credentials
-//! - `POST /oauth/introspect` — token introspection
-//! - `POST /oauth/revoke` — token revocation
-//! - `GET /oauth/userinfo` — user claims from access token
-//! - `GET /oauth/logout` — RP-initiated logout
+//! - `GET /oauth/authorize` - PKCE authorize, issues auth code stored in Valkey
+//! - `POST /oauth/token` - code exchange, refresh, client_credentials
+//! - `POST /oauth/introspect` - token introspection
+//! - `POST /oauth/revoke` - token revocation
+//! - `GET /oauth/userinfo` - user claims from access token
+//! - `GET /oauth/logout` - RP-initiated logout
 
 use axum::{
     extract::{Query, State},
@@ -37,14 +37,14 @@ use crate::jwt::AuthClaims;
 // A single extractor that resolves + authenticates the OAuth client on
 // every client-authenticated endpoint (token, introspect, revoke, PAR,
 // bc-authorize, device). Supports:
-// 1. client_secret_basic — `Authorization: Basic base64(id:secret)` (RFC 6749 )
-// 2. client_secret_post — form-body client_id + client_secret
-// 3. private_key_jwt — client_assertion JWT verified against the
+// 1. client_secret_basic - `Authorization: Basic base64(id:secret)` (RFC 6749 )
+// 2. client_secret_post - form-body client_id + client_secret
+// 3. private_key_jwt - client_assertion JWT verified against the
 // client's registered jwks/jwks_uri (RFC 7523)
-// 4. tls_client_auth / self_signed_tls_client_auth — mTLS headers (RFC 8705)
+// 4. tls_client_auth / self_signed_tls_client_auth - mTLS headers (RFC 8705)
 //
 // Public clients (`token_endpoint_auth_method = 'none'`, no secret, no mTLS
-// metadata — e.g. the `dash` SPA and `sentin8-cli` device-flow client) are
+// metadata - e.g. the `dash` SPA and `sentin8-cli` device-flow client) are
 // exempt from the secret check but must still present their client_id so
 // grants can be bound to the originating client.
 
@@ -84,7 +84,7 @@ pub struct AuthenticatedClient {
     /// The auth method that satisfied this request.
     /// The auth method.
     pub auth_method: &'static str,
-    /// Presented client cert thumbprint (mTLS) — used to bind issued tokens.
+    /// Presented client cert thumbprint (mTLS) - used to bind issued tokens.
     /// The cert thumbprint.
     pub cert_thumbprint: Option<String>,
     /// DPoP key thumbprint when a valid proof was presented (SEC-).
@@ -92,7 +92,7 @@ pub struct AuthenticatedClient {
     pub dpop_jkt: Option<String>,
     /// Explicit DPoP exemption (oauth_clients.dpop_exempt). True only
     /// for platform-owned public clients (dash, sentin8-cli) seeded by the
-    /// platform seed — never settable via DCR or the client-management API.
+    /// platform seed - never settable via DCR or the client-management API.
     /// The DPoP exempt.
     pub dpop_exempt: bool,
     /// RFC 9396 `authorization_details` types this client may request
@@ -104,7 +104,7 @@ pub struct AuthenticatedClient {
 /// A client is exempt from profile-level DPoP enforcement only when it is
 /// BOTH a public client (no secret, no mTLS binding, no registered signing
 /// keys) AND explicitly marked `dpop_exempt` on its client row. The public
-/// shape alone is NOT sufficient — every DCR-registered third-party SPA
+/// shape alone is NOT sufficient - every DCR-registered third-party SPA
 /// shares that shape, and none of them may self-exempt from
 /// sender-constraining. Proofs presented by exempt clients are still
 /// verified above (opt-in sender-constraining).
@@ -344,9 +344,9 @@ pub async fn authenticate_client(
         )
     })?;
 
-    // SEC- — RLS: the client lookup must run with the tenant
+    // SEC- - RLS: the client lookup must run with the tenant
     // context on the same connection. set_config(..., true) is
-    // TRANSACTION-local — on a bare pooled connection it evaporates
+    // TRANSACTION-local - on a bare pooled connection it evaporates
     // immediately, so the lookup runs inside a transaction.
     let env_for_rls = headers
         .get(sentin8::middleware::context::HEADER_ENV_ID)
@@ -386,7 +386,7 @@ pub async fn authenticate_client(
         );
         (StatusCode::UNAUTHORIZED, "invalid client".into())
     })?;
-    // Read-only lookup — drop the transaction (implicit rollback of the
+    // Read-only lookup - drop the transaction (implicit rollback of the
     // context setting is fine).
     drop(conn);
 
@@ -434,7 +434,7 @@ pub async fn authenticate_client(
         .map(|(t, d)| (Some(t), d))
         .unwrap_or((None, None));
 
-    // — regulatory overlays (env-scoped): OBIE/Brazil require a
+    // - regulatory overlays (env-scoped): OBIE/Brazil require a
     // directory-verified SSA on client authentication; CDR requires mTLS
     // holder-of-key. No-op when the env has no overlay configured.
     crate::overlays::enforce_overlay(
@@ -480,7 +480,7 @@ pub async fn authenticate_client(
         verify_client_assertion(state, &client_id, &row, assertion).await?;
         auth_method = "private_key_jwt";
     } else if let (Some(_), Some(presented)) = (&mtls_presented_thumb, &mtls_presented_dn) {
-        // tls_client_auth — DN match required.
+        // tls_client_auth - DN match required.
         let registered_dn = mtls_dn.as_deref().ok_or_else(|| {
             tracing::warn!(
                 client_id = %client_id,
@@ -501,7 +501,7 @@ pub async fn authenticate_client(
         auth_method = "tls_client_auth";
         cert_thumbprint = mtls_presented_thumb.clone();
     } else if let Some(presented) = &mtls_presented_thumb {
-        // self_signed_tls_client_auth — thumbprint match required.
+        // self_signed_tls_client_auth - thumbprint match required.
         let registered = mtls_thumb.as_deref().ok_or_else(|| {
             tracing::warn!(
                 client_id = %client_id,
@@ -530,7 +530,7 @@ pub async fn authenticate_client(
             .as_deref()
             .ok_or_else(|| (StatusCode::UNAUTHORIZED, "invalid client".into()))?;
         if !bcrypt_verify(secret, stored).unwrap_or(false) {
-            // Uniform error — no client-existence oracle (SEC-).
+            // Uniform error - no client-existence oracle (SEC-).
             return Err((StatusCode::UNAUTHORIZED, "invalid client".into()));
         }
         auth_method = if basic.is_some() {
@@ -545,12 +545,12 @@ pub async fn authenticate_client(
         ));
     } else if require_secret && !is_confidential {
         if allow_public {
-            // Public client on a confidential endpoint — allowed but bound
+            // Public client on a confidential endpoint - allowed but bound
             // to client_id (device flow / code exchange for installed apps).
             auth_method = "none";
         } else {
             // Endpoints where a public client is NOT sufficient (RFC 7662
-            // introspection, RFC 7009 revocation) — hard client auth.
+            // introspection, RFC 7009 revocation) - hard client auth.
             return Err((
                 StatusCode::UNAUTHORIZED,
                 "client authentication required (public clients are not permitted here)".into(),
@@ -644,7 +644,7 @@ async fn revoke_jti(state: &AppState, jti: &str, remaining_secs: i64) {
 //
 // The token endpoint must return errors as JSON with an `error` field,
 // not as a plain-text body. CIBA (RFC 8705) and device-code (RFC 8628)
-// clients — including BFF's `delegate_poll` — parse the `error` field to
+// clients - including BFF's `delegate_poll` - parse the `error` field to
 // distinguish `authorization_pending` / `slow_down` / `access_denied` /
 // `expired_token` from real failures. A plain-text body makes them fail
 // JSON parsing and surface a spurious 502 to the UI.
@@ -776,21 +776,21 @@ pub struct DiscoveryDocument {
     pub request_parameter_supported: bool,
     /// The request URI parameter supported.
     pub request_uri_parameter_supported: bool,
-    /// PAR endpoint (RFC 9126) — present when the security profile requires PAR.
+    /// PAR endpoint (RFC 9126) - present when the security profile requires PAR.
     #[serde(skip_serializing_if = "Option::is_none")]
     /// The pushed authorization request endpoint.
     pub pushed_authorization_request_endpoint: Option<String>,
-    /// mTLS endpoint aliases (RFC 8705) — present when mTLS is advertised.
+    /// mTLS endpoint aliases (RFC 8705) - present when mTLS is advertised.
     #[serde(skip_serializing_if = "Option::is_none")]
     /// The mtls endpoint aliases.
     pub mtls_endpoint_aliases: Option<MtlsEndpointAliases>,
-    /// RFC 9396 RAR — the authorization_details types the AS
+    /// RFC 9396 RAR - the authorization_details types the AS
     /// serves (union of all client-registered types). Absent when no client
     /// is registered for RAR.
     #[serde(skip_serializing_if = "Option::is_none")]
     /// The authorization details types supported.
     pub authorization_details_types_supported: Option<Vec<String>>,
-    /// FAPI 2.0 Grant Management (/) — the grants API.
+    /// FAPI 2.0 Grant Management (/) - the grants API.
     #[serde(skip_serializing_if = "Option::is_none")]
     /// The grant management endpoint.
     pub grant_management_endpoint: Option<String>,
@@ -884,7 +884,7 @@ pub async fn discovery(
         ],
         subject_types_supported: vec!["public".into()],
         id_token_signing_alg_values_supported: vec![crate::jwks::active_signing_alg().into()],
-        // DPoP signing algs — only advertised when DPoP is required or supported.
+        // DPoP signing algs - only advertised when DPoP is required or supported.
         dpop_signing_alg_values_supported: if profile.require_dpop {
             vec![crate::jwks::active_signing_alg().into()]
         } else {
@@ -894,13 +894,13 @@ pub async fn discovery(
         request_object_signing_alg_values_supported: vec![crate::jwks::active_signing_alg().into()],
         request_parameter_supported: true,
         request_uri_parameter_supported: true,
-        // PAR endpoint — present when require_par is true .
+        // PAR endpoint - present when require_par is true .
         pushed_authorization_request_endpoint: if profile.require_par {
             Some(format!("{issuer}/oauth/par"))
         } else {
             None
         },
-        // mTLS endpoint aliases — present when require_mtls is true .
+        // mTLS endpoint aliases - present when require_mtls is true .
         mtls_endpoint_aliases: if profile.require_mtls {
             Some(MtlsEndpointAliases {
                 token_endpoint: format!("{issuer}/mtls/oauth/token"),
@@ -909,7 +909,7 @@ pub async fn discovery(
         } else {
             None
         },
-        // — discovery honesty: advertise the RAR types the AS
+        // - discovery honesty: advertise the RAR types the AS
         // actually enforces (union of client-registered
         // authorization_details_types) and the grants API.
         authorization_details_types_supported: fetch_rar_types(&state.pool).await,
@@ -940,7 +940,7 @@ async fn fetch_rar_types(pool: &sqlx::PgPool) -> Option<Vec<String>> {
 #[derive(Debug, Clone)]
 /// The securityprofile type.
 pub struct SecurityProfile {
-    /// The profile row name (`standard`, `fapi_1_baseline`, …) — used to
+    /// The profile row name (`standard`, `fapi_1_baseline`, …) - used to
     /// derive FAPI allow-list constraints. Empty when defaulted.
     /// The profile.
     pub profile: String,
@@ -961,7 +961,7 @@ pub struct SecurityProfile {
     pub require_jwt_introspection: bool,
     /// The require iss.
     pub require_iss: bool,
-    /// SEC- — PKCE is mandatory for authorization requests when
+    /// SEC- - PKCE is mandatory for authorization requests when
     /// the profile mandates PAR (FAPI 2.0 default). Mirrors `require_par`
     /// until the profile table grows a dedicated column.
     /// The require pkce.
@@ -976,7 +976,7 @@ impl Default for SecurityProfile {
             require_mtls: false,
             require_jarm: true,
             require_dpop: true,
-            // FAPI 2.0 default is the plain Security Profile — Message
+            // FAPI 2.0 default is the plain Security Profile - Message
             // Signing flags stay off (opt-in).
             require_http_signatures: false,
             require_jwt_introspection: false,
@@ -989,20 +989,20 @@ impl Default for SecurityProfile {
 
 /// Resolve the effective security profile for a request.
 ///
-/// — reads `scope` (platform/org/env) and the tenant
+/// - reads `scope` (platform/org/env) and the tenant
 /// context from TLS-injected headers. `org_id` is resolved from `env_id`
 /// via `sentin8_sys_environments` when needed. For `org` scope, uses the
 /// resolved `org_id`; for `env` scope, uses both `org_id` and `env_id`. Falls
 /// back to the platform profile when TLS headers are absent.
 ///
-/// (fixed ): the profile rows are RLS-protected — the
+/// (fixed ): the profile rows are RLS-protected - the
 /// env/org rows are only visible with `app.env_id` context matching the
 /// caller's env. All lookups therefore run on ONE connection inside a
 /// transaction with `sentin8_set_tenant_context(env_id)` applied first
 /// (: context must be set on the same
 /// connection as the data query). Without this, per-tenant profiles are
 /// silently ignored and discovery/enforcement always falls back to the
-/// platform profile — caught by the revived conformance_profiles tests.
+/// platform profile - caught by the revived conformance_profiles tests.
 /// Resolve security profile.
 pub async fn resolve_security_profile(
     pool: &sqlx::PgPool,
@@ -1017,7 +1017,7 @@ pub async fn resolve_security_profile(
 
     // Single transaction: tenant context + org lookup + profile lookups.
     // Context must be set on the SAME connection the queries run on
-    // — the RLS policies on
+    // - the RLS policies on
     // `security_profiles` and `environments` admit rows only with
     // the caller's env_id in `app.env_id`.
     let mut tx = match pool.begin().await {
@@ -1029,7 +1029,7 @@ pub async fn resolve_security_profile(
     };
     if let Some(eid) = env_id {
         // Context helper lives in `public` (platform.sql,
-        // RLS-FNSCHEMA-1) — schema-qualifying it as `sentin8.` resolves
+        // RLS-FNSCHEMA-1) - schema-qualifying it as `sentin8.` resolves
         // against the *sentin8 schema* and fails (function does not exist).
         // Unqualified resolves via the role's search_path like every other
         // caller.
@@ -1043,7 +1043,7 @@ pub async fn resolve_security_profile(
     }
 
     // Resolve org_id from env_id via DB lookup (visible under RLS now).
-    // Schema-qualified — resolution must not depend on the
+    // Schema-qualified - resolution must not depend on the
     // connecting role's search_path.
     let org_id = if let Some(eid) = env_id {
         sqlx::query_scalar::<_, Uuid>(r#"SELECT org_id FROM sys.environments WHERE id = $1"#)
@@ -1222,7 +1222,7 @@ pub struct UpdateSecurityProfileRequest {
     pub refresh_rotation: Option<bool>,
 }
 
-/// `GET /v1/security-profile` — return the effective security profile for
+/// `GET /v1/security-profile` - return the effective security profile for
 /// the resolved tenant (platform/org/env).
 #[utoipa::path(
     get,
@@ -1296,12 +1296,12 @@ pub async fn get_security_profile_api(
     }))
 }
 
-/// `PUT /v1/security-profile` — update (or insert) the security profile for
+/// `PUT /v1/security-profile` - update (or insert) the security profile for
 /// the given scope + tenant.
 ///
-/// SEC- — admin guard. `sentin8:sys:admin`/`sentin8:dash:admin` (platform
+/// SEC- - admin guard. `sentin8:sys:admin`/`sentin8:dash:admin` (platform
 /// operators) may manage any scope row; org/env rows additionally require
-/// the caller to have access to that org/env (RBAC) — enforced by passing
+/// the caller to have access to that org/env (RBAC) - enforced by passing
 /// the target as `target_env_id` for env-scoped rows.
 /// Handle PUT security profile API.
 #[utoipa::path(
@@ -1452,7 +1452,7 @@ pub async fn put_security_profile_api(
     .await
     .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
-    // SEC- — the catalog's `sentin8:auth:securityprofile:updated`
+    // SEC- - the catalog's `sentin8:auth:securityprofile:updated`
     // event (previously never emitted).
     crate::events::emit_event(
         &state.pool,
@@ -1531,23 +1531,23 @@ pub struct AuthorizeQuery {
     #[serde(default)]
     /// The code challenge method.
     pub code_challenge_method: Option<String>,
-    /// PAR request_uri (RFC 9126) — when PAR is required, the client submits
+    /// PAR request_uri (RFC 9126) - when PAR is required, the client submits
     /// a `request_uri` instead of inline params.
     #[serde(default)]
     /// The request URI.
     pub request_uri: Option<String>,
     /// UI hint indicating which hosted UI page to show first. Currently
-    /// supports `signup` — when present, the authorize handler redirects
+    /// supports `signup` - when present, the authorize handler redirects
     /// to `/sign-up` (instead of `/sign-in`) with the full OAuth context
     /// inline so the sign-up page can preserve redirect_uri/state/code_challenge.
     #[serde(default)]
     /// The screen hint.
     pub screen_hint: Option<String>,
-    /// OIDC `nonce` — echoed into the ID token (SEC-).
+    /// OIDC `nonce` - echoed into the ID token (SEC-).
     #[serde(default)]
     /// The nonce.
     pub nonce: Option<String>,
-    /// OAuth response mode — `query` (default) or `jwt` (JARM, SEC-).
+    /// OAuth response mode - `query` (default) or `jwt` (JARM, SEC-).
     #[serde(default)]
     /// The response mode.
     pub response_mode: Option<String>,
@@ -1559,7 +1559,7 @@ pub struct AuthorizeQuery {
     #[serde(default)]
     /// The resource.
     pub resource: Option<String>,
-    /// RFC 9396 Rich Authorization Requests — JSON array of
+    /// RFC 9396 Rich Authorization Requests - JSON array of
     /// `authorization_details` objects. Validated against the client's
     /// registered `authorization_details_types`; stored in the code record
     /// and echoed into the ID token.
@@ -1605,7 +1605,7 @@ pub fn validate_authorization_details(
     Ok(serde_json::Value::Array(normalized))
 }
 
-/// Resolve a PAR request_uri from Valkey. **Single-use** — the key is
+/// Resolve a PAR request_uri from Valkey. **Single-use** - the key is
 /// deleted atomically via GETDEL (SEC-); a second authorize
 /// with the same request_uri fails with `invalid_request`.
 async fn resolve_par_request(state: &AppState, request_uri: &str) -> Option<serde_json::Value> {
@@ -1618,7 +1618,7 @@ async fn resolve_par_request(state: &AppState, request_uri: &str) -> Option<serd
         .await
         .ok()?;
     let conn = client;
-    // GETDEL — atomic single-use resolution.
+    // GETDEL - atomic single-use resolution.
     let val: Option<String> = glide::cmd("GETDEL")
         .arg(&valkey_key)
         .query_async(&conn)
@@ -1627,7 +1627,7 @@ async fn resolve_par_request(state: &AppState, request_uri: &str) -> Option<serd
     val.and_then(|s| serde_json::from_str(&s).ok())
 }
 
-/// PAR endpoint (RFC 9126) — accepts a pushed authorization request.
+/// PAR endpoint (RFC 9126) - accepts a pushed authorization request.
 #[derive(Debug, Deserialize, utoipa::ToSchema)]
 /// Request body for par.
 pub struct ParRequest {
@@ -1661,7 +1661,7 @@ pub struct ParRequest {
     #[serde(default)]
     /// The authorization details.
     pub authorization_details: Option<serde_json::Value>,
-    /// Client secret (client_secret_post — RFC 9126 client auth).
+    /// Client secret (client_secret_post - RFC 9126 client auth).
     #[serde(default)]
     /// The client secret.
     pub client_secret: Option<String>,
@@ -1715,7 +1715,7 @@ pub async fn pushed_authorization_request(
         ));
     }
 
-    // SEC- — PAR pushes require client authentication (RFC 9126
+    // SEC- - PAR pushes require client authentication (RFC 9126
     // ); the redirect_uri must be registered for the client.
     let client = authenticate_client(
         &state,
@@ -1738,7 +1738,7 @@ pub async fn pushed_authorization_request(
     let request_uri = format!("urn:ietf:params:oauth:request_uri:{request_id}");
     let valkey_key = format!("auth:par:{request_id}");
 
-    // — RAR: validate authorization_details against the client's
+    // - RAR: validate authorization_details against the client's
     // registered types before storing them in the PAR record.
     let authorization_details = match req.authorization_details {
         Some(ref d) => Some(
@@ -1781,7 +1781,7 @@ pub async fn pushed_authorization_request(
         .into_response())
 }
 
-/// Normalized authorization params — either from inline query params or
+/// Normalized authorization params - either from inline query params or
 /// resolved from a PAR request / JAR request object.
 struct AuthorizeParams {
     response_type: String,
@@ -1797,7 +1797,7 @@ struct AuthorizeParams {
     resource: Option<String>,
     /// OAuth response mode (`query` default, `jwt` for JARM).
     response_mode: Option<String>,
-    /// RFC 9396 authorization_details — validated against
+    /// RFC 9396 authorization_details - validated against
     /// the client's registered types.
     authorization_details: Option<serde_json::Value>,
 }
@@ -1852,7 +1852,7 @@ pub async fn authorize(
             StatusCode::BAD_REQUEST,
             Json(serde_json::json!({
                 "error": "invalid_request",
-                "error_description": "PAR is required — provide a request_uri from /oauth/par"
+                "error_description": "PAR is required - provide a request_uri from /oauth/par"
             })),
         )
             .into_response();
@@ -1861,7 +1861,7 @@ pub async fn authorize(
     if let Some(ref request_uri) = q.request_uri {
         match resolve_par_request(&state, request_uri).await {
             Some(stored) => {
-                // SEC- — the PAR record is client-bound: the query
+                // SEC- - the PAR record is client-bound: the query
                 // client_id must match the client that pushed the request.
                 let par_client = stored
                     .get("client_id")
@@ -1905,7 +1905,7 @@ pub async fn authorize(
                 if let Some(r) = stored.get("resource").and_then(|v| v.as_str()) {
                     params.resource = Some(r.to_string());
                 }
-                // — RAR: the PAR record is the authoritative
+                // - RAR: the PAR record is the authoritative
                 // source (validated at push time); overlay verbatim.
                 if let Some(ad) = stored.get("authorization_details") {
                     if !ad.is_null() {
@@ -1926,7 +1926,7 @@ pub async fn authorize(
         }
     }
 
-    // ── JAR (RFC 9101) — signed request object overlay (SEC-) ──
+    // ── JAR (RFC 9101) - signed request object overlay (SEC-) ──
     //
     // When a `request` JWT parameter is present, verify its signature
     // against the client's registered keys (inline `jwks` or `jwks_uri`)
@@ -1991,7 +1991,7 @@ pub async fn authorize(
                 .into_response();
         }
     }
-    // SEC- — PKCE is mandatory when the profile mandates PAR
+    // SEC- - PKCE is mandatory when the profile mandates PAR
     // (FAPI 2.0 default): reject requests without a code_challenge.
     if profile.require_pkce && params.code_challenge.as_deref().unwrap_or("").is_empty() {
         return (
@@ -2006,11 +2006,11 @@ pub async fn authorize(
 
     // Look up the OAuth client to check consent_required
     // and validate the redirect_uri against the registered allow-list
-    // (SEC- — open-redirect defense).
+    // (SEC- - open-redirect defense).
     //
-    // SEC- — run with the tenant context on the same connection:
+    // SEC- - run with the tenant context on the same connection:
     // `oauth_clients` is RLS-forced, and `sentin8_set_tenant_context`
-    // is transaction-local — a bare pool query sees zero rows under the
+    // is transaction-local - a bare pool query sees zero rows under the
     // app role and every authorize request failed with "unknown client_id".
     let client_row = with_client_env(&state, params.client_id.clone()).await;
     let client_row = match client_row {
@@ -2030,7 +2030,7 @@ pub async fn authorize(
     };
     let (_consent_required_meta, client_redirect_uris, client_rar_types) = client_row;
 
-    // — inline RAR (PAR-stored details were validated at push
+    // - inline RAR (PAR-stored details were validated at push
     // time): each `type` must be in the client's registered
     // `authorization_details_types`. PAR-stored values overlay after this.
     if let Some(details) = params.authorization_details.as_ref() {
@@ -2158,7 +2158,7 @@ pub struct AuthorizeContinueRequest {
     pub user_id: Uuid,
     /// The session token.
     pub session_token: String,
-    /// OIDC nonce — bound into the ID token (SEC-).
+    /// OIDC nonce - bound into the ID token (SEC-).
     #[serde(default)]
     /// The nonce.
     pub nonce: Option<String>,
@@ -2166,7 +2166,7 @@ pub struct AuthorizeContinueRequest {
     #[serde(default)]
     /// The resource.
     pub resource: Option<String>,
-    /// OAuth response mode — `jwt` triggers a JARM response (SEC-).
+    /// OAuth response mode - `jwt` triggers a JARM response (SEC-).
     #[serde(default)]
     /// The response mode.
     pub response_mode: Option<String>,
@@ -2177,7 +2177,7 @@ pub struct AuthorizeContinueRequest {
     #[serde(default)]
     /// The selected account ids.
     pub selected_account_ids: Vec<String>,
-    /// RFC 9396 authorization_details — validated against the
+    /// RFC 9396 authorization_details - validated against the
     /// client's registered types; stored in the code record and echoed
     /// into the ID token.
     #[serde(default)]
@@ -2213,9 +2213,9 @@ pub async fn authorize_continue(
         _ => return Err((StatusCode::UNAUTHORIZED, "invalid session".into())),
     };
 
-    // SEC- — re-validate the redirect_uri against the client's
+    // SEC- - re-validate the redirect_uri against the client's
     // registered allow-list before issuing any code (open-redirect
-    // defense). Context-scoped lookup (SEC- — RLS).
+    // defense). Context-scoped lookup (SEC- - RLS).
     let (_consent_meta, redirect_uris, _rar_types) = with_client_env(&state, req.client_id.clone())
         .await
         .ok_or_else(|| (StatusCode::BAD_REQUEST, "unknown client_id".into()))?;
@@ -2226,7 +2226,7 @@ pub async fn authorize_continue(
         ));
     }
 
-    // SEC- — PKCE challenge must be present when the caller's env-resolved
+    // SEC- - PKCE challenge must be present when the caller's env-resolved
     // profile mandates it (FAPI 2.0 default).
     let profile = resolve_security_profile(&state.pool, &headers, "env").await;
     if profile.require_pkce && req.code_challenge.as_deref().unwrap_or("").is_empty() {
@@ -2246,7 +2246,7 @@ pub async fn authorize_continue(
     // Validate the user exists in the auth users table. The session's
     // env_id is the authoritative tenant key (used below in code_data).
     // RLS : the users existence check delegates to the shared
-    // two-step lookup — the session's env is known here, but the users row
+    // two-step lookup - the session's env is known here, but the users row
     // itself must be read under its own tenant policy (a context-less
     // SELECT returns no row under the NOBYPASSRLS service role).
     let _user_row = crate::sessions::user_env(&state.pool, req.user_id)
@@ -2262,10 +2262,10 @@ pub async fn authorize_continue(
            "code_challenge": req.code_challenge,
            "nonce": req.nonce,
            "resource": req.resource,
-    // auth_time for the ID token (OIDC Core ) — the session's issue time.
+    // auth_time for the ID token (OIDC Core ) - the session's issue time.
            "auth_time": session.created_at.timestamp(),
            "selected_account_ids": req.selected_account_ids,
-    // RFC 9396 authorization_details — echoed into the ID
+    // RFC 9396 authorization_details - echoed into the ID
     // token via `_claim_names` at exchange time.
            "authorization_details": req.authorization_details,
        });
@@ -2287,7 +2287,7 @@ pub async fn authorize_continue(
     drop(conn);
 
     // Build the redirect URL with code + state.
-    // (RFC 9207) — include `iss` parameter when require_iss is true.
+    // (RFC 9207) - include `iss` parameter when require_iss is true.
     let iss_param = if profile.require_iss {
         format!("&iss={}", urlencode(&state.config.issuer))
     } else {
@@ -2312,7 +2312,7 @@ pub async fn authorize_continue(
         accounts_param,
     );
 
-    // SEC- — JARM (`response_mode=jwt`): when the profile
+    // SEC- - JARM (`response_mode=jwt`): when the profile
     // requires JARM and the client requested the JWT response mode, the
     // response parameters are wrapped in a signed JWT delivered via the
     // `response` query parameter instead of plain query params.
@@ -2372,7 +2372,7 @@ pub struct TokenRequest {
     #[serde(default)]
     /// The scope.
     pub scope: Option<String>,
-    /// CIBA grant — the auth_req_id from bc-authorize.
+    /// CIBA grant - the auth_req_id from bc-authorize.
     #[serde(default)]
     /// auth req identifier.
     pub auth_req_id: Option<String>,
@@ -2381,7 +2381,7 @@ pub struct TokenRequest {
     #[serde(default)]
     /// The subject token.
     pub subject_token: Option<String>,
-    /// Token type of the subject token — must be `urn:ietf:params:oauth:token-type:access_token`.
+    /// Token type of the subject token - must be `urn:ietf:params:oauth:token-type:access_token`.
     #[serde(default)]
     /// The subject token type.
     pub subject_token_type: Option<String>,
@@ -2389,7 +2389,7 @@ pub struct TokenRequest {
     #[serde(default)]
     /// The audience.
     pub audience: Option<String>,
-    /// The requested token type — must be `urn:ietf:params:oauth:token-type:access_token`.
+    /// The requested token type - must be `urn:ietf:params:oauth:token-type:access_token`.
     #[serde(default)]
     /// The requested token type.
     pub requested_token_type: Option<String>,
@@ -2397,7 +2397,7 @@ pub struct TokenRequest {
     #[serde(default, rename = "requested_tenancy.env_id")]
     /// requested env identifier.
     pub requested_env_id: Option<String>,
-    /// RFC 8707 resource indicator (SEC-) — the audience for the
+    /// RFC 8707 resource indicator (SEC-) - the audience for the
     /// issued access token.
     #[serde(default)]
     /// The resource.
@@ -2460,7 +2460,7 @@ pub async fn token(
     headers: axum::http::HeaderMap,
     raw_body: axum::body::Bytes,
 ) -> Result<Json<TokenResponse>, TokenError> {
-    // . — RFC 9421 HTTP request signatures (FAPI 2.0 Message
+    // . - RFC 9421 HTTP request signatures (FAPI 2.0 Message
     // Signing): when the caller's env-resolved profile requires them, the
     // raw body is needed for the Content-Digest check BEFORE the form is
     // parsed (the digest covers the exact bytes on the wire).
@@ -2472,7 +2472,7 @@ pub async fn token(
         ))
     })?;
 
-    // SEC- — authenticate the client on every grant. Confidential
+    // SEC- - authenticate the client on every grant. Confidential
     // clients must present their credentials; public clients (dash, CLI) are
     // resolved by client_id only. The resolved client is passed to the grant
     // handlers so codes/CIBA requests/refresh tokens can be bound to it.
@@ -2502,14 +2502,14 @@ pub async fn token(
     .await
     .map_err(|(s, m)| TokenError::OAuth(OAuthTokenError::with_desc(s, "invalid_client", m)))?;
 
-    // SEC- — DPoP proof handling. When the caller's env-resolved profile
+    // SEC- - DPoP proof handling. When the caller's env-resolved profile
     // requires DPoP, every token request must carry a valid proof;
     // the proof key thumbprint (`jkt`) sender-constrains the issued access token.
     let profile = resolve_security_profile(&state.pool, &headers, "env").await;
 
-    // — FAPI allow-list enforcement. A FAPI profile constrains the
+    // - FAPI allow-list enforcement. A FAPI profile constrains the
     // client authentication method (secrets are insufficient for confidential
-    // clients under FAPI — sender-constraining is required) and the grant
+    // clients under FAPI - sender-constraining is required) and the grant
     // family. First-party public clients are admitted via the dpop_exempt
     // path below; everything else must satisfy the profile.
     if let Some(fapi) = crate::fapi::FapiProfile::from_str(&profile.profile) {
@@ -2536,7 +2536,7 @@ pub async fn token(
     }
     let mut dpop_jkt: Option<String> = None;
     if let Some(proof) = crate::dpop::extract_dpop_header(&headers) {
-        // htu — the token endpoint URI from the client's perspective. Use the
+        // htu - the token endpoint URI from the client's perspective. Use the
         // request-host-resolved issuer (same logic as discovery): clients on
         // tenant auth domains (auth.staff.{org}.sentin8.local) claim that
         // host, while platform calls claim config.issuer.
@@ -2556,14 +2556,14 @@ pub async fn token(
  // RFC 8693 token exchange is an M2M delegation grant: the
  // subscriber authenticates as a service client and sender-
  // constraining comes from the act chain + optional cnf cert
- // binding — a DPoP proof is not required (matches the
+ // binding - a DPoP proof is not required (matches the
  // client_credentials exemption, design ).
         && req.grant_type != "urn:ietf:params:oauth:grant-type:token-exchange"
         && !is_dpop_exempt(&client)
     {
         // DPoP is required for user-facing grants; client_credentials M2M
         // clients authenticate with secrets/mTLS and are exempt (design ).
-        // First-party public clients (dash, sentin8-cli — token_endpoint_auth
+        // First-party public clients (dash, sentin8-cli - token_endpoint_auth
         // method 'none', no mTLS binding) are also exempt: they have no
         // registered key material to sign a proof with, and the design's
         // caller-compatibility directive preserves their flows. A DPoP proof
@@ -2575,7 +2575,7 @@ pub async fn token(
         )));
     }
 
-    // . — RFC 9421 HTTP request signatures (FAPI 2.0 Message
+    // . - RFC 9421 HTTP request signatures (FAPI 2.0 Message
     // Signing): when the env-resolved profile requires them, every mutating
     // token request must carry a signature over @method, @target-uri, and
     // the Content-Digest of the exact body bytes (swap protection).
@@ -2605,9 +2605,9 @@ pub async fn token(
             handle_device_code(&state, &client, req).await
         }
         "urn:ietf:params:oauth:grant-type:ciba" => {
-            // — under the fapi_ciba profile, the polling request
+            // - under the fapi_ciba profile, the polling request
             // MUST carry a DPoP proof (verified above; here we require its
-            // presence — the proof was already validated and its jkt bound).
+            // presence - the proof was already validated and its jkt bound).
             if profile.profile == "fapi_ciba" && dpop_jkt.is_none() && !is_dpop_exempt(&client) {
                 return Err(TokenError::OAuth(OAuthTokenError::with_desc(
                     StatusCode::UNAUTHORIZED,
@@ -2632,7 +2632,7 @@ pub async fn token(
 
 /// Authorization code exchange.
 ///
-/// SEC- — the code is bound to the authenticated client (mix-up
+/// SEC- - the code is bound to the authenticated client (mix-up
 /// defense) and PKCE is mandatory when the stored challenge exists. When
 /// the granted scope includes `openid`, an OIDC ID token is issued
 /// (SEC-) with `aud` = client_id, `nonce` from the authorize
@@ -2671,14 +2671,14 @@ async fn handle_code_exchange(
         )
     })?;
 
-    // Delete the code immediately (one-time use — fail-closed: a failed
+    // Delete the code immediately (one-time use - fail-closed: a failed
     // validation burns the code).
     let _: () = valkey_conn.del(&code_key).await.unwrap_or(());
 
     let code_data: serde_json::Value = serde_json::from_str(&code_json)
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
-    // SEC- — client binding: the authenticated client must be the
+    // SEC- - client binding: the authenticated client must be the
     // client the code was issued for (mix-up attack defense, RFC 8252/9207).
     let stored_client_id = code_data["client_id"].as_str().unwrap_or("");
     if stored_client_id != client.client_id {
@@ -2694,7 +2694,7 @@ async fn handle_code_exchange(
         )));
     }
 
-    // Validate redirect_uri matches (RFC 6749 — exact string match).
+    // Validate redirect_uri matches (RFC 6749 - exact string match).
     let stored_redirect = code_data["redirect_uri"].as_str().unwrap_or("");
     if stored_redirect != redirect_uri {
         return Err(TokenError::OAuth(OAuthTokenError::with_desc(
@@ -2704,7 +2704,7 @@ async fn handle_code_exchange(
         )));
     }
 
-    // Validate PKCE — the stored challenge must be proven (SEC-).
+    // Validate PKCE - the stored challenge must be proven (SEC-).
     let stored_challenge = code_data["code_challenge"].as_str().unwrap_or("");
     if !stored_challenge.is_empty() {
         let verifier = code_verifier
@@ -2718,7 +2718,7 @@ async fn handle_code_exchange(
             )));
         }
     } else {
-        // No challenge stored — only permissible when the caller's env-resolved
+        // No challenge stored - only permissible when the caller's env-resolved
         // profile does not mandate PKCE (SEC-).
         let profile = resolve_security_profile(&state.pool, headers, "env").await;
         if profile.require_pkce {
@@ -2750,7 +2750,7 @@ async fn handle_code_exchange(
     let auth_time = code_data["auth_time"]
         .as_i64()
         .unwrap_or_else(|| chrono::Utc::now().timestamp());
-    // RFC 9396 authorization_details — validated at authorize
+    // RFC 9396 authorization_details - validated at authorize
     // time; echoed into the ID token per RFC 9396
     let authorization_details = code_data
         .get("authorization_details")
@@ -2781,7 +2781,7 @@ async fn handle_code_exchange(
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
     let merged_scope = crate::handlers::merge_scopes(scope, &role_scopes);
 
-    // SEC- — resource indicator (RFC 8707): the `resource` param
+    // SEC- - resource indicator (RFC 8707): the `resource` param
     // sets the access token's `aud`.
     let resource = req.resource.as_deref().filter(|s| !s.is_empty());
     if let Some(r) = resource {
@@ -2808,12 +2808,12 @@ async fn handle_code_exchange(
     if let Some(r) = resource {
         access_claims.aud = Some(r.to_string());
     }
-    // SEC- — DPoP sender-constraining (`cnf.jkt`).
+    // SEC- - DPoP sender-constraining (`cnf.jkt`).
     if let Some(jkt) = dpop_jkt {
         access_claims.cnf = Some(crate::dpop::build_dpop_cnf_claim(jkt));
     }
 
-    // — Grant Management: record/merge the standing authorization
+    // - Grant Management: record/merge the standing authorization
     // (env, user, client) and bind the grant_id onto the issued tokens so a
     // grant revocation cascades to every token issued under it. Code exchange
     // always issues a user access token (`token_tp: "access"`).
@@ -2830,19 +2830,19 @@ async fn handle_code_exchange(
     {
         Ok(id) => Some(id.to_string()),
         Err(e) => {
-            tracing::warn!(error = %e, "grant recording failed — issuing token without grant_id");
+            tracing::warn!(error = %e, "grant recording failed - issuing token without grant_id");
             None
         }
     };
 
-    // — Grant lifecycle event (auth DESIGN §4): code issuance is the
+    // - Grant lifecycle event (auth DESIGN §4): code issuance is the
     // moment a customer's authorization becomes real for downstream
     // consent authorities. Payload-complete envelope so a data-holder
     // (e.g. Bank8:FDX's provider plane) can seed its grant ledger from
     // the event alone: `state` is the client's opaque OAuth state (the
     // consent handle a vertical's flow packed into PAR) and
     // `selected_account_ids` the accounts the customer selected on the
-    // hosted consent screen. Best-effort after the committed grant —
+    // hosted consent screen. Best-effort after the committed grant -
     // never blocks token issuance.
     crate::events::emit_event(
         &state.pool,
@@ -2933,9 +2933,9 @@ async fn handle_code_exchange(
 
 /// Refresh token grant.
 ///
-/// SEC- — the presented refresh token is **verified** (signature +
+/// SEC- - the presented refresh token is **verified** (signature +
 /// issuer + expiry) and checked against the revocation denylist before any
-/// new token is issued. SEC- — rotation: when the profile's
+/// new token is issued. SEC- - rotation: when the profile's
 /// `refresh_rotation` is enabled (default), a **new** refresh token is
 /// issued and the old `jti` is denylisted, so a stolen-and-replayed old
 /// token is rejected on its next use.
@@ -2950,7 +2950,7 @@ async fn handle_refresh(
         .as_deref()
         .ok_or_else(|| (StatusCode::BAD_REQUEST, "refresh_token is required".into()))?;
 
-    // SEC- — VERIFIED decode: signature + iss + exp.
+    // SEC- - VERIFIED decode: signature + iss + exp.
     let claims = verify_access_token_claims(state, refresh_token).map_err(|e| {
         (
             StatusCode::UNAUTHORIZED,
@@ -2966,7 +2966,7 @@ async fn handle_refresh(
         )));
     }
 
-    // SEC- — denylist check (revoked tokens are refused). RFC 6749
+    // SEC- - denylist check (revoked tokens are refused). RFC 6749
     // : the token endpoint answers with a JSON `{"error":"invalid_grant"}`
     // body.
     if is_token_revoked(state, &claims.jti).await {
@@ -2989,7 +2989,7 @@ async fn handle_refresh(
         .unwrap_or(SYSTEM_ENV_ID);
 
     // Requested scope may not exceed the token's original scope (RFC 6749
-    // — scope narrowing only).
+    // - scope narrowing only).
     let requested_scope = req.scope.clone().unwrap_or_else(|| claims.scope.clone());
     let original: std::collections::HashSet<&str> = claims.scope.split_whitespace().collect();
     let narrowed: Vec<&str> = requested_scope
@@ -3025,7 +3025,7 @@ async fn handle_refresh(
         Some(&client.client_id),
         Duration::seconds(state.config.access_token_ttl_secs as i64),
     );
-    // SEC- — resource indicator.
+    // SEC- - resource indicator.
     if let Some(r) = req.resource.as_deref().filter(|s| !s.is_empty()) {
         if !crate::resource_indicators::is_valid_resource_uri(r) {
             return Err(TokenError::OAuth(OAuthTokenError::with_desc(
@@ -3036,7 +3036,7 @@ async fn handle_refresh(
         }
         access_claims.aud = Some(r.to_string());
     }
-    // SEC- — DPoP sender-constraining.
+    // SEC- - DPoP sender-constraining.
     if let Some(jkt) = dpop_jkt {
         access_claims.cnf = Some(crate::dpop::build_dpop_cnf_claim(jkt));
     }
@@ -3045,7 +3045,7 @@ async fn handle_refresh(
         .sign(&access_claims)
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
-    // SEC- — rotation. When enabled (default), mint a NEW refresh
+    // SEC- - rotation. When enabled (default), mint a NEW refresh
     // token and denylist the old `jti` for the old token's remaining
     // lifetime, so a replay of the old token fails.
     let rotate = profile_refresh_rotation(state).await;
@@ -3102,7 +3102,7 @@ async fn profile_refresh_rotation(state: &AppState) -> bool {
 ///
 ///when the request arrives at `/mtls/oauth/token`, TLS
 /// injects `X-Sentin8-Client-Cert-Thumbprint`. If present, the issued M2M
-/// token includes a `cnf` (confirmation) claim with `x5t#S256` — making the
+/// token includes a `cnf` (confirmation) claim with `x5t#S256` - making the
 /// token certificate-bound (RFC 8705 sender-constraining).
 async fn handle_client_credentials(
     state: &AppState,
@@ -3111,7 +3111,7 @@ async fn handle_client_credentials(
     req: TokenRequest,
 ) -> Result<Json<TokenResponse>, (StatusCode, String)> {
     // The client was authenticated by `authenticate_client` in `token`
-    // (secret / Basic / mTLS / private_key_jwt — SEC-).
+    // (secret / Basic / mTLS / private_key_jwt - SEC-).
 
     // Resolve the client's full scope set: own registered scopes ∪
     // permissions of Roles assigned via sentin8_auth_client_roles ,
@@ -3157,13 +3157,13 @@ async fn handle_client_credentials(
 
     // VDC-2/VDC-4 (design/sentin8-vertical-data-plane-contract.md §VDC.4/§VDC.5):
     // stamp the workload's vertical + owning service claims from the DCR
-    // grant row (keyed by the registered client_name — the workload name).
+    // grant row (keyed by the registered client_name - the workload name).
     // Bus's event-ownership gate checks `vertical` on produce; Sys's
     // tenant-snapshot scoped discovery checks `service_type` (the caller
-    // sees only envs where its own service is enabled) — no consumer ever
+    // sees only envs where its own service is enabled) - no consumer ever
     // reads auth tables for either.
     //
-    // RLS: `auth.oauth_clients` is FORCE-RLS'd on env — the lookup MUST run
+    // RLS: `auth.oauth_clients` is FORCE-RLS'd on env - the lookup MUST run
     // inside a transaction with the client's own env context set (an
     // autocommit pool read sees zero rows, the claim drops, and the Bus gate
     // trips on every relay produce).
@@ -3196,7 +3196,7 @@ async fn handle_client_credentials(
     if let Some(thumbprint) = &client.cert_thumbprint {
         claims.cnf = Some(crate::mtls::build_cnf_claim(thumbprint));
     }
-    // SEC- — resource indicator (RFC 8707).
+    // SEC- - resource indicator (RFC 8707).
     if let Some(r) = req.resource.as_deref().filter(|s| !s.is_empty()) {
         if !crate::resource_indicators::is_valid_resource_uri(r) {
             return Err((StatusCode::BAD_REQUEST, "invalid resource indicator".into()));
@@ -3380,7 +3380,7 @@ async fn verify_external_jwt(
     }
 
     // 1. Resolve the issuer's jwks_uri via discovery. `expected_iss` is the
-    // exact `iss` claim value — an https origin URL — so the discovery
+    // exact `iss` claim value - an https origin URL - so the discovery
     // document lives at `{iss}/.well-known/openid-configuration` (OIDC
     // Discovery ) with the RFC 8414 fallback path.
     let http = reqwest::Client::builder()
@@ -3424,7 +3424,7 @@ async fn verify_external_jwt(
 
     // 2. Fetch + cache the JWKS (5-min TTL) and verify the signature with
     // each published key. `verify_with_jwk` enforces the algorithm
-    // allow-list (RS256/ES256) — `"none"` and HS256-style confusion are
+    // allow-list (RS256/ES256) - `"none"` and HS256-style confusion are
     // rejected.
     let keys = fetch_external_jwks(state, &jwks_uri).await.ok_or_else(|| {
         (
@@ -3444,7 +3444,7 @@ async fn verify_external_jwt(
 
     // 3. Claim re-checks on the verified token: `iss` must match the
     // federated-credential row's issuer and the token must not be
-    // expired (defense-in-depth — the caller checks these on the
+    // expired (defense-in-depth - the caller checks these on the
     // unverified decode).
     let iss_now = claims.get("iss").and_then(|v| v.as_str()).unwrap_or("");
     if iss_now != expected_iss {
@@ -3503,18 +3503,18 @@ async fn handle_token_exchange(
             .and_then(|v| v.as_str())
             .unwrap_or("");
         if iss == state.config.issuer {
-            // Self-issued JWT — publisher-token exchange path.
+            // Self-issued JWT - publisher-token exchange path.
             return handle_publisher_token_exchange(state, req, headers, &st, &claims_unverified)
                 .await;
         }
-        // External JWT — federated credentials path.
+        // External JWT - federated credentials path.
         return handle_federated_token_exchange(state, req, &st).await;
     }
 
     Err((
         StatusCode::BAD_REQUEST,
         "subject_token_type must be urn:ietf:params:oauth:token-type:jwt (federated credentials or publisher-token exchange). \
-         sys→org access-token exchange has been replaced by the Delegation Gateway — \
+         sys→org access-token exchange has been replaced by the Delegation Gateway - \
          use POST /delegate/access-token instead."
             .into(),
     ))
@@ -3564,7 +3564,7 @@ async fn handle_publisher_token_exchange(
         ));
     }
 
-    // Verify token type — accept access, m2m, delegated. Reject refresh/id/actor.
+    // Verify token type - accept access, m2m, delegated. Reject refresh/id/actor.
     match publisher_claims.token_tp.as_str() {
         "access" | "m2m" | "delegated" => {}
         other => {
@@ -3601,7 +3601,7 @@ async fn handle_publisher_token_exchange(
     // 2. Resolve the subscriber (requesting M2M client)_act check.
     // fix : subscriber resolution + may_act + org lookup all
     // run inside ONE transaction with the subscriber's env context (same
-    // connection) — the client and role rows are RLS-protected and the
+    // connection) - the client and role rows are RLS-protected and the
     // pool-only path is policy-blocked (revived tests caught this).
     let client_id = req.client_id.as_deref().ok_or_else(|| {
         (
@@ -3651,9 +3651,9 @@ async fn handle_publisher_token_exchange(
 
     // may_act check: subscriber must be authorized in the publisher's env.
     // `env_id` is globally unique (no org_id on auth tables since the
-    // realm removal refactor) — env match alone identifies the tenant.
+    // realm removal refactor) - env match alone identifies the tenant.
     // sys.environments is QUALIFIED: the service role's search_path is
-    // `auth, public` (no `sys`) — architecture (owner schema reads
+    // `auth, public` (no `sys`) - architecture (owner schema reads
     // are declared, not search-path-inherited).
     let publisher_org: uuid::Uuid =
         sqlx::query_scalar(r#"SELECT org_id FROM sys.environments WHERE id = $1"#)
@@ -3867,7 +3867,7 @@ pub async fn introspect(
     headers: HeaderMap,
     axum::Form(req): axum::Form<IntrospectRequest>,
 ) -> Result<Response, (StatusCode, String)> {
-    // SEC- — RFC 7662 : the caller MUST authenticate.
+    // SEC- - RFC 7662 : the caller MUST authenticate.
     let client = authenticate_client(
         &state,
         &headers,
@@ -3875,13 +3875,13 @@ pub async fn introspect(
         req.client_secret.as_deref(),
         None,
         true,
-        // RFC 7662 : introspection requires client auth — a public
+        // RFC 7662 : introspection requires client auth - a public
         // client_id alone is NOT sufficient.
         false,
     )
     .await?;
 
-    // . — RFC 9701 JWT introspection. The signed JWT form is
+    // . - RFC 9701 JWT introspection. The signed JWT form is
     // returned when the caller requests it (Accept: application/token-
     // introspection+jwt) or when the caller's env-resolved profile mandates
     // it (fapi_2_message_signing). The plain JSON form remains the default.
@@ -3889,7 +3889,7 @@ pub async fn introspect(
     let jwt_requested = crate::jwt_introspection::wants_jwt_response(&headers);
     let jwt_form = jwt_requested || profile.require_jwt_introspection;
 
-    // SEC- — VERIFIED decode: a forged or expired token must
+    // SEC- - VERIFIED decode: a forged or expired token must
     // report `active: false`, never leak claims. Denylisted (revoked)
     // tokens are inactive too (SEC-).
     let verified = verify_access_token_claims(&state, &req.token)
@@ -4026,7 +4026,7 @@ async fn render_introspection(
                 })
         }
         Err(e) => {
-            tracing::error!(error = %e, "JWT introspection signing failed — falling back to plain JSON");
+            tracing::error!(error = %e, "JWT introspection signing failed - falling back to plain JSON");
             Json(plain).into_response()
         }
     }
@@ -4045,14 +4045,14 @@ pub struct IntrospectRequest {
     pub client_secret: Option<String>,
 }
 
-// ── Revoke (RFC 7009 — SEC-) ─────────────────────────────────
+// ── Revoke (RFC 7009 - SEC-) ─────────────────────────────────
 
 #[derive(Debug, Deserialize, utoipa::ToSchema)]
 /// Request body for revoke.
 pub struct RevokeRequest {
     /// The token.
     pub token: String,
-    /// RFC 7009 — a hint about the token type (optional).
+    /// RFC 7009 - a hint about the token type (optional).
     #[serde(default)]
     /// The token type hint.
     pub token_type_hint: Option<String>,
@@ -4064,13 +4064,13 @@ pub struct RevokeRequest {
     pub client_secret: Option<String>,
 }
 
-/// `POST /oauth/revoke` — RFC 7009 token revocation.
+/// `POST /oauth/revoke` - RFC 7009 token revocation.
 ///
 /// The caller MUST authenticate (client auth, SEC-). Refresh
 /// tokens are denylisted by `jti` AND their matching DB sessions are
 /// revoked; access tokens are denylisted by `jti` for their remaining
 /// lifetime. Per RFC 7009 the endpoint returns 200 even for unknown
-/// tokens (after client auth) — never an oracle.
+/// tokens (after client auth) - never an oracle.
 /// Revoke it.
 #[utoipa::path(
     post,
@@ -4107,7 +4107,7 @@ pub async fn revoke(
     .map_err(|(s, m)| TokenError::OAuth(OAuthTokenError::with_desc(s, "invalid_client", m)))?;
 
     // Verify + classify the token. Unverifiable tokens are still 200
-    // (RFC 7009 — no oracle).
+    // (RFC 7009 - no oracle).
     if let Ok(claims) = verify_access_token_claims(&state, &req.token) {
         let remaining = (claims.exp - chrono::Utc::now().timestamp()).max(1);
         match claims.token_tp.as_str() {
@@ -4125,7 +4125,7 @@ pub async fn revoke(
                     .execute(&state.pool)
                     .await;
                     // Continuous access evaluation (auth DESIGN §10): subject-scope
-                    // revocation — the BFF session-reaper kills every cached BFF
+                    // revocation - the BFF session-reaper kills every cached BFF
                     // session for the user on the next request. Best-effort emit
                     // (own tx, never blocks the revocation above).
                     let env_id = claims
@@ -4163,7 +4163,7 @@ pub async fn revoke(
                 );
             }
             _ => {
-                // Unknown token type — still 200.
+                // Unknown token type - still 200.
             }
         }
     }
@@ -4191,7 +4191,7 @@ pub async fn userinfo(
     let token = extract_bearer_token(&headers)
         .ok_or_else(|| (StatusCode::UNAUTHORIZED, "missing bearer token".into()))?;
 
-    // SEC- — VERIFIED decode: forged/expired tokens get 401.
+    // SEC- - VERIFIED decode: forged/expired tokens get 401.
     let claims = verify_access_token_claims(&state, &token)
         .map_err(|e| (StatusCode::UNAUTHORIZED, format!("invalid token: {}", e.1)))?;
 
@@ -4199,9 +4199,9 @@ pub async fn userinfo(
     // policy design ): step-5 live identity resolution sends the raw
     // Bearer here, and a BFF-Delegation-Gateway token IS the standard shape
     // of env-targeted proxy calls. The delegation mint already verified the
-    // act user (`may_act` — env access + admin scope) and downscoped the
+    // act user (`may_act` - env access + admin scope) and downscoped the
     // scope set to the staff entitlement, so the resolution returns the act
-    // user's LIVE roles/scopes — policy evaluation then matches the human
+    // user's LIVE roles/scopes - policy evaluation then matches the human
     // the token acts for. `sub` stays the BFF client id (reported as
     // `client_id`); the id_token-style email/act chain is not leaked.
     if claims.token_tp == "delegated" {
@@ -4222,11 +4222,11 @@ pub async fn userinfo(
                 "delegated act is not a user".into(),
             )
         })?;
-        // — same-connection tenant context as the non-delegated branch
+        // - same-connection tenant context as the non-delegated branch
         // below. The delegated token's env is the TARGET env, but the act user
         // may live in EITHER env: a platform operator's row is in the SYSTEM
         // env, a tenant staff user's row is in the target env. The SELECT
-        // policy is `env_id = sentin8_current_env_id` — a single context
+        // policy is `env_id = sentin8_current_env_id` - a single context
         // cannot span both, so probe SYSTEM first, then the target env
         // (: the operator act user in SYSTEM env
         // was invisible under the target-env context → 401 "delegated act
@@ -4244,7 +4244,7 @@ pub async fn userinfo(
                 .begin()
                 .await
                 .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
-            // 1) SYSTEM env — platform operator act users.
+            // 1) SYSTEM env - platform operator act users.
             let _ = sqlx::query("SELECT sentin8_set_tenant_context($1)")
                 .bind(SYSTEM_ENV_ID)
                 .execute(&mut *tx)
@@ -4256,7 +4256,7 @@ pub async fn userinfo(
             .fetch_optional(&mut *tx)
             .await
             .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
-            // 2) Target env — tenant staff act users (only when different).
+            // 2) Target env - tenant staff act users (only when different).
             if row.is_none() && target_env != SYSTEM_ENV_ID {
                 let _ = sqlx::query("SELECT sentin8_set_tenant_context($1)")
                     .bind(target_env)
@@ -4306,7 +4306,7 @@ pub async fn userinfo(
 
     // For user tokens, look up the user + resolved roles/groups.
     if let Ok(user_id) = Uuid::parse_str(&claims.sub) {
-        // — the users table is FORCE-RLS'd; the token's env is the
+        // - the users table is FORCE-RLS'd; the token's env is the
         // tenant context for this lookup. A bare-pool read here silently
         // hides the user row (fetch_optional → None) and the handler falls
         // through to the M2M branch, returning roles:[] for every user
@@ -4352,7 +4352,7 @@ pub async fn userinfo(
                 .await
                 .unwrap_or_default();
             // LIVE effective scope set (design ): the role-permission
-            // closure recomputed per request — the same computation sign-in
+            // closure recomputed per request - the same computation sign-in
             // stamps into the JWT. Consumers (sentin8-policy resolver) use
             // this as the live `principal.scopes` input.
             let scopes = crate::handlers::fetch_role_scopes(&state.pool, user_id)
@@ -4373,7 +4373,7 @@ pub async fn userinfo(
 
     // For M2M tokens, return the subject + assigned roles (client-role
     // assignments resolved over nesting) + the client's effective scope set
-    // (its own registered scopes ∪ client-role permissions — design ).
+    // (its own registered scopes ∪ client-role permissions - design ).
     // Groups are not present for M2M (apps aren't group members).
     let (roles, scopes) = if let Ok(client_db_id) = Uuid::parse_str(&claims.sub) {
         let roles = crate::handlers::client_role_names(&state.pool, client_db_id)
@@ -4383,7 +4383,7 @@ pub async fn userinfo(
             .await
             .unwrap_or_default();
         // Union with the client's own registered scopes (the client's
-        // `oauth_clients.scopes` column) — mirrors the token-mint union.
+        // `oauth_clients.scopes` column) - mirrors the token-mint union.
         let mut scope_set: std::collections::BTreeSet<String> = claims
             .scope
             .split_whitespace()
@@ -4423,8 +4423,8 @@ pub async fn logout(
     headers: HeaderMap,
     Query(q): Query<LogoutQuery>,
 ) -> Response {
-    // RP-initiated logout — clear session cookie and redirect to
-    // post_logout_redirect_uri. SEC- — the redirect target must
+    // RP-initiated logout - clear session cookie and redirect to
+    // post_logout_redirect_uri. SEC- - the redirect target must
     // be registered for the client (`post_logout_redirect_uris`); otherwise
     // fall back to the local sign-in page (open-redirect defense).
     let redirect: String = match q.post_logout_redirect_uri.as_deref() {
@@ -4472,7 +4472,7 @@ pub async fn logout(
                 _ => {
                     tracing::warn!(
                         uri = %uri,
-                        "logout: unregistered post_logout_redirect_uri refused — falling back to /sign-in"
+                        "logout: unregistered post_logout_redirect_uri refused - falling back to /sign-in"
                     );
                     "/sign-in".to_string()
                 }
@@ -4497,7 +4497,7 @@ pub struct LogoutQuery {
     #[serde(default)]
     /// The post logout redirect URI.
     pub post_logout_redirect_uri: Option<String>,
-    /// OIDC RP-Initiated Logout — the ID token issued to the client;
+    /// OIDC RP-Initiated Logout - the ID token issued to the client;
     /// its `aud` identifies the client for allow-list validation.
     #[serde(default)]
     /// The id token hint.
@@ -4528,11 +4528,11 @@ fn redirect_uri_registered(registered: &[String], uri: &str) -> bool {
 
 /// Look up an OAuth client's routing metadata (consent_required,
 /// redirect_uris) with the RLS tenant context set on the SAME connection
-/// (SEC-). `oauth_clients` is FORCE RLS — a bare pool
+/// (SEC-). `oauth_clients` is FORCE RLS - a bare pool
 /// query returns no rows under the app role.
 ///
 /// The context env is resolved from the platform system env (authorize is
-/// a pre-authentication endpoint — there is no session env yet; clients
+/// a pre-authentication endpoint - there is no session env yet; clients
 /// are created in the env the DCR/admin call resolved, and test/dev
 /// deployments default to the system env).
 async fn with_client_env(
@@ -4573,7 +4573,7 @@ async fn verify_jar_request(
     issuer: &str,
 ) -> Result<crate::jar::JarClaims, String> {
     use sqlx::Row;
-    // Unverified decode first — to read routing claims and find the key.
+    // Unverified decode first - to read routing claims and find the key.
     let claims = crate::jar::decode_jar_unverified(request_jwt)?;
     crate::jar::validate_jar_claims(&claims, issuer)?;
 
@@ -4680,16 +4680,16 @@ fn glob_match_impl(p: &[char], pi: usize, t: &[char], ti: usize) -> bool {
     false
 }
 
-// Re-export Session for the logout handler (regular comment — not attached
+// Re-export Session for the logout handler (regular comment - not attached
 // to the device-authorization section below).
 
 // ── Device Authorization Grant (RFC 8628) ───────────────────────────────
 //OAuth 2.0 Device Authorization Grant for the sentin8 CLI.
 
-/// `POST /oauth/device` — request a device code.
+/// `POST /oauth/device` - request a device code.
 ///
 /// .5 (design ): the requesting client is authenticated and
-/// the device code is bound to it — the polling grant must present the
+/// the device code is bound to it - the polling grant must present the
 /// same client.
 /// Handle device authorization.
 #[utoipa::path(
@@ -4712,7 +4712,7 @@ pub async fn device_authorization(
     headers: HeaderMap,
     axum::Form(req): axum::Form<DeviceAuthRequest>,
 ) -> Result<Json<DeviceAuthResponse>, (StatusCode, String)> {
-    // SEC- — client auth (public CLI client resolves by id).
+    // SEC- - client auth (public CLI client resolves by id).
     let client = authenticate_client(
         &state,
         &headers,
@@ -4814,7 +4814,7 @@ async fn handle_device_code(
         )));
     }
 
-    // .5 (design ) — the polling client must match the client
+    // .5 (design ) - the polling client must match the client
     // that started the device flow.
     let stored_device_client = data["client_id"].as_str().unwrap_or("");
     if stored_device_client != client.client_id {
@@ -4825,7 +4825,7 @@ async fn handle_device_code(
         )));
     }
 
-    // status == "approved" — extract user_id, env_id, scope, audience.
+    // status == "approved" - extract user_id, env_id, scope, audience.
     let user_id: Uuid = data["user_id"]
         .as_str()
         .and_then(|s| Uuid::parse_str(s).ok())
@@ -4862,7 +4862,7 @@ async fn handle_device_code(
         email.as_deref(),
         Duration::seconds(state.config.access_token_ttl_secs as i64),
     );
-    // Apply the requested audience (RFC 8628 ) — e.g. `sentin8` for
+    // Apply the requested audience (RFC 8628 ) - e.g. `sentin8` for
     // platform-wide CLI access, or a specific service like `bus`.
     let mut access_claims = access_claims;
     if !audience.is_empty() {
@@ -4911,7 +4911,7 @@ async fn handle_device_code(
     }))
 }
 
-/// CIBA token grant — `urn:ietf:params:grant-type:ciba`.
+/// CIBA token grant - `urn:ietf:params:grant-type:ciba`.
 ///
 /// Polled by BFF's `delegate_poll`. Checks the CIBA request status in Valkey:
 /// - `pending` → 400 `authorization_pending`
@@ -4973,7 +4973,7 @@ async fn handle_ciba_token(
         )));
     }
 
-    // .5 (design ) — the polling client must match the client
+    // .5 (design ) - the polling client must match the client
     // that started the CIBA request (stored by bc_authorize).
     let stored_client = data["client_id"].as_str().unwrap_or("");
     if stored_client != client.client_id {
@@ -4984,7 +4984,7 @@ async fn handle_ciba_token(
         )));
     }
 
-    // status == "approved" — extract user_id, env_id, scope.
+    // status == "approved" - extract user_id, env_id, scope.
     let user_id: Uuid = data["user_id"]
         .as_str()
         .and_then(|s| Uuid::parse_str(s).ok())
@@ -5015,7 +5015,7 @@ async fn handle_ciba_token(
     // (Option A): if the CIBA request was initiated by a staff member
     // (BFF Delegation Gateway passed act_sub/act_email), the token is a
     // customer-consented DELEGATED token: `sub` = customer, `act` = staff
-    // (RFC 8693 ), short TTL (300s — time-boxed consent). Without a
+    // (RFC 8693 ), short TTL (300s - time-boxed consent). Without a
     // staff actor this is a plain customer CIBA token (decoupled-device
     // self-approval) with the platform default TTL.
     let act_sub = data["act_sub"].as_str().filter(|s| !s.is_empty());
@@ -5054,7 +5054,7 @@ async fn handle_ciba_token(
         .sign(&access_claims)
         .map_err(|e| TokenError::Internal(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
-    // : delegated (staff-initiated) CIBA tokens are NOT refreshable —
+    // : delegated (staff-initiated) CIBA tokens are NOT refreshable -
     // the consent is time-boxed and single-purpose. Re-access requires a
     // new customer approval.
     let refresh_token =
@@ -5076,7 +5076,7 @@ async fn handle_ciba_token(
     // Delete the CIBA request from Valkey (one-time use).
     let _: () = valkey_conn.del(&key).await.unwrap_or(());
 
-    // SEC- — OIDC ID token for CIBA grants when `openid` was granted:
+    // SEC- - OIDC ID token for CIBA grants when `openid` was granted:
     // same claim set as the code-exchange ID token (iss/sub/aud/jti/iat/exp/
     // auth_time/nonce/at_hash + email/profile claims).
     let id_token =
@@ -5110,7 +5110,7 @@ async fn handle_ciba_token(
             None
         };
 
-    // — audit the delegation mint (the customer-data access record).
+    // - audit the delegation mint (the customer-data access record).
     if let Some(staff_sub) = act_sub {
         tracing::info!(
             customer_sub = %user_id,
@@ -5131,11 +5131,11 @@ async fn handle_ciba_token(
     }))
 }
 
-/// `POST /device/verify` — the signed-in user submits the user_code to
+/// `POST /device/verify` - the signed-in user submits the user_code to
 /// approve a device sign-in (RFC 8628 ).
 ///
 /// SEC-: this endpoint **requires a valid session** (cookie or
-/// Bearer). The approving user is the session's user — `user_id`, `org_id`,
+/// Bearer). The approving user is the session's user - `user_id`, `org_id`,
 /// and `env_id` are taken from the session, NEVER from the request body,
 /// so knowledge of a user_code alone can no longer mint tokens for an
 /// arbitrary user.
@@ -5147,7 +5147,7 @@ async fn handle_ciba_token(
     responses(
         (status = 200, description = "Device sign-in approved (polling grant armed for this user)", body = serde_json::Value),
         (status = 400, description = "Unknown user_code"),
-        (status = 401, description = "No session — approval requires an authenticated user"),
+        (status = 401, description = "No session - approval requires an authenticated user"),
         (status = 410, description = "user_code expired"),
     ),
     security(),
@@ -5165,7 +5165,7 @@ pub async fn device_verify(
             "session required to approve a device sign-in".into(),
         )
     })?;
-    // SEC- — mutating session endpoint: CSRF-gated (Bearer exempt).
+    // SEC- - mutating session endpoint: CSRF-gated (Bearer exempt).
     crate::handlers::check_csrf(&headers, &session_token)?;
     let session = crate::sessions::Session::find_by_token(&state.pool, &session_token)
         .await
@@ -5221,7 +5221,7 @@ pub struct DeviceAuthRequest {
     #[serde(default)]
     /// The scope.
     pub scope: Option<String>,
-    /// RFC 8628 — requested audience for the issued token.
+    /// RFC 8628 - requested audience for the issued token.
     /// The CLI passes `sentin8` for platform-wide access.
     #[serde(default)]
     /// The audience.
@@ -5249,7 +5249,7 @@ pub struct DeviceAuthResponse {
 /// Request body for deviceverify.
 pub struct DeviceVerifyRequest {
     /// The device user_code being approved. The approving user identity
-    /// comes from the session (SEC-) — never the body.
+    /// comes from the session (SEC-) - never the body.
     /// The user code.
     pub user_code: String,
 }

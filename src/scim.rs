@@ -7,24 +7,24 @@
 //!
 //! Full SCIM 2.0 protocol (RFC 7643 + 7644) for user provisioning and management.
 //! Endpoints:
-//! GET /scim/v2/Users — list/search with SCIM filtering
-//! POST /scim/v2/Users — create user
-//! GET /scim/v2/Users/{id} — get user
-//! PUT /scim/v2/Users/{id} — replace user
-//! PATCH /scim/v2/Users/{id} — partial update
-//! DELETE /scim/v2/Users/{id} — deactivate
-//! GET /scim/v2/Groups — list groups (read-only)
-//! GET /scim/v2/ServiceProviderConfig — capabilities metadata
-//! GET /scim/v2/ResourceTypes — supported resource types
+//! GET /scim/v2/Users - list/search with SCIM filtering
+//! POST /scim/v2/Users - create user
+//! GET /scim/v2/Users/{id} - get user
+//! PUT /scim/v2/Users/{id} - replace user
+//! PATCH /scim/v2/Users/{id} - partial update
+//! DELETE /scim/v2/Users/{id} - deactivate
+//! GET /scim/v2/Groups - list groups (read-only)
+//! GET /scim/v2/ServiceProviderConfig - capabilities metadata
+//! GET /scim/v2/ResourceTypes - supported resource types
 //!
-//! Authentication (SEC-): the Bearer token is **verified** —
-//! signature + issuer + expiry via Auth's own signing keys — and must
+//! Authentication (SEC-): the Bearer token is **verified** -
+//! signature + issuer + expiry via Auth's own signing keys - and must
 //! carry `sentin8:scim:read` / `sentin8:scim:write`. Previously the token was decoded
 //! without verification, so any forged JWT with a `scope` claim could
 //! perform cross-tenant user CRUD.
 //!
 //! Tenant scoping: the token's `env_id` claim is the sole tenant key
-//! (the `org_id` column was removed from users — org is resolved
+//! (the `org_id` column was removed from users - org is resolved
 //! from env where needed). All queries are env-scoped + RLS-backed.
 //!
 //! Design:
@@ -62,7 +62,7 @@ pub struct ScimListResponse {
     pub resources: Vec<ScimUser>,
 }
 
-/// SCIM 2.0 user resource (RFC 7643 — subset).
+/// SCIM 2.0 user resource (RFC 7643 - subset).
 #[derive(Debug, Serialize, utoipa::ToSchema)]
 /// The scimuser type.
 pub struct ScimUser {
@@ -219,7 +219,7 @@ pub struct ScimPatchRequest {
 
 // ── Handlers ─────────────────────────────────────────────────────────────
 
-/// `GET /scim/v2/Users` — list/search users.
+/// `GET /scim/v2/Users` - list/search users.
 ///
 /// Supports SCIM filter: `userName eq "email"`, `emails.value co "text"`,
 /// `name.familyName sw "prefix"`. Falls back to listing all if no filter.
@@ -241,7 +241,7 @@ pub async fn list_users(
     headers: axum::http::HeaderMap,
     Query(q): Query<ScimQuery>,
 ) -> Result<Json<ScimListResponse>, (StatusCode, String)> {
-    // Validate auth — require scim:read scope.
+    // Validate auth - require scim:read scope.
     let env_id = validate_scim_auth(&state, &headers, "sentin8:scim:read").await?;
 
     let limit = q.count.unwrap_or(100).min(200).max(1);
@@ -252,7 +252,7 @@ pub async fn list_users(
 
     // Set tenant context for RLS on a single acquired connection and run all
     // queries on that SAME connection. sentin8_set_tenant_context uses
-    // set_config(..., true) which is transaction-local — if we set it on one
+    // set_config(..., true) which is transaction-local - if we set it on one
     // connection and then query on the pool (a different connection), the
     // context is absent and RLS blocks all rows (returns 0 results).
     let mut conn = state
@@ -319,7 +319,7 @@ pub async fn list_users(
     }))
 }
 
-/// `POST /scim/v2/Users` — create a user.
+/// `POST /scim/v2/Users` - create a user.
 #[utoipa::path(
     post,
     path = "/scim/v2/Users",
@@ -376,7 +376,7 @@ pub async fn create_user(
         Err(e) => return Err((StatusCode::INTERNAL_SERVER_ERROR, e.to_string())),
     };
 
-    // SEC- — SCIM mutations emit the same domain events as the
+    // SEC- - SCIM mutations emit the same domain events as the
     // admin API (the design catalog lists SCIM as a user.* trigger).
     let created_id: Uuid = row.try_get("id").unwrap_or_default();
     crate::events::emit_event(
@@ -390,7 +390,7 @@ pub async fn create_user(
     Ok((StatusCode::CREATED, Json(row_to_scim_user(&row))))
 }
 
-/// `GET /scim/v2/Users/{id}` — get a user.
+/// `GET /scim/v2/Users/{id}` - get a user.
 #[utoipa::path(
     get,
     path = "/scim/v2/Users/{id}",
@@ -426,7 +426,7 @@ pub async fn get_user(
     }
 }
 
-/// `PUT /scim/v2/Users/{id}` — replace a user.
+/// `PUT /scim/v2/Users/{id}` - replace a user.
 #[utoipa::path(
     put,
     path = "/scim/v2/Users/{id}",
@@ -477,7 +477,7 @@ pub async fn replace_user(
 
     match row {
         Some(r) => {
-            // SEC- — SCIM mutations emit the same domain events as the
+            // SEC- - SCIM mutations emit the same domain events as the
             // admin API (the design catalog lists SCIM as a user.* trigger).
             crate::events::emit_event(
                 &state.pool,
@@ -492,7 +492,7 @@ pub async fn replace_user(
     }
 }
 
-/// `PATCH /scim/v2/Users/{id}` — partial update.
+/// `PATCH /scim/v2/Users/{id}` - partial update.
 #[utoipa::path(
     patch,
     path = "/scim/v2/Users/{id}",
@@ -594,7 +594,7 @@ pub async fn patch_user(
 
     match row {
         Some(r) => {
-            // SEC- — SCIM mutations emit the same domain events as the
+            // SEC- - SCIM mutations emit the same domain events as the
             // admin API (the design catalog lists SCIM as a user.* trigger).
             let updated_id: Uuid = r.try_get("id").unwrap_or_default();
             crate::events::emit_event(
@@ -610,7 +610,7 @@ pub async fn patch_user(
     }
 }
 
-/// `DELETE /scim/v2/Users/{id}` — deactivate a user.
+/// `DELETE /scim/v2/Users/{id}` - deactivate a user.
 #[utoipa::path(
     delete,
     path = "/scim/v2/Users/{id}",
@@ -643,7 +643,7 @@ pub async fn delete_user(
         return Err((StatusCode::NOT_FOUND, "user not found".into()));
     }
 
-    // SEC- — SCIM delete (deactivate) emits the catalog event.
+    // SEC- - SCIM delete (deactivate) emits the catalog event.
     crate::events::emit_event(
         &state.pool,
         env_id,
@@ -655,7 +655,7 @@ pub async fn delete_user(
     Ok(StatusCode::NO_CONTENT)
 }
 
-/// `GET /scim/v2/ServiceProviderConfig` — capabilities metadata.
+/// `GET /scim/v2/ServiceProviderConfig` - capabilities metadata.
 #[utoipa::path(
     get,
     path = "/scim/v2/ServiceProviderConfig",
@@ -682,11 +682,11 @@ pub async fn service_provider_config() -> Json<serde_json::Value> {
     }))
 }
 
-/// `GET /scim/v2/Groups` — list groups (read-only, env-scoped).
+/// `GET /scim/v2/Groups` - list groups (read-only, env-scoped).
 ///
 /// Enterprise IdP directory sync (Entra/Okta/Google) reads group
 /// memberships to mirror them. Group *management* (create/update/delete)
-/// stays on the Auth admin API — SCIM group writes are not exposed.
+/// stays on the Auth admin API - SCIM group writes are not exposed.
 /// List groups.
 #[utoipa::path(
     get,
@@ -732,7 +732,7 @@ pub async fn list_groups(
     })))
 }
 
-/// `GET /scim/v2/ResourceTypes` — supported resource types.
+/// `GET /scim/v2/ResourceTypes` - supported resource types.
 #[utoipa::path(
     get,
     path = "/scim/v2/ResourceTypes",
@@ -773,7 +773,7 @@ async fn validate_scim_auth(
         .and_then(|s| s.strip_prefix("Bearer "))
         .ok_or_else(|| (StatusCode::UNAUTHORIZED, "missing Bearer token".into()))?;
 
-    // SEC- — VERIFIED decode: signature + issuer + expiry via
+    // SEC- - VERIFIED decode: signature + issuer + expiry via
     // Auth's own keys. A forged token fails here instead of being honored.
     let claims = state
         .keys
@@ -797,7 +797,7 @@ async fn validate_scim_auth(
     }
 
     // Tenant key: the token's env_id (SYSTEM_ENV_ID fallback for platform
-    // M2M tokens — e.g. the eTeller BFF directory-sync client).
+    // M2M tokens - e.g. the eTeller BFF directory-sync client).
     let env_id = claims
         .env_id
         .as_deref()
@@ -985,10 +985,10 @@ pub struct ScimBulkResponse {
     pub operations: Vec<ScimBulkOperationResult>,
 }
 
-/// `POST /scim/v2/Bulk` — batch users provisioning (AUTH-5). Thin wrapper:
+/// `POST /scim/v2/Bulk` - batch users provisioning (AUTH-5). Thin wrapper:
 /// each operation dispatches through the SAME per-user SQL paths the
 /// individual endpoints run (create/replace/delete; patch maps to
-/// replace) — no second write path, no partial-batch semantics beyond
+/// replace) - no second write path, no partial-batch semantics beyond
 /// `failOnErrors`. Authenticated once for the whole batch.
 #[utoipa::path(
     post,
@@ -1067,7 +1067,7 @@ async fn dispatch_bulk_op(
     let method = op.method.to_ascii_uppercase();
     let path = op.path.trim().trim_start_matches('/');
     let segments: Vec<&str> = path.split('/').filter(|s| !s.is_empty()).collect();
-    // Expect ["scim","v2","Users"(,{id})] — anything else is unsupported.
+    // Expect ["scim","v2","Users"(,{id})] - anything else is unsupported.
     if segments.len() < 3 || segments[0] != "scim" || segments[1] != "v2" || segments[2] != "Users"
     {
         return Err((

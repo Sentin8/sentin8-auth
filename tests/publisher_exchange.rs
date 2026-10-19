@@ -4,7 +4,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 // ═══════════════════════════════════════════════════════════════════════
-// 23.3 — publisher-token exchange (Sentin8:Bus ) integration tests
+// 23.3 - publisher-token exchange (Sentin8:Bus ) integration tests
 // ═══════════════════════════════════════════════════════════════════════
 //
 // A subscriber service (M2M client) exchanges a publisher's Sentin8:Auth
@@ -21,7 +21,7 @@
 //
 // Run: make test-rust-integration (from repo root) after `make infra-up`.
 // Runtime-skip gating (sentin8-testing strategy): returns `None` when
-// PostgreSQL is unreachable — the caller skips with one printed line.
+// PostgreSQL is unreachable - the caller skips with one printed line.
 
 use axum::{
     body::Body,
@@ -37,10 +37,10 @@ use sentin8_auth_server::{build_router, AppState, SigningKeys, TestConfig};
 const SYS_ENV: &str = "00000000-0000-0000-0000-000000000002";
 
 async fn spawn_server() -> Option<(axum::Router, PgPool, Arc<SigningKeys>)> {
-    // cargo test does NOT run the binary's dotenvy step — load the repo
+    // cargo test does NOT run the binary's dotenvy step - load the repo
     // .env here so SENTIN8_AUTH_DB_DSN (the service role, auth search_path)
     // applies; without it the harness falls back to `default_database_url`
-    // (sentin8_app — no USAGE on schema auth) and every test fails with
+    // (sentin8_app - no USAGE on schema auth) and every test fails with
     // "permission denied for schema auth".
     let _ = dotenvy::dotenv();
     let config = TestConfig::for_testing();
@@ -48,7 +48,7 @@ async fn spawn_server() -> Option<(axum::Router, PgPool, Arc<SigningKeys>)> {
         Ok(p) => p,
         Err(e) => {
             eprintln!(
-                "skipping DB-backed auth tests — PostgreSQL unreachable ({}): {e}",
+                "skipping DB-backed auth tests - PostgreSQL unreachable ({}): {e}",
                 config.database_url
             );
             return None;
@@ -90,7 +90,7 @@ fn publisher_access_claims(sub: &str, scope: &str, exp: i64) -> AuthClaims {
         act: None,
         cnf: None,
         grant_id: None,
-        // User access tokens carry no vertical/service_type — those stamp
+        // User access tokens carry no vertical/service_type - those stamp
         // M2M produce workloads only (VDC-2/4).
         vertical: None,
         service_type: None,
@@ -103,7 +103,7 @@ fn publisher_access_claims(sub: &str, scope: &str, exp: i64) -> AuthClaims {
 async fn seed_subscriber(pool: &PgPool, client_id: &str, scopes: &[&str]) {
     let env: uuid::Uuid = SYS_ENV.parse().unwrap();
     // RLS: the client + role writes need tenant context on the SAME
-    // connection — the pool-only path is policy-blocked.
+    // connection - the pool-only path is policy-blocked.
     let mut tx = pool.begin().await.unwrap();
     let _ = sqlx::query("SELECT sentin8_set_tenant_context($1)")
         .bind(env)
@@ -125,7 +125,7 @@ async fn seed_subscriber(pool: &PgPool, client_id: &str, scopes: &[&str]) {
 
     // Grant the may_act authorization: a role in the publisher's env,
     // assigned to the subscriber's M2M principal via client_roles
-    // (client-path — user_roles.user_id FKs to users).
+    // (client-path - user_roles.user_id FKs to users).
     let subscriber_id: uuid::Uuid =
         sqlx::query_scalar("SELECT id FROM auth.oauth_clients WHERE client_id = $1")
             .bind(client_id)
@@ -218,7 +218,7 @@ async fn publisher_exchange_mints_act_delegated_token() {
         claims["act"]["sub"], "pub-user-1",
         "act.sub must be the publisher's sub"
     );
-    // (8) downscoped to the intersection (sentin8:bus:consume only — other:scope is
+    // (8) downscoped to the intersection (sentin8:bus:consume only - other:scope is
     // not in the subscriber's scopes).
     let scope = claims["scope"].as_str().unwrap();
     assert!(scope.contains("sentin8:bus:consume"), "scope was: {scope}");
@@ -397,7 +397,7 @@ fn seeded_auth_engine() -> std::sync::Arc<sentin8_auth_server::policy::Engine> {
     let engine = sentin8_auth_server::policy::Engine::new("sentin8:auth");
     let record = PolicySetRecord {
         id: uuid::Uuid::nil(),
- // The engine evaluates per-request env — seed under the SYSTEM env
+ // The engine evaluates per-request env - seed under the SYSTEM env
  // (the env admin tokens in these tests carry).
         env_id: uuid::Uuid::parse_str("00000000-0000-0000-0000-000000000002")
             .expect("static uuid"),

@@ -1,4 +1,4 @@
-# Design Doc: Sentin8:Auth — Identity, OAuth/OIDC & Authorization Issuer
+# Design Doc: Sentin8:Auth - Identity, OAuth/OIDC & Authorization Issuer
 
 ## 1. Summary
 
@@ -19,15 +19,15 @@ Every other service verifies tokens it issues; no service mints its own.
   this service and verifies against its JWKS.
 - **Cert-bound by default.** M2M tokens are certificate-bound
   (RFC 8705 `cnf`) so a stolen token without the private key is
-  useless; DCR requires an mTLS client certificate — there is no
+  useless; DCR requires an mTLS client certificate - there is no
   plaintext credential M2M path.
 - **Authorization is decided live.** The JWT `scope` claim is a
   coarse pre-filter and RLS feed; the decision belongs to Shield
-  (Sentin8:Policy) against roles resolved LIVE — no `roles`/`groups`
+  (Sentin8:Policy) against roles resolved LIVE - no `roles`/`groups`
   claim in the token, so role changes take effect on the next request.
 - **Conformance is a feature.** FAPI 2.0, OIDC conformance profiles,
   JAR/JARM, DPoP, and SD-JWT are implemented as first-class modes, not
-  best-effort approximations — the platform targets regulated verticals.
+  best-effort approximations - the platform targets regulated verticals.
 
 ## 3. Architecture & High-Level Design
 
@@ -63,42 +63,42 @@ graph TD
     end
 ```
 
-- **Grant surface** — authorization-code (+PKCE), refresh, device code,
+- **Grant surface** - authorization-code (+PKCE), refresh, device code,
   CIBA (decoupled approval), client_credentials (M2M), and token
-  exchange — each profile-gated by the caller's resolved security
+  exchange - each profile-gated by the caller's resolved security
   profile (FAPI 2.0 default).
-- **Authentication surface** — password sessions, MFA (TOTP), passkeys,
+- **Authentication surface** - password sessions, MFA (TOTP), passkeys,
   enterprise federation (OIDC/SAML connections), app passwords,
   sentin8or (admin assistant) flows, and bot protection on public
   endpoints.
-- **Authorization pipeline** — extract bearer → verify
+- **Authorization pipeline** - extract bearer → verify
   (issuer/signature/expiry/audience/token type) → resolve tenant →
   feature gate → authorize via Shield → set RLS context → execute →
   audit. Requests that cannot resolve a tenant context are rejected.
-- **Admin surface** — full CRUD over users, roles (with nesting),
+- **Admin surface** - full CRUD over users, roles (with nesting),
   groups, OAuth clients, API keys, sessions, memberships, and
   invitations; every mutation emits a domain event through the local
   outbox (same transaction).
 
 ## 4. Key Traits and Data Structures
 
-- **`SigningKeys`** — the platform signing key set (including
+- **`SigningKeys`** - the platform signing key set (including
   post-quantum families) backing both the JWKS document and minted
   JWTs; rotation is coordinated through the JWKS cache TTL.
-- **`AuthContext`** — the verified bearer + claims surface every other
+- **`AuthContext`** - the verified bearer + claims surface every other
   service consumes via the shared auth-client SDK; `sub`, tenant ids,
   scopes, and token type.
-- **`Sentin8orAuthContext`** — verified token + tenant context for
+- **`Sentin8orAuthContext`** - verified token + tenant context for
   platform-assistant requests, resolving the managed org from the
   token's env claim (delegated tokens carry the target org).
-- **`TokenError` / `OAuthTokenError`** — the protocol error taxonomy
+- **`TokenError` / `OAuthTokenError`** - the protocol error taxonomy
   (invalid_grant, invalid_client, …) mapped onto HTTP responses.
-- **`SdJwtError`** — SD-JWT verification failures safe to surface
+- **`SdJwtError`** - SD-JWT verification failures safe to surface
   (malformed, hash mismatch, duplicate disclosure, key binding,
   revoked, status list).
-- **`AccessMode`** — the read/write scope split: GET endpoints accept
+- **`AccessMode`** - the read/write scope split: GET endpoints accept
   `read` OR `write`; mutating endpoints require `write`.
-- **Grant records** — standing consent, idempotent per
+- **Grant records** - standing consent, idempotent per
   (env, user, client): an existing active grant is widened/narrowed
   instead of duplicated, and carries the `grant_id` embedded in minted
   tokens (revocation cascade).
@@ -111,7 +111,7 @@ graph TD
   time; Shield resolving roles live means a demoted admin loses access
   on their next request, not at token expiry.
 - **mTLS as the only M2M registration path.** DCR for M2M workloads
-  requires a client certificate — the certificate is the bootstrap
+  requires a client certificate - the certificate is the bootstrap
   credential, and the minted token is bound to it (`cnf`). A
   `client_secret` path for M2M would recreate the plaintext-credential
   cache problem the platform retired.
@@ -121,7 +121,7 @@ graph TD
   (revoking tokens individually) leaves orphaned access paths.
 - **Transaction-local RLS everywhere.** Every tenant statement runs on
   a connection where the context was set inside the same explicit
-  transaction — the context is transaction-local, so split-batch or
+  transaction - the context is transaction-local, so split-batch or
   autocommit patterns silently filter all rows (this invariant is
   enforced in grant recording, admin listing, and session flows).
 - **CIBA approval binds to the session.** The approving user is the
@@ -132,14 +132,14 @@ graph TD
 - **Security profiles resolve per request.** The security profile
   (env → org → platform fallback chain; the env row is authoritative)
   determines which OIDC fields to include and which grant types are
-  allowed — FAPI 2.0 is the default posture. A global profile would
+  allowed - FAPI 2.0 is the default posture. A global profile would
   force the strictest profile platform-wide.
 - **TOTP secrets encrypted, not hashed.** The server must recover the
   secret to generate competing codes on drift windows; AES-256-GCM
   envelope encryption with the platform master key is the compromise,
   with a dev-only deterministic key escape hatch for tests.
 - **Passkeys and passwords coexist.** WebAuthn is offered as an
-  authentication factor, not a replacement — enterprise users may be
+  authentication factor, not a replacement - enterprise users may be
   behind IdPs without passkey support; MFA (TOTP) covers the
   second-factor gap where passkeys are not enrolled.
 - **SCIM for enterprise identity.** IdP-driven provisioning (create /
@@ -148,7 +148,7 @@ graph TD
 - **Events through the local outbox.** Every lifecycle change
   (user/role/group/client/apikey/session/membership created, updated,
   deleted, revoked, terminated) writes an outbox row in the same
-  transaction — the Bus relay publishes it; a Bus outage never loses
+  transaction - the Bus relay publishes it; a Bus outage never loses
   an event.
 - **Rejected: JWT `roles`/`groups` claims.** Token bloat, stale
   authorization, and a second source of truth; Shield resolves live.
@@ -166,7 +166,7 @@ graph TD
     (`cnf`) by default; the mTLS thumbprint binds the token to the
     client certificate.
   - Hostname-based tenant resolution fallback is an explicitly
-    disabled-by-default escape hatch (env-flag gated) — the TLS context
+    disabled-by-default escape hatch (env-flag gated) - the TLS context
     headers are the primary tenant source; the fallback warns loudly.
   - CIBA and device flows are session- and client-bound; approval
     cannot be replayed across sessions.
@@ -176,7 +176,7 @@ graph TD
     fire-and-forget HTTP.
   - Admin listings (users, sessions, grants) always resolve the tenant
     from the caller's token context inside one transaction with the
-    context set — cross-env requires the target env in the token.
+    context set - cross-env requires the target env in the token.
 - **Boot.** Config from `SENTIN8_AUTH_*`; signing keys loaded/rotated
   via the JWKS module; PQ crypto provider installed before any TLS;
   Shield boot loads ONE engine shared with the request path; the shell
@@ -204,7 +204,7 @@ graph TD
   multi-region exists; the JWKS overlap-rotation design is region-safe.
 - SCIM `/Bulk` is live (AUTH-5, RFC 7644 §3.7): a thin wrapper over the
   per-user SQL paths (create/replace/delete; ≤100 ops; `failOnErrors`
-  stops the batch). The precondition consumer exists — BFF's delegated
+  stops the batch). The precondition consumer exists - BFF's delegated
   SCIM proxy (`/delegate/scim/*`, scopes `sentin8:scim:read/write`) is
   the enterprise IdP path.
 

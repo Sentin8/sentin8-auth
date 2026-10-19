@@ -3,7 +3,7 @@
 // SPDX-FileCopyrightText: Copyright Contributors to the Sentin8:Auth
 // SPDX-License-Identifier: Apache-2.0
 
-//! Webhook delivery — outbox + signed delivery.
+//! Webhook delivery - outbox + signed delivery.
 //!
 //! Implements a custom webhook delivery system with an outbox table. Auth
 //! events (user.created, session.started, password.reset, mfa.enrolled,
@@ -18,8 +18,8 @@
 //! - `POST /v1/admin/webhooks/endpoints`
 //! - `GET /v1/admin/webhooks/endpoints/{id}`
 //! - `DELETE /v1/admin/webhooks/endpoints/{id}`
-//! - `GET /v1/admin/webhooks/outbox` — list recent outbox entries
-//! - `GET /v1/admin/webhooks/attempts/{outbox_id}` — list delivery attempts
+//! - `GET /v1/admin/webhooks/outbox` - list recent outbox entries
+//! - `GET /v1/admin/webhooks/attempts/{outbox_id}` - list delivery attempts
 //!
 //! The relay worker runs in-process as a tokio task spawned by the server.
 
@@ -97,7 +97,7 @@ pub struct ListEndpointsQuery {
 
 // ── Admin API: handlers ────────────────────────────────────────────────
 
-/// `GET /v1/admin/webhooks/endpoints` — list webhook endpoints.
+/// `GET /v1/admin/webhooks/endpoints` - list webhook endpoints.
 #[utoipa::path(
     get,
     path = "/v1/admin/webhooks/endpoints",
@@ -114,9 +114,9 @@ pub async fn list_endpoints(
     headers: axum::http::HeaderMap,
     Query(_q): Query<ListEndpointsQuery>,
 ) -> Result<Json<Vec<EndpointResponse>>, (StatusCode, String)> {
-    // SEC- — admin guard + tenant scoping. The previous
+    // SEC- - admin guard + tenant scoping. The previous
     // `WHERE ($1::uuid IS NULL OR env_id = $1)` listed EVERY tenant's
-    // webhook endpoints when env_id was omitted — a cross-tenant leak.
+    // webhook endpoints when env_id was omitted - a cross-tenant leak.
     let auth = crate::sentin8or_auth::require_sentin8or_access(&state, &headers).await?;
     let rows = sqlx::query!(
         r#"SELECT id, url, name, status, env_id, event_types, created_at
@@ -144,7 +144,7 @@ pub async fn list_endpoints(
     Ok(Json(endpoints))
 }
 
-/// `POST /v1/admin/webhooks/endpoints` — create a webhook endpoint.
+/// `POST /v1/admin/webhooks/endpoints` - create a webhook endpoint.
 #[utoipa::path(
     post,
     path = "/v1/admin/webhooks/endpoints",
@@ -162,7 +162,7 @@ pub async fn create_endpoint(
     headers: axum::http::HeaderMap,
     Json(req): Json<CreateEndpointRequest>,
 ) -> Result<Response, (StatusCode, String)> {
-    // SEC- — admin guard + tenant scoping.
+    // SEC- - admin guard + tenant scoping.
     let auth =
         crate::sentin8or_auth::require_sentin8or_access_write(&state, &headers, None).await?;
     if req.url.is_empty() || (!req.url.starts_with("https://") && !req.url.starts_with("http://")) {
@@ -173,9 +173,9 @@ pub async fn create_endpoint(
     let cipher = encrypt_secret(&state.config, &raw_secret);
 
     let event_types = req.event_types.unwrap_or_else(|| vec!["*".to_string()]);
-    // SEC- — the row is created in the CALLER's env; a
+    // SEC- - the row is created in the CALLER's env; a
     // request-supplied env_id is ignored (it could target another tenant).
-    // SEC- — tenant context on the same connection (design ).
+    // SEC- - tenant context on the same connection (design ).
     let mut conn = state
         .pool
         .begin()
@@ -230,7 +230,7 @@ pub async fn create_endpoint(
     .into_response())
 }
 
-/// `GET /v1/admin/webhooks/endpoints/{id}` — get a webhook endpoint.
+/// `GET /v1/admin/webhooks/endpoints/{id}` - get a webhook endpoint.
 #[utoipa::path(
     get,
     path = "/v1/admin/webhooks/endpoints/{id}",
@@ -248,7 +248,7 @@ pub async fn get_endpoint(
     headers: axum::http::HeaderMap,
     Path(id): Path<Uuid>,
 ) -> Result<Json<EndpointResponse>, (StatusCode, String)> {
-    // SEC- — admin guard + tenant scoping: the row must belong
+    // SEC- - admin guard + tenant scoping: the row must belong
     // to the caller's env (otherwise a tenant could read another
     // tenant's webhook by id).
     let auth = crate::sentin8or_auth::require_sentin8or_access(&state, &headers).await?;
@@ -274,7 +274,7 @@ pub async fn get_endpoint(
     }))
 }
 
-/// `DELETE /v1/admin/webhooks/endpoints/{id}` — delete a webhook endpoint.
+/// `DELETE /v1/admin/webhooks/endpoints/{id}` - delete a webhook endpoint.
 #[utoipa::path(
     delete,
     path = "/v1/admin/webhooks/endpoints/{id}",
@@ -292,10 +292,10 @@ pub async fn delete_endpoint(
     headers: axum::http::HeaderMap,
     Path(id): Path<Uuid>,
 ) -> Result<StatusCode, (StatusCode, String)> {
-    // SEC- — admin guard + tenant scoping.
+    // SEC- - admin guard + tenant scoping.
     let auth =
         crate::sentin8or_auth::require_sentin8or_access_write(&state, &headers, None).await?;
-    // SEC- — tenant context on the same connection (design ).
+    // SEC- - tenant context on the same connection (design ).
     let mut conn = state
         .pool
         .begin()
@@ -353,7 +353,7 @@ pub struct OutboxEntryResponse {
     pub created_at: chrono::DateTime<chrono::Utc>,
 }
 
-/// `GET /v1/admin/webhooks/outbox` — list recent outbox entries.
+/// `GET /v1/admin/webhooks/outbox` - list recent outbox entries.
 #[utoipa::path(
     get,
     path = "/v1/admin/webhooks/outbox",
@@ -370,7 +370,7 @@ pub async fn list_outbox(
     headers: axum::http::HeaderMap,
     Query(_q): Query<ListEndpointsQuery>,
 ) -> Result<Json<Vec<OutboxEntryResponse>>, (StatusCode, String)> {
-    // SEC- — admin guard + tenant scoping (caller's env only).
+    // SEC- - admin guard + tenant scoping (caller's env only).
     let auth = crate::sentin8or_auth::require_sentin8or_access(&state, &headers).await?;
     let rows = sqlx::query!(
         r#"SELECT id, endpoint_id, event_type, payload, retry_count, delivered_at, failed_at, created_at
@@ -417,7 +417,7 @@ pub struct AttemptResponse {
     pub attempted_at: chrono::DateTime<chrono::Utc>,
 }
 
-/// `GET /v1/admin/webhooks/attempts/{outbox_id}` — list delivery attempts for an outbox entry.
+/// `GET /v1/admin/webhooks/attempts/{outbox_id}` - list delivery attempts for an outbox entry.
 #[utoipa::path(
     get,
     path = "/v1/admin/webhooks/attempts/{outbox_id}",
@@ -434,7 +434,7 @@ pub async fn list_attempts(
     headers: axum::http::HeaderMap,
     Path(outbox_id): Path<Uuid>,
 ) -> Result<Json<Vec<AttemptResponse>>, (StatusCode, String)> {
-    // SEC- — admin guard + tenant scoping: only attempts for
+    // SEC- - admin guard + tenant scoping: only attempts for
     // outbox rows in the caller's env are visible.
     let auth = crate::sentin8or_auth::require_sentin8or_access(&state, &headers).await?;
     let rows = sqlx::query!(
@@ -464,7 +464,7 @@ pub async fn list_attempts(
     Ok(Json(attempts))
 }
 
-/// `POST /v1/admin/webhooks/attempts/{outbox_id}/replay` — reset a failed
+/// `POST /v1/admin/webhooks/attempts/{outbox_id}/replay` - reset a failed
 /// webhook delivery to pending (mirrors post's `replay_dlq`, auth DESIGN
 /// §10). Admin-gated; the relay picks the row up on its next tick.
 #[utoipa::path(
@@ -506,7 +506,7 @@ pub async fn replay_failed(
 // ── Enqueue helper (used by other Auth modules to emit events) ────────
 
 /// Enqueue a webhook event for delivery. Called by sign-in, sign-up,
-/// password reset, MFA enrollment, etc. — anywhere an event should be
+/// password reset, MFA enrollment, etc. - anywhere an event should be
 /// delivered to registered endpoints. Returns the outbox row id.
 /// Enqueue event.
 pub async fn enqueue_event(
@@ -597,7 +597,7 @@ async fn relay_tick(state: &AppState, http: &reqwest::Client) -> Result<(), anyh
         .fetch_optional(&state.pool)
         .await?;
         let Some(endpoint) = endpoint else {
-            // Endpoint was deleted — mark outbox row failed.
+            // Endpoint was deleted - mark outbox row failed.
             let _ = sqlx::query!(
                 r#"UPDATE webhook_outbox SET failed_at = now() WHERE id = $1"#,
                 row.id,
@@ -787,7 +787,7 @@ fn decrypt_secret(config: &AuthConfig, cipher: &[u8]) -> Vec<u8> {
     xor_decrypt_secret(config, cipher)
 }
 
-/// Legacy XOR-with-issuer scheme — kept only to read pre-envelope rows.
+/// Legacy XOR-with-issuer scheme - kept only to read pre-envelope rows.
 fn xor_encrypt_secret(config: &AuthConfig, secret: &str) -> Vec<u8> {
     let mut hasher = Sha256::new();
     hasher.update(config.issuer.as_bytes());

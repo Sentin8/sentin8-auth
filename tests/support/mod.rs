@@ -6,13 +6,13 @@
 //! Shared test helpers for the auth conformance suite (`tests/conformance.rs`).
 //!
 //! These mirror what a real OIDC conformance client does:
-//! - [`mk_dpop_proof`] — build a signed RFC 9449 DPoP proof (ES256,
+//! - [`mk_dpop_proof`] - build a signed RFC 9449 DPoP proof (ES256,
 //!   self-contained `jwk` header, `htm`/`htu`/`iat`/`jti` claims).
-//! - [`mk_es256_key`] — generate an ES256 P-256 keypair and its public JWK.
-//! - [`mk_es256_assertion`] — mint an RFC 7523 `private_key_jwt` client
+//! - [`mk_es256_key`] - generate an ES256 P-256 keypair and its public JWK.
+//! - [`mk_es256_assertion`] - mint an RFC 7523 `private_key_jwt` client
 //!   assertion (`iss`/`sub` = client_id, `aud` = issuer, fresh `exp`, given
 //!   `jti`).
-//! - [`mk_totp_code`] — compute the current TOTP code from the
+//! - [`mk_totp_code`] - compute the current TOTP code from the
 //!   base32 secret returned by `POST /v1/mfa/enroll`.
 
 use base64::Engine;
@@ -35,7 +35,7 @@ fn b64url_json(v: &serde_json::Value) -> String {
 /// Generate a fresh ES256 (P-256) keypair for tests.
 ///
 /// Returns `(public_jwk, signing_key)` where the JWK is an RFC 7517 EC key
-/// (`kty: "EC", crv: "P-256", x, y` — URL-safe base64, no padding) ready to
+/// (`kty: "EC", crv: "P-256", x, y` - URL-safe base64, no padding) ready to
 /// be embedded in an `oauth_clients.jwks` row or a DPoP proof header.
 pub fn mk_es256_key() -> (serde_json::Value, SigningKey) {
     let signing_key = SigningKey::random(&mut rand::rngs::OsRng);
@@ -115,7 +115,7 @@ pub fn mk_es256_assertion_for(key: &SigningKey, jti: &str, aud: &str) -> String 
 
 /// The client_id carried by an assertion is caller-known; the helper encodes
 /// it in the jti as `client_id:jti`. Callers pass `jti` as
-/// `"{client_id}:{uuid}"` — decoded here so iss/sub always equal client_id.
+/// `"{client_id}:{uuid}"` - decoded here so iss/sub always equal client_id.
 fn jti_issuer_of(jti: &str) -> String {
     jti.split(':').next().unwrap_or(jti).to_string()
 }

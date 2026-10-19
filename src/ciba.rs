@@ -12,15 +12,15 @@
 //! `grant_type=urn:openid:params:grant-type:ciba`.
 //!
 //! The AS pushes the authentication request to the user's device (via a
-//! decoupled device — e.g. Auth's authenticator app). The user approves
+//! decoupled device - e.g. Auth's authenticator app). The user approves
 //! or denies, and the AS stores the result keyed by `auth_req_id`.
 //!
 //! This module implements the core CIBA flow:
-//! - `POST /oauth/bc-authorize` — issue auth_req_id (+ assisted link)
-//! - Token grant handler `urn:openid:params:grant-type:ciba` — poll
-//! - `POST /v1/ciba/approve` — user approves/denies from their decoupled device
-//! - `GET /ciba/assisted/{auth_req_id}` — Assisted Login page metadata
-//! - `POST /v1/ciba/assisted/complete` — bind customer session to auth_req_id
+//! - `POST /oauth/bc-authorize` - issue auth_req_id (+ assisted link)
+//! - Token grant handler `urn:openid:params:grant-type:ciba` - poll
+//! - `POST /v1/ciba/approve` - user approves/denies from their decoupled device
+//! - `GET /ciba/assisted/{auth_req_id}` - Assisted Login page metadata
+//! - `POST /v1/ciba/assisted/complete` - bind customer session to auth_req_id
 //!
 //! ## Assisted Login
 //!
@@ -53,16 +53,16 @@ use crate::sessions::Session;
 pub struct CibaRequest {
     /// client identifier.
     pub client_id: String,
-    /// SEC- — client authentication (client_secret_post). Public
+    /// SEC- - client authentication (client_secret_post). Public
     /// clients omit it.
     #[serde(default)]
     /// The client secret.
     pub client_secret: Option<String>,
-    /// SEC- — private_key_jwt client assertion (RFC 7523).
+    /// SEC- - private_key_jwt client assertion (RFC 7523).
     #[serde(default)]
     /// The client assertion.
     pub client_assertion: Option<String>,
-    /// User identifier — one of: login_hint, login_hint_token, id_token_hint, sub.
+    /// User identifier - one of: login_hint, login_hint_token, id_token_hint, sub.
     #[serde(default)]
     /// The login hint.
     pub login_hint: Option<String>,
@@ -81,7 +81,7 @@ pub struct CibaRequest {
     #[serde(default)]
     /// The user code.
     pub user_code: Option<String>,
-    /// Binding message — displayed to the user on the decoupled device.
+    /// Binding message - displayed to the user on the decoupled device.
     #[serde(default)]
     /// The binding message.
     pub binding_message: Option<String>,
@@ -113,13 +113,13 @@ pub struct CibaRequest {
     pub verification_uri_base: Option<String>,
     /// (Option A): the initiating staff member's Auth user ID.
     /// Sent by the platform BFF (Delegation Gateway) from its authenticated
-    /// staff session — NOT by the staff app's request body. Embedded in the
+    /// staff session - NOT by the staff app's request body. Embedded in the
     /// CIBA token's `act` claim (RFC 8693 ) so every customer-data
     /// access is attributable to a human.
     #[serde(default)]
     /// The act sub.
     pub act_sub: Option<String>,
-    /// — staff member's email (for audit alongside `act_sub`).
+    /// - staff member's email (for audit alongside `act_sub`).
     #[serde(default)]
     /// The act email.
     pub act_email: Option<String>,
@@ -135,12 +135,12 @@ pub struct CibaResponse {
     pub expires_in: u64,
     /// The interval.
     pub interval: u64,
-    /// Shareable approval link — present when `delivery=assisted_link`.
+    /// Shareable approval link - present when `delivery=assisted_link`.
     /// `GET /ciba/assisted/{auth_req_id}`.
     #[serde(skip_serializing_if = "Option::is_none")]
     /// The verification URI complete.
     pub verification_uri_complete: Option<String>,
-    /// Short code (last 6 of auth_req_id) — present when `delivery=assisted_link`.
+    /// Short code (last 6 of auth_req_id) - present when `delivery=assisted_link`.
     /// Staff reads aloud / displays for the customer to cross-check on the sign-in page.
     #[serde(skip_serializing_if = "Option::is_none")]
     /// The short code.
@@ -175,7 +175,7 @@ const DEFAULT_INTERVAL: u64 = 5;
 /// Default expiry (seconds).
 const DEFAULT_EXPIRY: u64 = 600;
 
-/// `POST /oauth/bc-authorize` — issue a CIBA auth_req_id.
+/// `POST /oauth/bc-authorize` - issue a CIBA auth_req_id.
 #[utoipa::path(
     post,
     path = "/oauth/bc-authorize",
@@ -207,7 +207,7 @@ pub async fn bc_authorize(
     )
     .await?;
 
-    // — fapi_ciba profile constraints: under the FAPI-CIBA
+    // - fapi_ciba profile constraints: under the FAPI-CIBA
     // profile the binding_message is MANDATORY (the user must be able to
     // verify what they are approving on the decoupled device) and client
     // auth must be private_key_jwt or mTLS (FAPI client auth rules).
@@ -238,7 +238,7 @@ pub async fn bc_authorize(
             if let Err(e) = crate::experimental::validate_fapi_ciba_request(
                 req.binding_message.as_deref(),
                 // DPoP presence is enforced on the token polling request
-                // (handle_ciba_token) — here the binding message is the
+                // (handle_ciba_token) - here the binding message is the
                 // request-time constraint.
                 true,
             ) {
@@ -268,7 +268,7 @@ pub async fn bc_authorize(
         .min(DEFAULT_EXPIRY);
 
     // Store the CIBA request in Valkey keyed by auth_req_id.
-    // : staff identity is stored as the `act` chain — used by the CIBA
+    // : staff identity is stored as the `act` chain - used by the CIBA
     // token grant to attribute the delegated token to the initiating staff
     // member. Only the platform BFF sends these fields.
     let request_data = serde_json::json!({
@@ -321,8 +321,8 @@ pub async fn bc_authorize(
     // / DBX-POST-3). This closes the loop: the customer gets a push
     // notification asking them to approve the CIBA request, instead of
     // having to open the app manually.
-    // (The old code INSERTed directly into a phantom `inbox` table — auth
-    // has no inbox table and no grant — so the notification silently
+    // (The old code INSERTed directly into a phantom `inbox` table - auth
+    // has no inbox table and no grant - so the notification silently
     // never landed. The local post_outbox is the durable, retried path.)
     if delivery == "decoupled_device" {
         if let Some(user) = lookup_user_by_identifier(&state.pool, user_identifier).await {
@@ -370,7 +370,7 @@ pub async fn bc_authorize(
     }))
 }
 
-/// `GET /ciba/assisted/{auth_req_id}` — Assisted Login page metadata.
+/// `GET /ciba/assisted/{auth_req_id}` - Assisted Login page metadata.
 ///
 /// Returns the CIBA request details so the Flutter Auth UI can render the
 /// assisted sign-in page: `binding_message`, `short_code`, requesting client,
@@ -428,7 +428,7 @@ pub async fn ciba_assisted_page(
     })))
 }
 
-/// `POST /v1/ciba/assisted/complete` — bind customer session to CIBA request.
+/// `POST /v1/ciba/assisted/complete` - bind customer session to CIBA request.
 ///
 /// Called by the Flutter Assisted Login page after the customer signs in.
 /// Reads the customer's `__session` cookie, resolves the `user_id` /
@@ -457,10 +457,10 @@ pub async fn ciba_assisted_complete(
     let token_id = extract_session_token(&headers).ok_or_else(|| {
         (
             StatusCode::UNAUTHORIZED,
-            "no session — sign in first".into(),
+            "no session - sign in first".into(),
         )
     })?;
-    // SEC- — mutating session endpoint: CSRF-gated (Bearer exempt).
+    // SEC- - mutating session endpoint: CSRF-gated (Bearer exempt).
     crate::handlers::check_csrf(&headers, &token_id)?;
     let session = Session::find_by_token(&state.pool, &token_id)
         .await
@@ -532,9 +532,9 @@ pub async fn ciba_assisted_complete(
     Ok(Json(serde_json::json!({ "status": "approved" })))
 }
 
-/// `POST /v1/ciba/approve` — user approves or denies from their device.
+/// `POST /v1/ciba/approve` - user approves or denies from their device.
 ///
-/// SEC- — the approving user is the **session's** user; the
+/// SEC- - the approving user is the **session's** user; the
 /// `user_id` field in the body is ignored. Knowledge of an `auth_req_id`
 /// alone can no longer bind an arbitrary user to a CIBA request.
 /// Handle CIBA approve.
@@ -545,7 +545,7 @@ pub async fn ciba_assisted_complete(
     responses(
         (status = 200, description = "Approval recorded (the approving user is the SESSION's user)", body = serde_json::Value),
         (status = 400, description = "Unknown auth_req_id"),
-        (status = 401, description = "No session — approval requires an authenticated user"),
+        (status = 401, description = "No session - approval requires an authenticated user"),
     ),
     security(),
     tag = "ciba",
@@ -562,7 +562,7 @@ pub async fn ciba_approve(
             "session required to approve a CIBA request".into(),
         )
     })?;
-    // SEC- — mutating session endpoint: CSRF-gated (Bearer exempt).
+    // SEC- - mutating session endpoint: CSRF-gated (Bearer exempt).
     crate::handlers::check_csrf(&headers, &session_token)?;
     let session = crate::sessions::Session::find_by_token(&state.pool, &session_token)
         .await
@@ -595,7 +595,7 @@ pub async fn ciba_approve(
     if let Some(obj) = data.as_object_mut() {
         let status = if req.approved { "approved" } else { "denied" };
         obj.insert("status".into(), serde_json::json!(status));
-        // SEC- — the session's user is the approving user.
+        // SEC- - the session's user is the approving user.
         obj.insert(
             "user_id".into(),
             serde_json::json!(approving_user_id.to_string()),
@@ -811,7 +811,7 @@ mod tests {
 
     #[test]
     fn ciba_approval_request() {
-        // SEC- — the approving user comes from the session; the
+        // SEC- - the approving user comes from the session; the
         // body carries only auth_req_id + approved.
         let req = CibaApprovalRequest {
             auth_req_id: "req-123".into(),

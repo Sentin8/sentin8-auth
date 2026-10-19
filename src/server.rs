@@ -41,7 +41,7 @@ pub async fn build_state(core: sentin8::shell::ServiceCore) -> anyhow::Result<Ap
 
     // DBX ( / DBX-POST-3): the post pusher drains auth's local
     // `post_outbox` (welcome emails, reset notifications, MFA alerts) to
-    // Sentin8:Post's send API — no direct post.inbox writes.
+    // Sentin8:Post's send API - no direct post.inbox writes.
     {
         let cfg0 = sentin8::config::Sentin8Config::from_env();
         crate::events::spawn_post_pusher(
@@ -51,12 +51,12 @@ pub async fn build_state(core: sentin8::shell::ServiceCore) -> anyhow::Result<Ap
         );
     }
 
-    // ── Sentin8:Policy (— shell-owned boot): consume the
-    // engine the shell booted in step 8 — no second engine, consumer, or
+    // ── Sentin8:Policy (- shell-owned boot): consume the
+    // engine the shell booted in step 8 - no second engine, consumer, or
     // DCR registration here.
     let policy_engine = core.admin.policy.clone();
 
-    // auth DESIGN §4.3f: the boot-loaded workload registry map — the
+    // auth DESIGN §4.3f: the boot-loaded workload registry map - the
     // authorization record for certificate-only platform-workload calls
     // (sys's provisioning delegation presents the `auth-sys` certificate;
     // scopes ride the map, not a token). Unavailable at boot → fail-closed
@@ -68,7 +68,7 @@ pub async fn build_state(core: sentin8::shell::ServiceCore) -> anyhow::Result<Ap
     {
         Ok(map) => map,
         Err(e) => {
-            tracing::warn!(error = %e, "auth: workload registry map unavailable at boot — certificate-workload calls fail-closed until next boot");
+            tracing::warn!(error = %e, "auth: workload registry map unavailable at boot - certificate-workload calls fail-closed until next boot");
             sentin8::auth::workload_registry::WorkloadMap::boot_load_empty("sentin8:auth")
         }
     };
@@ -96,7 +96,7 @@ pub async fn build_state(core: sentin8::shell::ServiceCore) -> anyhow::Result<Ap
     webhooks::spawn_relay(state.clone());
 
     // JWKS rotation (SDD §2.5, root-service rule): an internal daily
-    // timer — auth links no scheduler client and makes no cross-service
+    // timer - auth links no scheduler client and makes no cross-service
     // calls. The timer rotates only when the newest key passes the
     // 30-day staleness gate.
     jwks_mod::spawn_rotation_timer(state.pool.clone());
@@ -107,16 +107,16 @@ pub async fn build_state(core: sentin8::shell::ServiceCore) -> anyhow::Result<Ap
     Ok(state)
 }
 
-/// Build the Axum router with all routes (NO middleware layers — the
+/// Build the Axum router with all routes (NO middleware layers - the
 /// platform `sentin8-shell` applies the standard stack: correlation, host
 /// context, TLS context, request logging, traffic counter, CORS).
 /// Used by `routes` and integration tests.
 ///
-/// SEC- — a `route_guard` layer wraps the finished router as a
+/// SEC- - a `route_guard` layer wraps the finished router as a
 /// structural backstop: every `/v1/admin/*` path, `PUT /v1/security-profile`,
 /// and `POST /oauth/backchannel-logout` requires a verified Bearer token
 /// with an admin scope. Per-handler guards remain the primary (they also
-/// resolve tenant context) — this middleware makes "new module forgot the
+/// resolve tenant context) - this middleware makes "new module forgot the
 /// guard" impossible.
 /// Build router.
 pub fn build_router(state: AppState) -> Router {
@@ -142,11 +142,11 @@ pub fn build_router(state: AppState) -> Router {
         )
         // ── Admin UI (RFW) ─────────────────────────────────────────────────
         .route("/v1/admin/ui/{*page}", get(crate::admin_ui::get_admin_ui))
-        // Consent accounts — fetch customer accounts for the consent
+        // Consent accounts - fetch customer accounts for the consent
         // screen's account selection step. Proxied to the vertical service
         // that owns the matching consent flow.
         .route("/v1/auth/consent/accounts", get(handlers::consent_accounts))
-        // Consent RFW proxy — proxy consent UI/approve/deny to the vertical
+        // Consent RFW proxy - proxy consent UI/approve/deny to the vertical
         // service that owns the matching consent flow .
         .route("/v1/auth/consent/ui", get(consent_proxy::proxy_consent_ui))
         .route(
@@ -241,7 +241,7 @@ pub fn build_router(state: AppState) -> Router {
             "/v1/admin/webhooks/attempts/{outbox_id}/replay",
             post(webhooks::replay_failed),
         )
-        // Cron proxy-back target — internal JWKS key rotation (AUTH-1).
+        // Cron proxy-back target - internal JWKS key rotation (AUTH-1).
         .route("/v1/internal/keys/rotate", post(internal_keys_rotate))
         // OIDC discovery + JWKS
         .route("/.well-known/openid-configuration", get(oauth::discovery))
@@ -277,13 +277,13 @@ pub fn build_router(state: AppState) -> Router {
                 .patch(crate::grants::patch_grant)
                 .delete(crate::grants::delete_grant),
         )
-        // EUDI wallet — OID4VP sign-in + metadata (EUDI.).
+        // EUDI wallet - OID4VP sign-in + metadata (EUDI.).
         .route("/oauth/vp/response", post(crate::wallet::vp_response))
         .route(
             "/v1/auth/wallet/metadata",
             get(crate::wallet::wallet_metadata),
         )
-        // EUDI. — OID4VCI credential issuance.
+        // EUDI. - OID4VCI credential issuance.
         .route("/oauth/credentials", post(crate::wallet::credential_offer))
         .route(
             "/oauth/credentials/issue",
@@ -320,7 +320,7 @@ pub fn build_router(state: AppState) -> Router {
             "/v1/ciba/assisted/{auth_req_id}/complete",
             post(ciba::ciba_assisted_complete),
         )
-        // Admin API — Users
+        // Admin API - Users
         .route(
             "/v1/admin/users",
             get(admin::list_users).post(admin::create_user),
@@ -333,7 +333,7 @@ pub fn build_router(state: AppState) -> Router {
         )
         // POST alias for RFW row_action_post (renderer only supports POST)
         .route("/v1/admin/users/{id}/delete", post(crate::rfw_aliases::user_delete))
-        // Admin API — Roles
+        // Admin API - Roles
         .route(
             "/v1/admin/roles",
             get(admin::list_roles).post(admin::create_role),
@@ -356,7 +356,7 @@ pub fn build_router(state: AppState) -> Router {
         )
         // POST alias for RFW row_action_post
         .route("/v1/admin/roles/{id}/delete", post(crate::rfw_aliases::role_delete))
-        // Admin API — Groups (user-grouping)
+        // Admin API - Groups (user-grouping)
         .route(
             "/v1/admin/groups",
             get(admin::list_groups).post(admin::create_group),
@@ -387,7 +387,7 @@ pub fn build_router(state: AppState) -> Router {
         )
         // POST alias for RFW row_action_post
         .route("/v1/admin/groups/{id}/delete", post(crate::rfw_aliases::group_delete))
-        // Admin API — OAuth Clients
+        // Admin API - OAuth Clients
         .route(
             "/v1/admin/oauth-clients",
             get(admin::list_oauth_clients).post(admin::create_oauth_client),
@@ -403,7 +403,7 @@ pub fn build_router(state: AppState) -> Router {
             "/v1/admin/oauth-clients/{id}/delete",
             post(crate::rfw_aliases::oauth_client_delete),
         )
-        // Admin API — OAuth Client Roles (app-role assignments to M2M clients)
+        // Admin API - OAuth Client Roles (app-role assignments to M2M clients)
         .route(
             "/v1/admin/oauth-clients/{id}/roles",
             get(admin::list_client_roles).post(admin::add_client_role),
@@ -412,7 +412,7 @@ pub fn build_router(state: AppState) -> Router {
             "/v1/admin/oauth-clients/{id}/roles/{role_id}",
             delete(admin::remove_client_role),
         )
-        // Admin API — Federated Credentials (workload-identity trusts)
+        // Admin API - Federated Credentials (workload-identity trusts)
         .route(
             "/v1/admin/oauth-clients/{id}/federated-credentials",
             get(admin::list_federated_credentials).post(admin::create_federated_credential),
@@ -421,10 +421,10 @@ pub fn build_router(state: AppState) -> Router {
             "/v1/admin/oauth-clients/{id}/federated-credentials/{cred_id}",
             delete(admin::delete_federated_credential),
         )
-        // Admin API — User introspection (resolved roles + groups)
+        // Admin API - User introspection (resolved roles + groups)
         .route("/v1/admin/users/{id}/roles", get(admin::list_user_roles))
         .route("/v1/admin/users/{id}/groups", get(admin::list_user_groups))
-        // Admin API — API Keys
+        // Admin API - API Keys
         .route(
             "/v1/admin/api-keys",
             get(admin::list_api_keys).post(admin::create_api_key),
@@ -433,7 +433,7 @@ pub fn build_router(state: AppState) -> Router {
             "/v1/admin/api-keys/{id}/revoke",
             post(admin::revoke_api_key),
         )
-        // Admin API — Sessions
+        // Admin API - Sessions
         .route("/v1/admin/sessions", get(admin::list_sessions))
         .route("/v1/admin/sessions/{id}", delete(admin::terminate_session))
         // POST alias for RFW row_action_post
@@ -441,7 +441,7 @@ pub fn build_router(state: AppState) -> Router {
             "/v1/admin/sessions/{id}/revoke",
             post(crate::rfw_aliases::session_revoke),
         )
-        // Admin API — Memberships & Invitations
+        // Admin API - Memberships & Invitations
         .route(
             "/v1/admin/memberships",
             get(admin::list_memberships).post(admin::create_membership),
@@ -450,7 +450,7 @@ pub fn build_router(state: AppState) -> Router {
             "/v1/admin/memberships/{id}",
             delete(admin::delete_membership),
         )
-        // — membership provisioning for sys (Flow proxy-back
+        // - membership provisioning for sys (Flow proxy-back
         // steps call these with the sys M2M client; Shield-gated,
         // idempotent). The cross-service INSERTs into auth.* are retired.
         .route(
@@ -485,14 +485,14 @@ pub fn build_router(state: AppState) -> Router {
             "/v1/admin/invitations/{id}/revoke",
             post(admin::revoke_invitation),
         )
-        // Admin API — Audit Events
+        // Admin API - Audit Events
         .route("/v1/admin/audit", get(admin::list_audit_events))
         // Security Profile Admin API
         .route(
             "/v1/security-profile",
             get(oauth::get_security_profile_api).put(oauth::put_security_profile_api),
         )
-        // — security-profile admin surface (high-level selection
+        // - security-profile admin surface (high-level selection
         // + detail flags; both write the env-scoped row).
         .route(
             "/v1/admin/security",
@@ -522,7 +522,7 @@ pub fn build_router(state: AppState) -> Router {
             get(scim::service_provider_config),
         )
         .route("/scim/v2/ResourceTypes", get(scim::resource_types))
-        // Delegation Gateway — BFF requests cert-bound delegated tokens
+        // Delegation Gateway - BFF requests cert-bound delegated tokens
         .route(
             "/delegate/access-token",
             post(delegation::delegate_access_token),
@@ -531,7 +531,7 @@ pub fn build_router(state: AppState) -> Router {
         // When ServeDir can't find a file (e.g. SPA client-side routes like
         // /sign-in, /sign-up), it falls back to serving index.html so the
         // Flutter router can handle the route.
-        // ── Sentin8:Policy admin API ( — shared implementation,
+        // ── Sentin8:Policy admin API ( - shared implementation,
         // one surface per service; the routes bind the annotated wrappers
         // in `policy_docs` (utoipa cannot path a generic handler).
         .route(
@@ -587,25 +587,25 @@ pub fn build_router(state: AppState) -> Router {
         crate::openapi::AuthOpenApi::openapi(),
     ));
 
-    // SEC- — route guard middleware (structural backstop).
+    // SEC- - route guard middleware (structural backstop).
     // Every admin/platform-management path requires a verified admin
     // Bearer token OR a valid session (for the cookie-authenticated admin
-    // endpoints). Per-handler guards remain the primary — they also
+    // endpoints). Per-handler guards remain the primary - they also
     // resolve tenant context and apply finer-grained scope checks. This
     // layer makes "new module forgot the guard" structurally impossible.
     app.layer(axum::middleware::from_fn_with_state(state, route_guard))
 }
 
-/// SEC- — route guard backstop.
+/// SEC- - route guard backstop.
 ///
 /// Paths guarded here:
 /// - `/v1/admin/*` (all admin CRUD + admin UI data)
-/// - `/v1/security-profile` (read AND write — tenant security config)
+/// - `/v1/security-profile` (read AND write - tenant security config)
 /// - `/oauth/backchannel-logout` (internal trigger)
 ///
-/// Everything else — sign-in/up, OAuth protocol endpoints (client auth in
+/// Everything else - sign-in/up, OAuth protocol endpoints (client auth in
 /// their handlers), hosted UI, discovery/JWKS, health, SSO browser
-/// endpoints — passes through untouched.
+/// endpoints - passes through untouched.
 async fn route_guard(
     State(state): State<AppState>,
     req: axum::extract::Request,
@@ -632,7 +632,7 @@ async fn route_guard(
         .unwrap_or(false);
 
     // Path 2: valid session cookie / Bearer session token (for
-    // cookie-authenticated admin endpoints such as issue_actor_token —
+    // cookie-authenticated admin endpoints such as issue_actor_token -
     // the handler still enforces its own scope checks).
     let mut session_ok = false;
     if !bearer_ok {
@@ -646,13 +646,13 @@ async fn route_guard(
 
     // Path 3: certificate-only platform-workload identity (auth DESIGN
     // §4.3f; group DESIGN.md §3.1): an enrolled workload presents its
-    // Acme client certificate in the TLS handshake — the TLS layer
+    // Acme client certificate in the TLS handshake - the TLS layer
     // CA-verifies and injects `X-Sentin8-Client-Cert-Subject` (strips
     // client-supplied copies). The boot-loaded registry map is the
     // authorization record: any enrolled workload with an ADMIN-scope
     // grant passes the backstop (the handler's own Shield gate still
     // decides the specific action). The token model is retired for
-    // platform workloads — without this path the sys provisioning
+    // platform workloads - without this path the sys provisioning
     // delegation (the `auth-sys` certificate) 401s and org access-model
     // provisioning fails (the e2e incident).
     let mut cert_ok = false;
@@ -691,7 +691,7 @@ async fn route_guard(
         .into_response()
 }
 
-/// `POST /v1/internal/keys/rotate` — Sentin8:Cron proxy-back target for
+/// `POST /v1/internal/keys/rotate` - Sentin8:Cron proxy-back target for
 /// automated JWKS rotation (AUTH-1, auth DESIGN §10). Generates and
 /// persists a new signing key; the JWKS reader keeps every key published,
 /// so tokens signed by the previous key stay verifiable for overlap.
@@ -708,7 +708,7 @@ async fn internal_keys_rotate(
     Json(body): Json<serde_json::Value>,
 ) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
     // Verify the cron ticker's M2M token via the service's own signing
-    // keys (verify_raw returns the decoded claims) and gate with Shield —
+    // keys (verify_raw returns the decoded claims) and gate with Shield -
     // M2M parity: token type never bypasses policy. The raw claims map to
     // the platform AuthContext (scope/token_tp are in the token).
     let token = headers
@@ -735,7 +735,7 @@ async fn internal_keys_rotate(
     let _ = body;
     // 30-day staleness gate (AUTH-1): the cron schedule fires daily;
     // a new key is inserted only when the newest key for the active
-    // algorithm is at least 30 days old — rotation cadence = 30 days.
+    // algorithm is at least 30 days old - rotation cadence = 30 days.
     let newest_age_days: f64 = sqlx::query_scalar(
         r#"SELECT EXTRACT(EPOCH FROM (now() - MAX(created_at))) / 86400.0
            FROM signing_keys WHERE alg = $1"#,
@@ -748,7 +748,7 @@ async fn internal_keys_rotate(
     if newest_age_days < 30.0 {
         tracing::info!(
             newest_age_days = newest_age_days,
-            "auth: key rotation skipped — newest key younger than 30 days"
+            "auth: key rotation skipped - newest key younger than 30 days"
         );
         return Ok(Json(serde_json::json!({
             "status": "skipped",
@@ -766,7 +766,7 @@ async fn internal_keys_rotate(
     })))
 }
 
-/// OIDC JSON Web Key Set — the verification keys for every ID/access
+/// OIDC JSON Web Key Set - the verification keys for every ID/access
 /// token this issuer mints (fetched by every service + third-party IdP).
 #[utoipa::path(
     get,

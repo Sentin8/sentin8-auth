@@ -11,13 +11,13 @@
 //! when `require_jarm` is true.
 //!
 //! The JARM JWT contains:
-//! - `iss` — the AS issuer
-//! - `aud` — the client_id
-//! - `exp` — expiry (short-lived, ~60s)
-//! - `iat` — issued-at
-//! - `code` — the authorization code (success)
-//! - `state` — the state parameter from the request
-//! - `error` / `error_description` — on failure
+//! - `iss` - the AS issuer
+//! - `aud` - the client_id
+//! - `exp` - expiry (short-lived, ~60s)
+//! - `iat` - issued-at
+//! - `code` - the authorization code (success)
+//! - `state` - the state parameter from the request
+//! - `error` / `error_description` - on failure
 
 use chrono::{Duration, Utc};
 use serde::Serialize;
@@ -113,7 +113,7 @@ pub fn is_jarm_response_mode(response_mode: Option<&str>) -> bool {
     response_mode.map(|m| m == "jwt").unwrap_or(false)
 }
 
-/// Validate the JARM response (for RP-side verification — not used by AS).
+/// Validate the JARM response (for RP-side verification - not used by AS).
 /// Validate JARM claims.
 pub fn validate_jarm_claims(
     claims: &JarmClaims,

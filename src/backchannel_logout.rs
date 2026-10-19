@@ -8,16 +8,16 @@
 //! When a session ends (sign-out, token revocation, session expiry), Auth
 //! sends a **logout token** (a special JWT) to every OAuth client that has a
 //! `backchannel_logout_uri` registered. The logout token contains:
-//! - `iss` — Auth issuer
-//! - `aud` — the client_id
-//! - `sub` — the user subject (optional per spec)
-//! - `sid` — the session ID (optional per spec)
-//! - `iat` — issued-at
-//! - `jti` — unique token ID (for replay detection)
+//! - `iss` - Auth issuer
+//! - `aud` - the client_id
+//! - `sub` - the user subject (optional per spec)
+//! - `sid` - the session ID (optional per spec)
+//! - `iat` - issued-at
+//! - `jti` - unique token ID (for replay detection)
 //! - `events: {"http://schemas.openid.net/event/backchannel-logout": {}}`
 //! - NO `nonce`
 //!
-//! Endpoint: `POST /oauth/backchannel-logout` (internal — called by Auth on
+//! Endpoint: `POST /oauth/backchannel-logout` (internal - called by Auth on
 //! session termination). Accepts `{ session_id, user_id }` and fans out
 //! logout tokens to all registered clients.
 //!
@@ -32,7 +32,7 @@ use uuid::Uuid;
 use crate::handlers::AppState;
 use crate::jwks::SigningKeys;
 
-/// Trigger request — fired when a session ends.
+/// Trigger request - fired when a session ends.
 #[derive(Debug, Deserialize, utoipa::ToSchema)]
 /// The backchannellogouttrigger type.
 pub struct BackchannelLogoutTrigger {
@@ -40,7 +40,7 @@ pub struct BackchannelLogoutTrigger {
     pub session_id: Uuid,
     /// user identifier.
     pub user_id: Uuid,
-    /// Optional — restrict to a single client_id (e.g. for RP-initiated logout).
+    /// Optional - restrict to a single client_id (e.g. for RP-initiated logout).
     #[serde(default)]
     /// client identifier.
     pub client_id: Option<String>,
@@ -108,7 +108,7 @@ fn issue_logout_token(
     keys.sign_value(&serde_json::to_value(claims).map_err(|e| format!("serialize claims: {e}"))?)
 }
 
-/// Handler — `POST /oauth/backchannel-logout` / `POST /v1/backchannel-logout/trigger`.
+/// Handler - `POST /oauth/backchannel-logout` / `POST /v1/backchannel-logout/trigger`.
 /// Handle trigger backchannel logout.
 #[utoipa::path(
     post,
@@ -116,7 +116,7 @@ fn issue_logout_token(
     request_body = BackchannelLogoutTrigger,
     responses(
         (status = 200, description = "OIDC Back-Channel Logout token minted and delivered", body = BackchannelLogoutResponse),
-        (status = 403, description = "Admin guard — internal trigger"),
+        (status = 403, description = "Admin guard - internal trigger"),
     ),
     security(("sentin8:auth:admin" = [])),
     tag = "oauth",
@@ -126,7 +126,7 @@ pub async fn trigger_backchannel_logout(
     headers: axum::http::HeaderMap,
     Json(req): Json<BackchannelLogoutTrigger>,
 ) -> Result<Json<BackchannelLogoutResponse>, (StatusCode, String)> {
-    // SEC- — internal trigger: admin guard (also backstopped by the
+    // SEC- - internal trigger: admin guard (also backstopped by the
     // route-guard middleware at /oauth/backchannel-logout).
     let _auth =
         crate::sentin8or_auth::require_sentin8or_access_write(&state, &headers, None).await?;
@@ -270,7 +270,7 @@ mod tests {
 
     #[test]
     fn logout_token_no_sub_or_sid() {
-        // Per spec, sub and sid are optional — the token can omit them.
+        // Per spec, sub and sid are optional - the token can omit them.
         let claims = LogoutTokenClaims {
             iss: "https://auth.example.com".into(),
             aud: "client_123".into(),

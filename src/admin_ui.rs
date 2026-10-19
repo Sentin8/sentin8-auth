@@ -3,7 +3,7 @@
 // SPDX-FileCopyrightText: Copyright Contributors to the Sentin8:Auth
 // SPDX-License-Identifier: Apache-2.0
 
-//! Sentin8:Auth Admin UI handlers — RFW definitions.
+//! Sentin8:Auth Admin UI handlers - RFW definitions.
 //! Served from `GET /v1/admin/ui/{page}`, rendered by Sentin8:Dash at runtime.
 
 use crate::admin::TargetEnvQuery;
@@ -47,7 +47,7 @@ pub async fn get_admin_ui(
     )
     .await?;
 
-    // Acquire a connection and set RLS tenant context — sentin8_auth_users
+    // Acquire a connection and set RLS tenant context - sentin8_auth_users
     // and sentin8_auth_roles have RLS enabled, so queries without tenant
     // context return empty results. The context is transaction-local, so we
     // must run all RLS-dependent queries inside a single transaction.
@@ -456,7 +456,7 @@ pub async fn get_admin_ui(
                 row_action_post("Delete", "oauth-clients/{id}/delete"),
             ]))
             .build(),
- // ── api-keys/new — create API key form ──
+ // ── api-keys/new - create API key form ──
         "api-keys/new" => AdminPage::new("Create API Key")
             .widget(RemoteWidget::Form(WidgetForm {
                 fields: vec![
@@ -487,7 +487,7 @@ pub async fn get_admin_ui(
                 method: FormMethod::Post,
             }))
             .build(),
- // ── connections/new — create enterprise connection form ──
+ // ── connections/new - create enterprise connection form ──
         "connections/new" => AdminPage::new("Add Connection")
             .widget(RemoteWidget::Form(WidgetForm {
                 fields: vec![
@@ -534,7 +534,7 @@ pub async fn get_admin_ui(
                 method: FormMethod::Post,
             }))
             .build(),
- // ── applications/new — register OAuth client form ──
+ // ── applications/new - register OAuth client form ──
         "applications/new" => AdminPage::new("Register Application")
             .widget(RemoteWidget::Form(WidgetForm {
                 fields: vec![
@@ -691,7 +691,7 @@ pub async fn get_admin_ui(
                 }))
                 .build()
         }
- // ── roles/{id}/members — role member management ──
+ // ── roles/{id}/members - role member management ──
         _ if page.starts_with("roles/") && page.contains("/members") => {
             let role_id = page.strip_prefix("roles/").unwrap_or("").trim_end_matches("/members");
             AdminPage::new("Role Members")
@@ -719,7 +719,7 @@ pub async fn get_admin_ui(
                 }))
                 .build()
         }
- // ── groups/{id}/members — group member + role management ──
+ // ── groups/{id}/members - group member + role management ──
         _ if page.starts_with("groups/") && page.contains("/members") => {
             let group_id = page.strip_prefix("groups/").unwrap_or("").trim_end_matches("/members");
             AdminPage::new("Group Members")
@@ -745,7 +745,7 @@ pub async fn get_admin_ui(
                     cancel_label: "Cancel".into(),
                     method: FormMethod::Post,
                 }))
- // — assign a role to the group (members inherit its scopes).
+ // - assign a role to the group (members inherit its scopes).
                 .widget(RemoteWidget::Form(WidgetForm {
                     fields: vec![
                         WidgetFormField {
@@ -766,11 +766,11 @@ pub async fn get_admin_ui(
                 .build()
         }
         "security" => {
- // — the security page: HIGH-LEVEL selection only
+ // - the security page: HIGH-LEVEL selection only
  // (Profile + Extensions + Overlay). Submitting it resets the
  // detail flags to the selected profile's defaults.
  // The individual `require_*` flags live on the detail page
- // (`security/detail`) — linked from the header action.
+ // (`security/detail`) - linked from the header action.
             let current = crate::security_admin::read_current(&state.pool, a.env_id)
                 .await
                 .unwrap_or(crate::security_admin::SecuritySelectionResponse {
@@ -781,9 +781,9 @@ pub async fn get_admin_ui(
                     env_row_exists: false,
                 });
             let inherited = if current.env_row_exists {
-                "Env-scoped row active — these values govern enforcement for this env."
+                "Env-scoped row active - these values govern enforcement for this env."
             } else {
-                "No env row yet — this env inherits the platform default. Saving creates the env row."
+                "No env row yet - this env inherits the platform default. Saving creates the env row."
             };
             let ext_default = serde_json::Value::Array(
                 current.extensions.iter().map(|e| serde_json::json!(e)).collect(),
@@ -824,7 +824,7 @@ pub async fn get_admin_ui(
                                 FormFieldOption { value: "jwt_introspection".into(), label: "Signed introspection (RFC 9701)".into() },
                             ]),
                             validation: None, width: None,
-                            help_text: Some("Additive protocol extensions — compose with any profile.".into()),
+                            help_text: Some("Additive protocol extensions - compose with any profile.".into()),
                             visible_if: None,
                         },
                         WidgetFormField {
@@ -840,7 +840,7 @@ pub async fn get_admin_ui(
                                 FormFieldOption { value: "brazil".into(), label: "Brazil Open Finance".into() },
                             ]),
                             validation: None, width: None,
-                            help_text: Some("Env-scoped compliance regime — SSA/mTLS constraints. FDX is NOT an overlay (vertical-level).".into()),
+                            help_text: Some("Env-scoped compliance regime - SSA/mTLS constraints. FDX is NOT an overlay (vertical-level).".into()),
                             visible_if: None,
                         },
                     ],
@@ -852,7 +852,7 @@ pub async fn get_admin_ui(
                 .build()
         }
         "security/detail" => {
- // — the detail page: individual `require_*` flags.
+ // - the detail page: individual `require_*` flags.
  // Saving here never changes the high-level selection; only the
  // flags written on the env row change.
             let current = crate::security_admin::read_current(&state.pool, a.env_id)
@@ -902,7 +902,7 @@ pub async fn get_admin_ui(
             let max_default = row.as_ref().map(|r| r.max_token_lifetime)
                 .or(defs.as_ref().map(|d| d.max_token_lifetime))
                 .unwrap_or(900);
-            AdminPage::new("Security Profile — Detail Flags")
+            AdminPage::new("Security Profile - Detail Flags")
                 .action(link_action("Back to Security", "security"))
                 .widget(card("Profile", &format!("Current selection: {} (changing the selection on the Security page resets these flags)", current.profile)))
                 .widget(RemoteWidget::Form(WidgetForm {
@@ -940,14 +940,14 @@ pub async fn get_admin_ui(
                             field_type: FormFieldType::Toggle, required: false, placeholder: None,
                             default_value: Some(flag_default("require_http_signatures")),
                             options: None, validation: None, width: None,
-                            help_text: Some("RFC 9421 — FAPI 2.0 Message Signing".into()), visible_if: None,
+                            help_text: Some("RFC 9421 - FAPI 2.0 Message Signing".into()), visible_if: None,
                         },
                         WidgetFormField {
                             key: "require_jwt_introspection".into(), label: "Require signed introspection".into(),
                             field_type: FormFieldType::Toggle, required: false, placeholder: None,
                             default_value: Some(flag_default("require_jwt_introspection")),
                             options: None, validation: None, width: None,
-                            help_text: Some("RFC 9701 — signed introspection responses".into()), visible_if: None,
+                            help_text: Some("RFC 9701 - signed introspection responses".into()), visible_if: None,
                         },
                         WidgetFormField {
                             key: "require_iss".into(), label: "Require iss parameter".into(),

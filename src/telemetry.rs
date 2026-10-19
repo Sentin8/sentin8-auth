@@ -3,11 +3,11 @@
 // SPDX-FileCopyrightText: Copyright Contributors to the Sentin8:Auth
 // SPDX-License-Identifier: Apache-2.0
 
-//! Auth daily telemetry (SDD §2.6 — MemBus transport, internal timer).
+//! Auth daily telemetry (SDD §2.6 - MemBus transport, internal timer).
 //!
 //! Counts of users, roles, groups, active sessions, OAuth clients, API
 //! keys, MFA/passkey enrollments, and signups today. Emitted as one
-//! metric frame on the shared telemetry path —
+//! metric frame on the shared telemetry path -
 //! `sentin8::shield::stat_emit::emit_metric_event` (MemBus
 //! `stat:telemetry` Pub/Sub, consumed by Stat's worker; fire-and-forget,
 //! log-only on failure).
@@ -17,17 +17,17 @@
 //! calls. The shared emitter is initialized by the shell boot
 //! (`boot_full` → `init_stat_emitter_for_service("sentin8:auth")`).
 
-/// Telemetry cadence — daily.
+/// Telemetry cadence - daily.
 const TELEMETRY_TICK: std::time::Duration = std::time::Duration::from_secs(86_400);
 
 /// Spawn the daily telemetry timer (internal, fire-and-forget). A failed
-/// query or emission logs and retries on the next tick — never fatal.
+/// query or emission logs and retries on the next tick - never fatal.
 pub fn spawn_telemetry_timer(pool: sqlx::PgPool) {
     tokio::spawn(async move {
         loop {
             tokio::time::sleep(TELEMETRY_TICK).await;
             if let Err(e) = emit_daily_telemetry(&pool).await {
-                tracing::warn!(error = %e, "auth daily telemetry failed — retrying next tick");
+                tracing::warn!(error = %e, "auth daily telemetry failed - retrying next tick");
             }
         }
     });
@@ -93,7 +93,7 @@ async fn emit_daily_telemetry(pool: &sqlx::PgPool) -> Result<(), String> {
     .await
     .map_err(|e| format!("count signups: {e}"))?;
 
-    // One metric frame on the shared MemBus telemetry path — the shell
+    // One metric frame on the shared MemBus telemetry path - the shell
     // boot initialized the emitter; a disabled emitter is a no-op.
     sentin8::shield::stat_emit::emit_metric_event(
         "sentin8:auth",

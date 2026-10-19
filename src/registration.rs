@@ -21,10 +21,10 @@ const PG_ROLES: &[PgRole] = &[PgRole {
     bypass_rls: false,
     database: "sentin8",
     // Cross-schema reads inside the platform database, explicitly
-    // declared (architecture-principles §6.6 — never blanket schema
+    // declared (architecture-principles §6.6 - never blanket schema
     // grants). auth resolves org_id from env_id via `sys.environments`
     // in the provisioning path (provision.rs / sentin8or_auth.rs §6.3)
-    // and in delegation/ciba env resolution — the tables stay sys-owned;
+    // and in delegation/ciba env resolution - the tables stay sys-owned;
     // auth only reads them under the FORCE-RLS tenant context.
     cross_schema_grants: &[CrossSchemaGrant {
         schema: "sys",
@@ -171,12 +171,12 @@ fn openapi_spec() -> serde_json::Value {
 
 /// Default declarative policy sets (Sentin8:Policy design /):
 /// action-granular scope permits over the LIVE effective scope set. Seeded
-/// `origin='platform'`, `mode='enforced'` ( — step 5 is
+/// `origin='platform'`, `mode='enforced'` ( - step 5 is
 /// the only gate; shadow is the emergency one-UPDATE rollback lever only).
 const POLICIES: &[PolicySetDecl] = &[
     PolicySetDecl {
         policy_set_name: "scope-mirror",
-        description: "Action-granular scope permits for sentin8:auth over the LIVE effective scope set. Enforced — step 5 is the only gate. The memberships grant mirrors the sys provisioning workload's certificate scope (auth-sys, auth DESIGN §4.3f) — its role/group provisioning calls present the certificate, and the map-granted `sentin8:sys:memberships:admin` is the authorization record.",
+        description: "Action-granular scope permits for sentin8:auth over the LIVE effective scope set. Enforced - step 5 is the only gate. The memberships grant mirrors the sys provisioning workload's certificate scope (auth-sys, auth DESIGN §4.3f) - its role/group provisioning calls present the certificate, and the map-granted `sentin8:sys:memberships:admin` is the authorization record.",
         policies: "permit(principal, action == Action::\"sentin8:auth:admin:read\", resource) when { principal.scopes.contains(\"sentin8:auth:admin:read\") };\npermit(principal, action == Action::\"sentin8:auth:admin:write\", resource) when { principal.scopes.contains(\"sentin8:auth:admin:write\") };\npermit(principal, action == Action::\"sentin8:auth:admin:read\", resource) when { principal.scopes.contains(\"sentin8:sys:memberships:admin\") };\npermit(principal, action == Action::\"sentin8:auth:admin:write\", resource) when { principal.scopes.contains(\"sentin8:sys:memberships:admin\") };",
         schema: None,
         mode: "enforced",
@@ -184,7 +184,7 @@ const POLICIES: &[PolicySetDecl] = &[
     },
 ];
 
-/// Default ReBAC relation tuples (design ) — none declared by this
+/// Default ReBAC relation tuples (design ) - none declared by this
 /// service today; env admins author their own graph via the admin API.
 const RELATIONS: &[RelationDecl] = &[];
 
@@ -194,7 +194,7 @@ const RELATIONS: &[RelationDecl] = &[];
 /// With `--section=<name>`, outputs only that section as a standalone JSON value.
 /// M2M DCR workload grants (self-registration ): this
 /// service's own `certless:<workload>` rows, upserted by `vertical enroll`.
-/// The static auth seed is retired — this declaration is the ONLY
+/// The static auth seed is retired - this declaration is the ONLY
 /// provisioning path ( "DCR is dynamic").
 /// Cover BOTH the full-identity `-policy` spelling (policy_bus_client) and
 /// the bare `{short}-policy` spelling (stat_emit); the gate's superset
@@ -206,7 +206,7 @@ const M2M_GRANTS: &[sentin8::registration::M2mGrant] = &[
     },
     // The platform workload also drives sign-up closure provisioning:
     // `auto_add_to_app_groups` learns the env's customer-mode app
-    // instances via Sentin8:App's owner API (auth DESIGN invariant 12 —
+    // instances via Sentin8:App's owner API (auth DESIGN invariant 12 -
     // no direct `sys.app_instances` read; auth's sys.* grants are
     // retired).
     sentin8::registration::M2mGrant {
@@ -245,7 +245,7 @@ const M2M_GRANTS: &[sentin8::registration::M2mGrant] = &[
         workload: "auth-policy",
         scopes: &["sentin8:bus:consume", "sentin8:stat:measure"],
     },
-    // TLS-RLS-4 (design/sentin8-vertical-data-plane-contract.md §VDC.7): the database-free HostContextResolver’s resolve workload — cache miss calls Sys `GET /v1/resolve/hostname`.
+    // TLS-RLS-4 (design/sentin8-vertical-data-plane-contract.md §VDC.7): the database-free HostContextResolver’s resolve workload - cache miss calls Sys `GET /v1/resolve/hostname`.
     sentin8::registration::M2mGrant {
         workload: "sentin8-auth-tls",
         scopes: &["sentin8:sys:instances:read"],

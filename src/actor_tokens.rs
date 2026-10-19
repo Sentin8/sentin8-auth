@@ -3,7 +3,7 @@
 // SPDX-FileCopyrightText: Copyright Contributors to the Sentin8:Auth
 // SPDX-License-Identifier: Apache-2.0
 
-//! Actor tokens — support / delegated admin.
+//! Actor tokens - support / delegated admin.
 //!
 //! An actor token is a short-lived access token issued by an authorized
 //! support/admin user that lets them act on behalf of another user. The
@@ -13,15 +13,15 @@
 //!
 //! ## Endpoints
 //!
-//! - `POST /v1/admin/actor-tokens` — issue an actor token. Requires the
+//! - `POST /v1/admin/actor-tokens` - issue an actor token. Requires the
 //! caller to have the `sentin8:auth:actor:issue` scope (granted to the
 //! `sentin8:org:admin` tenant role and the `sys-admin` platform role). The
 //! request specifies the target user id + the requested scope + lifetime
 //! (bounded to a max of 1 hour).
-//! - `GET /v1/admin/actor-tokens` — list recent actor token issuances
+//! - `GET /v1/admin/actor-tokens` - list recent actor token issuances
 //! (audit trail).
-//! - `POST /v1/actor-tokens/revoke` — revoke an actor token by `jti`.
-//! - `GET /v1/admin/actor-events` — query the actor event audit log.
+//! - `POST /v1/actor-tokens/revoke` - revoke an actor token by `jti`.
+//! - `GET /v1/admin/actor-events` - query the actor event audit log.
 //!
 //! ## JWT claims
 //!
@@ -160,12 +160,12 @@ pub struct RevokeActorTokenRequest {
 
 // ── Handlers ───────────────────────────────────────────────────────────
 
-/// `POST /v1/admin/actor-tokens` — issue an actor token.
+/// `POST /v1/admin/actor-tokens` - issue an actor token.
 ///
 /// The caller must be authenticated (session cookie) and have the
 /// `sentin8:auth:actor:issue` scope via a tenant or platform admin role/group
 /// (e.g. `sentin8:org:admin`, `sentin8:org:owner`, `sys-admin`).
-/// `POST /v1/admin/actor-tokens` — issue an actor token.
+/// `POST /v1/admin/actor-tokens` - issue an actor token.
 #[utoipa::path(
     post,
     path = "/v1/admin/actor-tokens",
@@ -201,7 +201,7 @@ pub async fn issue_actor_token(
             "actor must be authenticated".into(),
         )
     })?;
-    // SEC- — mutating session endpoint: CSRF-gated (Bearer exempt).
+    // SEC- - mutating session endpoint: CSRF-gated (Bearer exempt).
     crate::handlers::check_csrf(&headers, &actor_token_id)?;
     let actor_session = crate::sessions::Session::find_by_token(&state.pool, &actor_token_id)
         .await
@@ -335,8 +335,8 @@ pub async fn issue_actor_token(
     .into_response())
 }
 
-/// `GET /v1/admin/actor-tokens` — list recent actor token issuances (audit).
-/// `GET /v1/admin/actor-tokens` — list recent actor token issuances.
+/// `GET /v1/admin/actor-tokens` - list recent actor token issuances (audit).
+/// `GET /v1/admin/actor-tokens` - list recent actor token issuances.
 #[utoipa::path(
     get,
     path = "/v1/admin/actor-tokens",
@@ -358,7 +358,7 @@ pub async fn list_actor_tokens(
     headers: axum::http::HeaderMap,
     Query(q): Query<ListActorTokensQuery>,
 ) -> Result<Json<Vec<ActorEventResponse>>, (StatusCode, String)> {
-    // SEC- — admin guard (previously unauthenticated).
+    // SEC- - admin guard (previously unauthenticated).
     let _auth = crate::sentin8or_auth::require_sentin8or_access(&state, &headers).await?;
     let limit = q.page_size.clamp(1, 200);
     let offset = (q.page.max(1) - 1) * limit;
@@ -397,8 +397,8 @@ pub async fn list_actor_tokens(
     Ok(Json(events))
 }
 
-/// `POST /v1/actor-tokens/revoke` — revoke an actor token by token_id (jti).
-/// `POST /v1/actor-tokens/revoke` — revoke an actor token by token_id.
+/// `POST /v1/actor-tokens/revoke` - revoke an actor token by token_id (jti).
+/// `POST /v1/actor-tokens/revoke` - revoke an actor token by token_id.
 #[utoipa::path(
     post,
     path = "/v1/actor-tokens/revoke",
@@ -416,7 +416,7 @@ pub async fn revoke_actor_token(
     headers: axum::http::HeaderMap,
     Json(req): Json<RevokeActorTokenRequest>,
 ) -> Result<Response, (StatusCode, String)> {
-    // SEC- — admin guard (previously unauthenticated).
+    // SEC- - admin guard (previously unauthenticated).
     let _auth =
         crate::sentin8or_auth::require_sentin8or_access_write(&state, &headers, None).await?;
     // Mark the token as revoked in the audit table and add to a revocation set.
@@ -453,8 +453,8 @@ pub async fn revoke_actor_token(
     Ok(Json(serde_json::json!({"status": "revoked", "token_id": req.token_id})).into_response())
 }
 
-/// `GET /v1/admin/actor-events` — query the actor event audit log.
-/// `GET /v1/admin/actor-events` — query the actor event audit log.
+/// `GET /v1/admin/actor-events` - query the actor event audit log.
+/// `GET /v1/admin/actor-events` - query the actor event audit log.
 #[utoipa::path(
     get,
     path = "/v1/admin/actor-events",
@@ -476,7 +476,7 @@ pub async fn list_actor_events(
     headers: axum::http::HeaderMap,
     Query(q): Query<ListActorTokensQuery>,
 ) -> Result<Json<Vec<ActorEventResponse>>, (StatusCode, String)> {
-    // SEC- — admin guard (previously unauthenticated), then
+    // SEC- - admin guard (previously unauthenticated), then
     // delegate to the shared guarded query.
     list_actor_tokens(State(state), headers, Query(q)).await
 }

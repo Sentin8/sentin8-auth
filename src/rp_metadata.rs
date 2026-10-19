@@ -239,7 +239,7 @@ mod tests {
 
     #[test]
     fn fetch_rp_metadata_rejects_http() {
-        // This is a synchronous check — no network needed.
+        // This is a synchronous check - no network needed.
         let rt = tokio::runtime::Runtime::new().unwrap();
         let result = rt.block_on(fetch_rp_metadata("http://example.com/.well-known/rp"));
         assert!(result.is_err());

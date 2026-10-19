@@ -20,7 +20,7 @@ use axum::Json;
 
 use crate::admin::TargetEnvQuery;
 
-/// `POST /v1/admin/users/{id}/delete` — RFW alias of
+/// `POST /v1/admin/users/{id}/delete` - RFW alias of
 /// `DELETE /v1/admin/users/{id}`.
 #[utoipa::path(
     post,
@@ -46,7 +46,7 @@ pub async fn user_delete(
     crate::admin::delete_user(State(state), headers, Query(teq), Path(id)).await
 }
 
-/// `POST /v1/admin/roles/{id}/update` — RFW alias of
+/// `POST /v1/admin/roles/{id}/update` - RFW alias of
 /// `PUT /v1/admin/roles/{id}` (form body passthrough).
 #[utoipa::path(
     post,
@@ -74,7 +74,7 @@ pub async fn role_update(
     crate::admin::update_role(State(state), headers, Query(teq), Path(id), Json(req)).await
 }
 
-/// `POST /v1/admin/roles/{id}/delete` — RFW alias of
+/// `POST /v1/admin/roles/{id}/delete` - RFW alias of
 /// `DELETE /v1/admin/roles/{id}`.
 #[utoipa::path(
     post,
@@ -100,7 +100,7 @@ pub async fn role_delete(
     crate::admin::delete_role(State(state), headers, Query(teq), Path(id)).await
 }
 
-/// `POST /v1/admin/groups/{id}/update` — RFW alias of
+/// `POST /v1/admin/groups/{id}/update` - RFW alias of
 /// `PUT /v1/admin/groups/{id}` (raw JSON body passthrough).
 #[utoipa::path(
     post,
@@ -128,7 +128,7 @@ pub async fn group_update(
     crate::admin::update_group(State(state), headers, Query(teq), Path(id), body).await
 }
 
-/// `POST /v1/admin/groups/{id}/delete` — RFW alias of
+/// `POST /v1/admin/groups/{id}/delete` - RFW alias of
 /// `DELETE /v1/admin/groups/{id}`.
 #[utoipa::path(
     post,
@@ -154,7 +154,7 @@ pub async fn group_delete(
     crate::admin::delete_group(State(state), headers, Query(teq), Path(id)).await
 }
 
-/// `POST /v1/admin/oauth-clients/{id}/delete` — RFW alias of
+/// `POST /v1/admin/oauth-clients/{id}/delete` - RFW alias of
 /// `DELETE /v1/admin/oauth-clients/{id}`.
 #[utoipa::path(
     post,
@@ -180,7 +180,7 @@ pub async fn oauth_client_delete(
     crate::admin::delete_oauth_client(State(state), headers, Query(teq), Path(id)).await
 }
 
-/// `POST /v1/admin/sessions/{id}/revoke` — RFW alias of
+/// `POST /v1/admin/sessions/{id}/revoke` - RFW alias of
 /// `DELETE /v1/admin/sessions/{id}`.
 #[utoipa::path(
     post,
@@ -206,7 +206,7 @@ pub async fn session_revoke(
     crate::admin::terminate_session(State(state), headers, Query(teq), Path(id)).await
 }
 
-/// `POST /v1/admin/enterprise-connections/{id}/delete` — RFW alias of
+/// `POST /v1/admin/enterprise-connections/{id}/delete` - RFW alias of
 /// `DELETE /v1/admin/enterprise-connections/{id}`.
 #[utoipa::path(
     post,
@@ -233,7 +233,7 @@ pub async fn enterprise_connection_delete(
         .await
 }
 
-/// `GET /v1/admin/groups/{id}` — the group's members (the same
+/// `GET /v1/admin/groups/{id}` - the group's members (the same
 /// `list_group_members` handler is bound at both this path and
 /// `/v1/admin/groups/{group_id}/members`; one spec entry documents the
 /// contract, a second entry records this duplicate binding so the drift

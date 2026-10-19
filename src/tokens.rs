@@ -11,17 +11,17 @@
 //! stored for admin-shared codes or short-channel delivery.
 //!
 //! ## Password reset
-//! - `POST /v1/password/reset` — request a reset: generate a token, store the
+//! - `POST /v1/password/reset` - request a reset: generate a token, store the
 //! hash, return `{"status":"sent","short_code":"..."}` (the server logs the
 //! reset link in dev mode; production delivers via email/SMS out-of-band).
-//! - `POST /v1/password/reset/confirm` — submit the token + new password,
+//! - `POST /v1/password/reset/confirm` - submit the token + new password,
 //! validate the token, set the new password hash, consume the token,
 //! revoke all active sessions for the user.
 //!
 //! ## Email verification
-//! - `POST /v1/email/verify` — request a verification email: generate a token,
+//! - `POST /v1/email/verify` - request a verification email: generate a token,
 //! store the hash.
-//! - `POST /v1/email/verify/confirm` — submit the token, mark
+//! - `POST /v1/email/verify/confirm` - submit the token, mark
 //! `sentin8_auth_users.email_verified = true`, consume the token.
 
 use axum::{
@@ -63,7 +63,7 @@ pub struct PasswordResetResponse {
     pub short_code: Option<String>,
 }
 
-/// `POST /v1/password/reset` — request a password reset token.
+/// `POST /v1/password/reset` - request a password reset token.
 ///
 /// Always returns `{"status":"sent"}` even when the email is unknown
 /// (to prevent user enumeration). The `short_code` is only present when a
@@ -90,12 +90,12 @@ pub async fn password_reset_request(
     Json(req): Json<PasswordResetRequest>,
 ) -> Response {
     let email = req.email.to_lowercase();
-    // Resolve the tenant from the request headers — the same email may
+    // Resolve the tenant from the request headers - the same email may
     // exist as different users across tenants, so we MUST scope the
     // lookup to env_id.
     let (_org_id, env_id) =
         crate::handlers::resolve_tenant_from_headers(&state.pool, &headers).await;
-    // SEC- — tenant context on the same connection (design ).
+    // SEC- - tenant context on the same connection (design ).
     let user = async {
         let mut conn = state.pool.begin().await.ok()?;
         let _ = sqlx::query("SELECT sentin8_set_tenant_context($1)")
@@ -150,7 +150,7 @@ pub async fn password_reset_request(
                 serde_json::json!({"user_id": u.id, "short_code": short_code, "event": "password_reset"}),
             ).await;
 
-            // The raw token is NOT returned in the API response — the
+            // The raw token is NOT returned in the API response - the
             // short code is delivered out-of-band via Sentin8:Post and is
             // visible in dev logs only (SEC-: the previous
             // `short_code: Some(...)` leaked 32 bits of the security
@@ -164,7 +164,7 @@ pub async fn password_reset_request(
             .into_response()
         }
         _ => {
-            // User not found or not active — return the same response shape
+            // User not found or not active - return the same response shape
             // to prevent enumeration.
             Json(PasswordResetResponse {
                 status: "sent".into(),
@@ -191,7 +191,7 @@ pub struct PasswordResetConfirmResponse {
     pub status: String,
 }
 
-/// `POST /v1/password/reset/confirm` — set a new password with a reset token.
+/// `POST /v1/password/reset/confirm` - set a new password with a reset token.
 /// Handle password reset confirm.
 #[utoipa::path(
     post,
@@ -220,7 +220,7 @@ pub async fn password_reset_confirm(
     }
 
     let token_hash = hash_token(&req.token);
-    // SEC- — tenant context on the same connection (design ). The
+    // SEC- - tenant context on the same connection (design ). The
     // token → user lookup resolves the tenant, then all writes run on that
     // connection with the context set.
     let mut conn = state
@@ -283,7 +283,7 @@ pub async fn password_reset_confirm(
     .await;
 
     // Continuous access evaluation (auth DESIGN §10): the outbox row
-    // commits atomically with the revocation UPDATE — the BFF
+    // commits atomically with the revocation UPDATE - the BFF
     // session-reaper kills the cached BFF sessions for the subject.
     crate::events::emit_session_revoked(
         &mut conn,
@@ -294,7 +294,7 @@ pub async fn password_reset_confirm(
     )
     .await;
 
-    // SEC- — password:reset is a CONFIRM-time domain event (the
+    // SEC- - password:reset is a CONFIRM-time domain event (the
     // password actually changed), not a request-time notification. The
     // inbox row is written on the same transaction (SEC- inbox-first).
     crate::events::emit_event_tx(
@@ -333,16 +333,16 @@ pub struct EmailVerifyResponse {
     pub short_code: Option<String>,
 }
 
-/// `POST /v1/email/verify` — request an email verification token.
+/// `POST /v1/email/verify` - request an email verification token.
 ///
 /// The email is scoped to the current tenant (resolved from the
 /// `Host` / TLS headers) because the same email can exist as a
 /// separate user in each tenant.
 ///
-/// SEC- — enumeration-safe: unknown emails and
+/// SEC- - enumeration-safe: unknown emails and
 /// already-verified emails return the same `{"status":"sent"}` shape
 /// (previously 404 / 409 revealed account existence). The short_code is
-/// no longer returned to unauthenticated callers (SEC-) —
+/// no longer returned to unauthenticated callers (SEC-) -
 /// it is logged for dev workflows and delivered via Sentin8:Post.
 /// Handle email verify request.
 #[utoipa::path(
@@ -418,7 +418,7 @@ pub struct EmailVerifyConfirmResponse {
     pub user_id: Uuid,
 }
 
-/// `POST /v1/email/verify/confirm` — confirm email verification with a token.
+/// `POST /v1/email/verify/confirm` - confirm email verification with a token.
 /// Handle email verify confirm.
 #[utoipa::path(
     post,

@@ -3,16 +3,16 @@
 // SPDX-FileCopyrightText: Copyright Contributors to the Sentin8:Auth
 // SPDX-License-Identifier: Apache-2.0
 
-//! Bot protection — rate limiting and account lockout.
+//! Bot protection - rate limiting and account lockout.
 //!
 //! Implements two protections against credential-stuffing and brute-force
 //! attacks:
 //!
-//! 1. **Sign-in rate limit** — per IP address + per email, a sliding-window
+//! 1. **Sign-in rate limit** - per IP address + per email, a sliding-window
 //! counter in Valkey limits the number of sign-in attempts (default 10 per
 //! minute per IP, 5 per minute per email). Exceeding the limit returns
 //! `429 Too Many Requests` with a `Retry-After` header.
-//! 2. **Account lockout** — after `SENTIN8_AUTH_MAX_FAILED_ATTEMPTS` (default 5)
+//! 2. **Account lockout** - after `SENTIN8_AUTH_MAX_FAILED_ATTEMPTS` (default 5)
 //! consecutive failed sign-in attempts for a single user, the account is
 //! locked for `SENTIN8_AUTH_LOCKOUT_DURATION_SECS` (default 900s = 15 min). A
 //! successful sign-in or an admin unlock resets the counter. Lockout
@@ -20,12 +20,12 @@
 //! (`'locked'`) for durability across Valkey restarts.
 //!
 //! The module exposes three helpers used by the `sign_in` handler:
-//! - [`check_signin_rate`] — enforce the rate limit (call before looking up
+//! - [`check_signin_rate`] - enforce the rate limit (call before looking up
 //! the user). Returns `Err(429)` when exceeded.
-//! - [`check_account_lockout`] — reject sign-in when the account is locked.
-//! - [`record_failed_signin`] — increment the failed-attempt counter and lock
+//! - [`check_account_lockout`] - reject sign-in when the account is locked.
+//! - [`record_failed_signin`] - increment the failed-attempt counter and lock
 //! the account when the threshold is reached.
-//! - [`reset_failed_signins`] — reset the counter on a successful sign-in.
+//! - [`reset_failed_signins`] - reset the counter on a successful sign-in.
 
 use std::time::Duration;
 
@@ -133,7 +133,7 @@ pub async fn check_account_lockout(
     }
     // Also check the DB status (durable across Valkey restarts).
     // fix : `users` is RLS-protected and the pooled
-    // connection has no tenant context — without one the SELECT is
+    // connection has no tenant context - without one the SELECT is
     // policy-blocked (context_initialized gate) and sign-in 500s on the
     // wrong-password path. Set the context from the user's own env on the
     // SAME connection. Caught by the revived
@@ -213,7 +213,7 @@ pub async fn reset_failed_signins(
     let conn = valkey_conn(state).await?;
     let _: () = conn.del(&key).await.unwrap_or(());
     // Also clear a locked status back to active (the user just proved they
-    // can authenticate — e.g. after an admin-initiated reset or after the
+    // can authenticate - e.g. after an admin-initiated reset or after the
     // lockout window expired and they remembered the password).
     let _ = sqlx::query!(
         r#"UPDATE users SET status = 'active', updated_at = now()

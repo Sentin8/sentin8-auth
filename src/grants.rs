@@ -13,15 +13,15 @@
 //!
 //! Revoking a grant revokes the dependent tokens: the grant row flips to
 //! `revoked` AND every jti issued under the grant is denylisted (Valkey
-//! `auth:revoked:{jti}`) — the same mechanism RFC 7009 revocation uses —
+//! `auth:revoked:{jti}`) - the same mechanism RFC 7009 revocation uses -
 //! so resource servers stop accepting tokens issued under the revoked
 //! grant immediately.
 //!
 //! Endpoints (FAPI 2.0 Grant Management ID1):
-//! - `POST /oauth/grants` — create (record a new authorization)
-//! - `GET /oauth/grants/{id}` — query actions (scopes, status, times)
-//! - `PATCH /oauth/grants/{id}` — modify (upgrade/downgrade scope)
-//! - `DELETE /oauth/grants/{id}` — revoke (cascade token revocation)
+//! - `POST /oauth/grants` - create (record a new authorization)
+//! - `GET /oauth/grants/{id}` - query actions (scopes, status, times)
+//! - `PATCH /oauth/grants/{id}` - modify (upgrade/downgrade scope)
+//! - `DELETE /oauth/grants/{id}` - revoke (cascade token revocation)
 
 use axum::extract::{Path, State};
 use axum::http::{HeaderMap, StatusCode};
@@ -70,7 +70,7 @@ pub struct CreateGrantRequest {
     #[serde(default)]
     /// The authorization details.
     pub authorization_details: Option<serde_json::Value>,
-    /// The tenant the grant lives in — REQUIRED (SEC-: no silent
+    /// The tenant the grant lives in - REQUIRED (SEC-: no silent
     /// fallback to the caller's env).
     /// env identifier.
     pub env_id: Uuid,
@@ -86,13 +86,13 @@ pub struct PatchGrantRequest {
     pub authorization_details: Option<serde_json::Value>,
 }
 
-/// Create a grant row — called after a successful authorization (code
+/// Create a grant row - called after a successful authorization (code
 /// exchange, CIBA approval) to record the standing consent. Idempotent
 /// per (env, user, client): an existing active grant is widened/narrowed
 /// instead of duplicated.
 ///
 /// All three statements run on the SAME connection with the tenant
-/// context set inside the same explicit transaction — the context is
+/// context set inside the same explicit transaction - the context is
 /// transaction-local, so a separate context-set would evaporate at commit
 /// : the whole read-modify-write runs in ONE transaction with
 /// `sentin8_set_tenant_context(env_id)` set on the SAME connection.
@@ -171,7 +171,7 @@ pub async fn record_grant(
     Ok(id)
 }
 
-/// `POST /oauth/grants` — create/record a grant (admin/client API).
+/// `POST /oauth/grants` - create/record a grant (admin/client API).
 #[utoipa::path(
     post,
     path = "/oauth/grants",
@@ -254,7 +254,7 @@ async fn fetch_grant(
     })
 }
 
-/// `GET /oauth/grants/{id}` — query a grant's status/actions.
+/// `GET /oauth/grants/{id}` - query a grant's status/actions.
 #[utoipa::path(
     get,
     path = "/oauth/grants/{id}",
@@ -278,7 +278,7 @@ pub async fn get_grant(
     Ok(Json(g))
 }
 
-/// `PATCH /oauth/grants/{id}` — upgrade/downgrade the granted scope.
+/// `PATCH /oauth/grants/{id}` - upgrade/downgrade the granted scope.
 /// The new scope must be a subset-or-superset of the current one; the
 /// caller must be the grant's user or an env admin.
 /// Handle patch grant.
@@ -327,10 +327,10 @@ pub async fn patch_grant(
     Ok(Json(g))
 }
 
-/// `DELETE /oauth/grants/{id}` — revoke the grant and cascade-revoke the
+/// `DELETE /oauth/grants/{id}` - revoke the grant and cascade-revoke the
 /// dependent tokens. Tokens carry `grant_id`; the token-endpoint verify
 /// path treats a revoked grant as a hard 401 (checked via the Valkey
-/// `auth:grant:revoked:{grant_id}` key — same read path as the jti
+/// `auth:grant:revoked:{grant_id}` key - same read path as the jti
 /// denylist, so no DB hit on the hot path).
 #[utoipa::path(
     delete,
@@ -366,7 +366,7 @@ pub async fn delete_grant(
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
     // Cascade: denylist the grant for the remaining token lifetimes
-    // (tokens verify via `is_grant_revoked` — Valkey, no DB on hot path).
+    // (tokens verify via `is_grant_revoked` - Valkey, no DB on hot path).
     let remaining = state.config.access_token_ttl_secs as i64 * 2; // access + refresh lifetime headroom
     if let Ok(conn) =
         sentin8::middleware::valkey_client(&state.config.valkey_url, "sentin8:auth").await

@@ -9,18 +9,18 @@
 //! The internal admin surface sys's Flow proxy-back steps call for org/env
 //! access provisioning: idempotent upserts of the per-tenant RBAC rows
 //! (`groups` / `group_members` / `group_roles` / `role_nesting` / `roles`
-//! / `user_roles`). Sys previously INSERTed these tables directly — a
+//! / `user_roles`). Sys previously INSERTed these tables directly - a
 //! cross-service table access retired by (
 //! ): the owner (auth) exposes the provisioning verbs, sys
 //! calls them with its M2M `sentin8:sys:memberships:admin`-gated client.
 //!
 //! All three endpoints are:
-//! - **Idempotent** — `ON CONFLICT DO NOTHING/UPDATE`, safe under Flow's
+//! - **Idempotent** - `ON CONFLICT DO NOTHING/UPDATE`, safe under Flow's
 //! at-least-once retry semantics (the proxy-back steps re-run on retry).
-//! - **Shield-gated** — the scope mirror decides on LIVE effective scopes;
+//! - **Shield-gated** - the scope mirror decides on LIVE effective scopes;
 //! `sentin8:sys:memberships:admin` (the sys provisioning workload's
 //! scope) and the broader `sentin8:auth:admin:write` both pass.
-//! - **M2M-friendly** — the standard token gate (steps 1–4) runs before
+//! - **M2M-friendly** - the standard token gate (steps 1-4) runs before
 //! Shield; tenant context rides the token's `env_id` (RLS).
 
 use axum::{
@@ -36,7 +36,7 @@ use crate::handlers::AppState;
 
 /// Verify the caller + gate on the Shield scope mirror (step 5). The sys
 /// provisioning workload's M2M token carries `sentin8:sys:memberships:admin`;
-/// operator tokens carry `sentin8:auth:admin:write` — both pass. Returns
+/// operator tokens carry `sentin8:auth:admin:write` - both pass. Returns
 /// the resolved tenant env (RLS context).
 async fn authorize_provisioning(
     state: &AppState,
@@ -54,7 +54,7 @@ async fn authorize_provisioning(
     Ok(ctx.env_id)
 }
 
-/// `POST /v1/admin/provision/role` — upsert a role (idempotent).
+/// `POST /v1/admin/provision/role` - upsert a role (idempotent).
 #[derive(Debug, Deserialize, ToSchema)]
 /// Request body for provisionrole.
 pub struct ProvisionRoleRequest {
@@ -113,7 +113,7 @@ pub async fn provision_role(
     })))
 }
 
-/// `POST /v1/admin/provision/role_nesting` — nest child under parent (idempotent).
+/// `POST /v1/admin/provision/role_nesting` - nest child under parent (idempotent).
 #[derive(Debug, Deserialize, ToSchema)]
 /// Request body for provisionrolenesting.
 pub struct ProvisionRoleNestingRequest {
@@ -168,7 +168,7 @@ pub async fn provision_role_nesting(
     Ok(StatusCode::NO_CONTENT)
 }
 
-/// `POST /v1/admin/provision/group` — upsert a group (idempotent).
+/// `POST /v1/admin/provision/group` - upsert a group (idempotent).
 #[derive(Debug, Deserialize, ToSchema)]
 /// Request body for provisiongroup.
 pub struct ProvisionGroupRequest {
@@ -220,7 +220,7 @@ pub async fn provision_group(
     Ok(Json(serde_json::json!({ "group_id": row.unwrap_or(id) })))
 }
 
-/// `POST /v1/admin/provision/group_role` — assign a role to a group (idempotent).
+/// `POST /v1/admin/provision/group_role` - assign a role to a group (idempotent).
 #[derive(Debug, Deserialize, ToSchema)]
 /// Request body for provisiongrouprole.
 pub struct ProvisionGroupRoleRequest {
@@ -275,8 +275,8 @@ pub async fn provision_group_role(
     Ok(StatusCode::NO_CONTENT)
 }
 
-/// `POST /v1/admin/provision/group_member` — add a user to a group
-/// (idempotent; returns the post-state membership count — 0 when the group
+/// `POST /v1/admin/provision/group_member` - add a user to a group
+/// (idempotent; returns the post-state membership count - 0 when the group
 /// is absent, which the caller treats as an error, fail-closed).
 #[derive(Debug, Deserialize, ToSchema)]
 /// Request body for provisiongroupmember.
@@ -327,7 +327,7 @@ pub async fn provision_group_member(
     .execute(&mut *conn)
     .await
     .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
-    // Post-state count (Flow retry semantics — see sys's add_group_member).
+    // Post-state count (Flow retry semantics - see sys's add_group_member).
     let existing: i64 = sqlx::query_scalar(
         r#"SELECT count(*) FROM group_members m
            JOIN groups g ON g.id = m.group_id
@@ -340,7 +340,7 @@ pub async fn provision_group_member(
     .await
     .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
     // Identity-cache invalidation (auth DESIGN §7.1): the provisioning just
-    // granted access — SYSTEM-env `policy` row on the caller's transaction;
+    // granted access - SYSTEM-env `policy` row on the caller's transaction;
     // the tenant env to sweep rides the payload (the tenant-plane context
     // is restored first by the helper).
     if existing > 0 {
@@ -356,7 +356,7 @@ pub async fn provision_group_member(
     Ok(Json(serde_json::json!({ "count": existing.max(0) })))
 }
 
-/// `POST /v1/admin/provision/user_role` — assign a role to a user (idempotent).
+/// `POST /v1/admin/provision/user_role` - assign a role to a user (idempotent).
 #[derive(Debug, Deserialize, ToSchema)]
 /// Request body for provisionuserrole.
 pub struct ProvisionUserRoleRequest {

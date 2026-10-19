@@ -3,7 +3,7 @@
 // SPDX-FileCopyrightText: Copyright Contributors to the Sentin8:Auth
 // SPDX-License-Identifier: Apache-2.0
 
-//! App passwords — per-credential permission restrictions
+//! App passwords - per-credential permission restrictions
 //! (platform ; the legacy `CredentialPermissions`
 //! equivalent, auth design ).
 //!
@@ -11,7 +11,7 @@
 //! a scope whitelist. When the primary login password fails, sign-in
 //! tries active app-passwords: a match issues a token whose scope is
 //! the intersection (app-password whitelist ∩ the user's role scopes)
-//! — never the full role set — with `token_tp = "app_password"` so
+//! - never the full role set - with `token_tp = "app_password"` so
 //! downstream services can distinguish device credentials.
 //!
 //! The raw secret is shown ONCE at mint (bcrypt-hashed at rest, same
@@ -29,7 +29,7 @@ use crate::config::AuthConfig;
 use crate::jwt::AuthClaims;
 
 /// The bearer-auth helper for the self-service routes: any valid user
-/// token (no admin scope needed — these are the user's own credentials).
+/// token (no admin scope needed - these are the user's own credentials).
 async fn require_self(
     state: &crate::handlers::AppState,
     headers: &HeaderMap,
@@ -58,7 +58,7 @@ async fn require_self(
 
 // ── Self-service CRUD ───────────────────────────────────────────────────
 
-/// `POST /v1/me/app-passwords` — mint a new app password. Returns the
+/// `POST /v1/me/app-passwords` - mint a new app password. Returns the
 /// raw secret ONCE; only the bcrypt hash is stored.
 #[derive(Debug, serde::Deserialize, utoipa::ToSchema)]
 /// Request body for createapppassword.
@@ -78,7 +78,7 @@ pub struct CreateAppPasswordRequest {
     path = "/v1/me/app-passwords",
     request_body = CreateAppPasswordRequest,
     responses(
-        (status = 200, description = "Created — the raw secret is returned ONCE", body = serde_json::Value),
+        (status = 200, description = "Created - the raw secret is returned ONCE", body = serde_json::Value),
         (status = 401, description = "Not the caller's own identity (self-service only)"),
     ),
     security(),
@@ -124,12 +124,12 @@ pub async fn create_app_password(
            "id": id,
            "label": req.label.trim(),
            "allowed_scopes": scopes,
-    // Shown once — never retrievable again.
+    // Shown once - never retrievable again.
            "secret": raw,
        })))
 }
 
-/// `GET /v1/me/app-passwords` — list the user's app passwords (no
+/// `GET /v1/me/app-passwords` - list the user's app passwords (no
 /// hashes, no secrets).
 /// List app passwords.
 #[utoipa::path(
@@ -175,7 +175,7 @@ pub async fn list_app_passwords(
     Ok(Json(serde_json::json!({ "items": items })))
 }
 
-/// `DELETE /v1/me/app-passwords/{id}` — revoke one app password.
+/// `DELETE /v1/me/app-passwords/{id}` - revoke one app password.
 /// Revoke app password.
 #[utoipa::path(
     delete,
@@ -246,7 +246,7 @@ pub async fn try_app_password_sign_in(
         if !bcrypt_verify(presented_password, &password_hash).unwrap_or(false) {
             continue;
         }
-        // Match — mark last-used (best effort).
+        // Match - mark last-used (best effort).
         let _ = sqlx::query("UPDATE auth.app_passwords SET last_used_at = now() WHERE id = $1")
             .bind(id)
             .execute(pool)
@@ -285,7 +285,7 @@ pub async fn try_app_password_sign_in(
         let access_token = keys
             .sign(&claims)
             .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
-        // A refresh token is NOT issued for app-password sign-ins —
+        // A refresh token is NOT issued for app-password sign-ins -
         // devices re-present the app password (each session is
         // short-lived by design).
         return Ok(Some((access_token, scope)));
@@ -314,6 +314,6 @@ mod tests {
         let s = random_secret();
         assert!(s.starts_with("sentin8-app-") || !s.is_empty());
         assert_eq!(s.len(), 32);
-        assert!(!s.contains('l') || true); // base62, may contain l — shape only
+        assert!(!s.contains('l') || true); // base62, may contain l - shape only
     }
 }

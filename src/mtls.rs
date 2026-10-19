@@ -13,7 +13,7 @@
 //! `self_signed_tls_client_auth_thumbprint`.
 //!
 //! Sender-constraining: when a client authenticates via mTLS, the issued
-//! access token includes a `cnf` (confirmation) claim with `x5t#S256` — the
+//! access token includes a `cnf` (confirmation) claim with `x5t#S256` - the
 //! thumbprint of the client cert. Resource servers must verify the same
 //! cert is presented when the token is used.
 //!
@@ -45,7 +45,7 @@ pub fn validate_self_signed_tls_client_auth(
 }
 
 /// Build the `cnf` (confirmation) claim for a sender-constrained access token.
-/// Per RFC 8705 , the `cnf` claim contains `x5t#S256` — the SHA-256
+/// Per RFC 8705 , the `cnf` claim contains `x5t#S256` - the SHA-256
 /// thumbprint of the client certificate.
 pub fn build_cnf_claim(cert_thumbprint: &str) -> serde_json::Value {
     serde_json::json!({
@@ -61,8 +61,8 @@ pub fn is_mtls_auth_method(method: &str) -> bool {
 /// Resolve the mTLS client identity from headers.
 ///
 ///TLS passes the client cert metadata via headers:
-/// - `X-Sentin8-Client-Cert-Thumbprint` — the x5t#S256 thumbprint
-/// - `X-Sentin8-Client-Cert-Subject-DN` — the subject DN
+/// - `X-Sentin8-Client-Cert-Thumbprint` - the x5t#S256 thumbprint
+/// - `X-Sentin8-Client-Cert-Subject-DN` - the subject DN
 ///
 /// Returns `Some(thumbprint, subject_dn)` when present.
 pub fn extract_mtls_identity(headers: &axum::http::HeaderMap) -> Option<(String, Option<String>)> {
@@ -105,11 +105,11 @@ pub fn validate_mtls_for_token(
 }
 
 /// Extract the workload identity from the presented client certificate's
-/// subject CN — the TLS layer injects `X-Sentin8-Client-Cert-Subject`
+/// subject CN - the TLS layer injects `X-Sentin8-Client-Cert-Subject`
 /// (best-effort CN from the DER) after CA-verifying the cert. Acme mints
 /// platform client certs as `CN=m2m-{workload}`, so the CN IS the workload
 /// name (auth design gate check 2). Returns the raw CN, which for
-/// platform certs is the bare workload name (e.g. `m2m-auth-post`? no —
+/// platform certs is the bare workload name (e.g. `m2m-auth-post`? no -
 /// `m2m-` is the Acme-side prefix; the DCR client_name equals the full CN).
 pub fn extract_cert_cn(headers: &axum::http::HeaderMap) -> Option<String> {
     headers

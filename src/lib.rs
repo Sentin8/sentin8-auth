@@ -3,13 +3,13 @@
 // SPDX-FileCopyrightText: Copyright Contributors to the Sentin8:Auth
 // SPDX-License-Identifier: Apache-2.0
 
-//! Sentin8 Auth — library re-exports for integration tests.
+//! Sentin8 Auth - library re-exports for integration tests.
 
 #![deny(missing_docs)]
 
 /// Actor (time-boxed, audited) tokens.
 pub mod actor_tokens;
-/// Admin API — users, roles, groups, clients, keys, memberships.
+/// Admin API - users, roles, groups, clients, keys, memberships.
 pub mod admin;
 /// Admin UI (RFW) handlers.
 pub mod admin_ui;
@@ -71,7 +71,7 @@ pub mod overlays;
 pub mod passkey;
 pub mod policy_docs;
 pub mod rfw_aliases;
-/// Shield (Sentin8:Policy) integration — shared bridge re-exports.
+/// Shield (Sentin8:Policy) integration - shared bridge re-exports.
 pub mod policy;
 /// Membership provisioning API (used by peers; no table access).
 pub mod provision;
@@ -100,7 +100,7 @@ pub mod wallet;
 /// Webhook registration and delivery.
 pub mod webhooks;
 
-/// Decode a JWT payload without signature verification — test helper for
+/// Decode a JWT payload without signature verification - test helper for
 /// asserting OIDC claim shapes on minted id_tokens.
 pub use sentin8::auth::jwt::decode_payload as decode_jwt_payload;
 /// OpenAPI spec assembly.

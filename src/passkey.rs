@@ -8,7 +8,7 @@
 //! Implements server-side WebAuthn (CTAP2 / WebAuthn Level 3) for passkey
 //! enrollment and sign-in. The flow is:
 //!
-//! 1. `POST /v1/passkey/enroll/begin` — returns a challenge (`PublicKeyCredentialCreationOptions`)
+//! 1. `POST /v1/passkey/enroll/begin` - returns a challenge (`PublicKeyCredentialCreationOptions`)
 //! containing a random nonce. The challenge is stored in
 //! `sentin8_auth_mfa_challenges` (challenge_kind='enroll') with a 5-minute TTL.
 //! 2. The client (Auth hosted UI) calls `navigator.credentials.create({...})`
@@ -26,7 +26,7 @@
 //! algorithm required by WebAuthn Level 3). Attestation format `none` and
 //! `packed` are accepted; `fido-u2f`, `tpm`, `android-key`, `android-safetynet`,
 //! `apple`, and `apple-appattest` attestation formats are not validated
-//! (attestation is treated as `none` — trust on first use, per the passkey
+//! (attestation is treated as `none` - trust on first use, per the passkey
 //! model). RP ID is derived from the request `Host`/`X-Sentin8-Hostname`.
 
 use axum::{
@@ -179,7 +179,7 @@ pub struct VerifyFinishResponse {
 
 // ── Handlers ───────────────────────────────────────────────────────────
 
-/// `POST /v1/passkey/enroll/begin` — start passkey enrollment.
+/// `POST /v1/passkey/enroll/begin` - start passkey enrollment.
 #[utoipa::path(
     post,
     path = "/v1/passkey/enroll/begin",
@@ -210,7 +210,7 @@ pub async fn enroll_begin(
     .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
     .ok_or_else(|| (StatusCode::NOT_FOUND, "user not found".into()))?;
 
-    // SEC- — tenant context on the same connection (design ).
+    // SEC- - tenant context on the same connection (design ).
     let mut conn = state
         .pool
         .begin()
@@ -276,7 +276,7 @@ pub async fn enroll_begin(
     .into_response())
 }
 
-/// `POST /v1/passkey/enroll/finish` — validate attestation, store public key.
+/// `POST /v1/passkey/enroll/finish` - validate attestation, store public key.
 #[utoipa::path(
     post,
     path = "/v1/passkey/enroll/finish",
@@ -344,7 +344,7 @@ pub async fn enroll_finish(
         return Err((StatusCode::UNAUTHORIZED, "challenge mismatch".into()));
     }
 
-    // SEC- — ceremony completeness: verify the client origin
+    // SEC- - ceremony completeness: verify the client origin
     // against the allow-list and the rpIdHash against the expected RP ID.
     verify_origin(&state, &headers, &client_data.origin)?;
     let rp_id = derive_rp_id(&state, &headers);
@@ -360,13 +360,13 @@ pub async fn enroll_finish(
         )
     })?;
 
-    // RLS : the users row is FORCE-RLS — resolve the env via the
+    // RLS : the users row is FORCE-RLS - resolve the env via the
     // shared two-step lookup instead of a context-less SELECT.
     let user_env_id = crate::sessions::user_env(&state.pool, user_id)
         .await
         .map_err(|(_, e)| (StatusCode::INTERNAL_SERVER_ERROR, e))?;
 
-    // SEC- — tenant context on the same connection (design ).
+    // SEC- - tenant context on the same connection (design ).
     let mut conn = state
         .pool
         .begin()
@@ -446,7 +446,7 @@ pub async fn enroll_finish(
     .into_response())
 }
 
-/// `POST /v1/passkey/verify/begin` — start passkey sign-in.
+/// `POST /v1/passkey/verify/begin` - start passkey sign-in.
 #[utoipa::path(
     post,
     path = "/v1/passkey/verify/begin",
@@ -519,7 +519,7 @@ pub async fn verify_begin(
     .into_response())
 }
 
-/// `POST /v1/passkey/verify/finish` — validate assertion, activate session.
+/// `POST /v1/passkey/verify/finish` - validate assertion, activate session.
 #[utoipa::path(
     post,
     path = "/v1/passkey/verify/finish",
@@ -602,7 +602,7 @@ pub async fn verify_finish(
         return Err((StatusCode::UNAUTHORIZED, "challenge mismatch".into()));
     }
 
-    // SEC- — ceremony completeness: verify the client origin
+    // SEC- - ceremony completeness: verify the client origin
     // against the allow-list and the rpIdHash against the expected RP ID.
     verify_origin(&state, &headers, &client_data.origin)?;
     let rp_id = derive_rp_id(&state, &headers);
@@ -645,7 +645,7 @@ pub async fn verify_finish(
         )
     })?;
 
-    // SEC- — sign counter clone detection. If the authenticator
+    // SEC- - sign counter clone detection. If the authenticator
     // reports a counter, it must strictly increase; a non-increasing
     // counter means the credential private key has been cloned (or the
     // assertion is replayed). The new counter is persisted for the next
@@ -665,11 +665,11 @@ pub async fn verify_finish(
             tracing::warn!(
                 factor_id = %mfa.factor_id,
                 counter = new_count,
-                "webauthn sign counter did not increase — possible cloned credential"
+                "webauthn sign counter did not increase - possible cloned credential"
             );
             return Err((
                 StatusCode::UNAUTHORIZED,
-                "sign counter did not increase — credential may be cloned".into(),
+                "sign counter did not increase - credential may be cloned".into(),
             ));
         }
     }
@@ -714,12 +714,12 @@ pub async fn verify_finish(
 
 // ── Internal helpers ───────────────────────────────────────────────────
 
-/// SEC- — allowed WebAuthn origins.
+/// SEC- - allowed WebAuthn origins.
 ///
 /// Derived from `SENTIN8_AUTH_ALLOWED_ORIGINS` (comma-separated) plus the
 /// request's own hostname (the auth-ui is served from the auth host itself)
 /// plus `https://auth.ops.sys.{domain}`. The browser's `clientData.origin`
-/// must match one of these — otherwise a phishing page could relay a
+/// must match one of these - otherwise a phishing page could relay a
 /// ceremony for its own origin.
 fn allowed_origins(state: &AppState, headers: &HeaderMap) -> Vec<String> {
     let mut origins = vec![format!(
@@ -739,7 +739,7 @@ fn allowed_origins(state: &AppState, headers: &HeaderMap) -> Vec<String> {
     origins
 }
 
-/// SEC- — verify `clientData.origin` against the allow-list.
+/// SEC- - verify `clientData.origin` against the allow-list.
 fn verify_origin(
     state: &AppState,
     headers: &HeaderMap,
@@ -760,7 +760,7 @@ fn verify_origin(
     Ok(())
 }
 
-/// SEC- — verify the rpIdHash (authenticatorData bytes 0..32)
+/// SEC- - verify the rpIdHash (authenticatorData bytes 0..32)
 /// equals SHA-256 of the expected RP ID.
 fn verify_rp_id_hash(auth_data: &[u8], rp_id: &str) -> Result<(), (StatusCode, String)> {
     if auth_data.len() < 37 {
@@ -773,13 +773,13 @@ fn verify_rp_id_hash(auth_data: &[u8], rp_id: &str) -> Result<(), (StatusCode, S
     if &auth_data[..32] != expected.as_slice() {
         return Err((
             StatusCode::UNAUTHORIZED,
-            "rpIdHash mismatch — credential was created for a different RP ID".into(),
+            "rpIdHash mismatch - credential was created for a different RP ID".into(),
         ));
     }
     Ok(())
 }
 
-/// SEC- — extract the sign counter (authenticatorData bytes 33..37).
+/// SEC- - extract the sign counter (authenticatorData bytes 33..37).
 fn extract_sign_count(auth_data: &[u8]) -> Result<u32, (StatusCode, String)> {
     if auth_data.len() < 37 {
         return Err((
@@ -835,7 +835,7 @@ struct ClientData {
     #[serde(rename = "type")]
     r#type: String,
     challenge: String,
-    /// SEC- — the origin is now VERIFIED against the allow-list
+    /// SEC- - the origin is now VERIFIED against the allow-list
     /// (previously parsed and ignored).
     origin: String,
     #[serde(default)]
@@ -846,7 +846,7 @@ struct ClientData {
 struct ParsedClientData {
     r#type: String,
     challenge: String,
-    /// SEC- — the origin is verified against the allow-list by
+    /// SEC- - the origin is verified against the allow-list by
     /// the finish handlers.
     origin: String,
     raw_bytes: Vec<u8>,

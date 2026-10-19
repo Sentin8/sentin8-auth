@@ -4,7 +4,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 // ═══════════════════════════════════════════════════════════════════════
-// — security hardening integration tests
+// - security hardening integration tests
 // ═══════════════════════════════════════════════════════════════════════
 
 use axum::{
@@ -23,9 +23,9 @@ const SYS_ENV: &str = "00000000-0000-0000-0000-000000000002";
 /// Spin up an in-process Auth server (same harness as integration.rs).
 ///
 /// Runtime-skip gating (sentin8-testing strategy): returns `None` when
-/// PostgreSQL is unreachable — the caller skips with one printed line.
+/// PostgreSQL is unreachable - the caller skips with one printed line.
 async fn spawn_server() -> Option<(axum::Router, PgPool)> {
-    // cargo test does NOT run the binary's dotenvy step — load the repo
+    // cargo test does NOT run the binary's dotenvy step - load the repo
     // .env here so SENTIN8_AUTH_DB_DSN (the service role, auth search_path)
     // applies (same rationale as the other test harnesses).
     let _ = dotenvy::dotenv();
@@ -34,7 +34,7 @@ async fn spawn_server() -> Option<(axum::Router, PgPool)> {
         Ok(p) => p,
         Err(e) => {
             eprintln!(
-                "skipping DB-backed auth tests — PostgreSQL unreachable ({}): {e}",
+                "skipping DB-backed auth tests - PostgreSQL unreachable ({}): {e}",
                 config.database_url
             );
             return None;
@@ -67,7 +67,7 @@ fn urlencode(s: &str) -> String {
         .collect()
 }
 
-/// SEC- — the unauthenticated-access matrix. Every guarded route
+/// SEC- - the unauthenticated-access matrix. Every guarded route
 /// must reject requests without credentials. One parameterized pass over
 /// the full guarded surface catches "new module forgot the guard" forever.
 #[tokio::test]
@@ -123,7 +123,7 @@ async fn sec_auth2_unauthenticated_access_matrix() {
     ];
     for (method, uri, body) in guarded_post {
         // OAuth protocol endpoints (introspect) are form-encoded; the admin
-        // JSON endpoints need application/json — send the right content-type
+        // JSON endpoints need application/json - send the right content-type
         // so the extractor runs and the handler's auth check (not a 415
         // extractor rejection) produces the 401.
         let content_type = if uri.contains("introspect") {
@@ -151,14 +151,14 @@ async fn sec_auth2_unauthenticated_access_matrix() {
     }
 }
 
-/// SEC- — forged tokens are refused on the deciding paths.
+/// SEC- - forged tokens are refused on the deciding paths.
 #[tokio::test]
 async fn sec_auth2_forged_tokens_rejected() {
     let Some((app, _pool)) = spawn_server().await else {
         return;
     };
 
-    // Forged refresh token (garbage shape) — the verified decode rejects with
+    // Forged refresh token (garbage shape) - the verified decode rejects with
     // 401 (unauthorized token); 400 would also be a valid RFC 6749 shape.
     let resp = app
         .clone()
@@ -227,7 +227,7 @@ async fn sec_auth2_forged_tokens_rejected() {
     );
 }
 
-/// SEC- — introspection requires client auth and is honest about
+/// SEC- - introspection requires client auth and is honest about
 /// inactive tokens.
 #[tokio::test]
 async fn sec_auth2_introspection_requires_client_auth_and_is_honest() {
@@ -254,7 +254,7 @@ async fn sec_auth2_introspection_requires_client_auth_and_is_honest() {
         "introspect requires client auth"
     );
 
-    // Public client (dash) is REJECTED — RFC 7662 requires real client
+    // Public client (dash) is REJECTED - RFC 7662 requires real client
     // authentication for introspection (a bare client_id is not credentials).
     let resp = app
         .clone()
@@ -274,7 +274,7 @@ async fn sec_auth2_introspection_requires_client_auth_and_is_honest() {
         "public client must NOT be able to introspect (RFC 7662)"
     );
 
-    // Confidential client authenticates (secret) — a garbage token then
+    // Confidential client authenticates (secret) - a garbage token then
     // introspects honestly as inactive.
     let secret_hash = bcrypt::hash("test-secret-123", bcrypt::DEFAULT_COST).unwrap();
     let conf_client_id = format!("sec-auth2-introspect-{}", uuid::Uuid::new_v4().simple());
@@ -329,7 +329,7 @@ async fn sec_auth2_introspection_requires_client_auth_and_is_honest() {
     assert_eq!(json["active"], false, "garbage token introspects inactive");
 }
 
-/// SEC- — authorize rejects unregistered redirect URIs
+/// SEC- - authorize rejects unregistered redirect URIs
 /// (open-redirect defense) and enforces PKCE under the FAPI profile.
 #[tokio::test]
 async fn sec_auth2_authorize_redirect_allowlist_and_pkce() {
@@ -405,7 +405,7 @@ async fn sec_auth2_authorize_redirect_allowlist_and_pkce() {
     );
 }
 
-/// SEC- — logout only redirects to registered post-logout URIs.
+/// SEC- - logout only redirects to registered post-logout URIs.
 #[tokio::test]
 async fn sec_auth2_logout_redirect_allowlist() {
     let Some((app, _pool)) = spawn_server().await else {
@@ -437,7 +437,7 @@ async fn sec_auth2_logout_redirect_allowlist() {
     );
 }
 
-/// SEC- — PAR pushes require a known client.
+/// SEC- - PAR pushes require a known client.
 #[tokio::test]
 async fn sec_auth2_par_requires_known_client() {
     let Some((app, _pool)) = spawn_server().await else {
@@ -467,7 +467,7 @@ async fn sec_auth2_par_requires_known_client() {
     );
 }
 
-/// SEC- — SCIM refuses forged tokens.
+/// SEC- - SCIM refuses forged tokens.
 #[tokio::test]
 async fn sec_auth2_scim_forged_token_rejected() {
     let Some((app, _pool)) = spawn_server().await else {
@@ -500,7 +500,7 @@ async fn sec_auth2_scim_forged_token_rejected() {
     );
 }
 
-/// SEC- — conformance smoke: discovery advertises exactly what is
+/// SEC- - conformance smoke: discovery advertises exactly what is
 /// enforced. `client_secret_basic` is advertised, so it must WORK (the
 /// extractor parses the Authorization: Basic header).
 #[tokio::test]
@@ -599,7 +599,7 @@ fn seeded_auth_engine() -> std::sync::Arc<sentin8_auth_server::policy::Engine> {
     let engine = sentin8_auth_server::policy::Engine::new("sentin8:auth");
     let record = PolicySetRecord {
         id: uuid::Uuid::nil(),
- // The engine evaluates per-request env — seed under the SYSTEM env
+ // The engine evaluates per-request env - seed under the SYSTEM env
  // (the env admin tokens in these tests carry).
         env_id: uuid::Uuid::parse_str("00000000-0000-0000-0000-000000000002")
             .expect("static uuid"),

@@ -98,7 +98,7 @@ pub struct AttestationClaims {
     pub jwk: Option<serde_json::Value>,
 }
 
-/// Validate an attestation JWT (without signature verification — the
+/// Validate an attestation JWT (without signature verification - the
 /// signature is verified against the attestation service's public key).
 /// Validate attestation claims.
 pub fn validate_attestation_claims(
@@ -142,7 +142,7 @@ pub fn cimd_metadata_url(client_origin: &str, client_id: &str) -> String {
     format!("{origin}/.well-known/oauth-client/{client_id}")
 }
 
-/// CIMD metadata document — same shape as DCR but keyed by client_id.
+/// CIMD metadata document - same shape as DCR but keyed by client_id.
 #[derive(Debug, Clone, Deserialize, Serialize)]
 /// The cimdmetadata type.
 pub struct CimdMetadata {

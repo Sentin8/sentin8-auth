@@ -48,7 +48,7 @@ impl FapiProfile {
     }
 
     /// Parse a FAPI profile from the `security_profiles.profile` value
-    /// (or a legacy alias). `standard` and `fapi_1_baseline` return None —
+    /// (or a legacy alias). `standard` and `fapi_1_baseline` return None -
     /// they are not FAPI profiles and carry no FAPI allow-list constraints
     /// (the flag columns alone govern them).
     /// Handle from str.
@@ -95,7 +95,7 @@ impl FapiProfile {
             // JARM optional, iss required.
             Self::Fapi10Advanced => FapiSecurityFlags {
                 require_par: true,
-                require_mtls: false, // mTLS OR DPoP — not both required
+                require_mtls: false, // mTLS OR DPoP - not both required
                 require_dpop: false, // sender-constraining via either
                 require_jarm: false,
                 require_iss: true,
@@ -130,7 +130,7 @@ impl FapiProfile {
     /// Authorization-code family (code + refresh) plus the **decoupled
     /// approval grants**: device_code (RFC 8628, the sentin8-cli flow) and
     /// CIBA. Both are user-facing grants whose approval is session-bound
-    /// and client-bound, so they satisfy FAPI's intent — the
+    /// and client-bound, so they satisfy FAPI's intent - the
     /// profile constrains *authentication strength and token binding*, not
     /// the UX channel. client_credentials (M2M, sender-constrained via
     /// mTLS independently) is admitted by `is_grant_type_allowed`.
@@ -142,7 +142,7 @@ impl FapiProfile {
                 "refresh_token",
                 "urn:ietf:params:oauth:grant-type:device_code",
                 "urn:ietf:params:oauth:grant-type:ciba",
-                // RFC 8693 token exchange — the platform's delegation grant
+                // RFC 8693 token exchange - the platform's delegation grant
                 // (Sentin8:Bus ): a subscriber exchanges a publisher
                 // token for a downscoped delegated token. Sender-constraining
                 // comes from the act chain + optional cnf cert binding.
@@ -166,17 +166,17 @@ impl FapiProfile {
 
     /// Check if a token endpoint auth method is allowed for this profile.
     ///
-    /// — consulted by the token endpoint after client auth: a
+    /// - consulted by the token endpoint after client auth: a
     /// confidential client that authenticated with a weaker method than its
     /// FAPI profile permits (e.g. client_secret_post under fapi_2) is
     /// rejected. First-party public clients (`none` + `dpop_exempt`) are
-    /// admitted by the profile table itself — FAPI 2.0 allows public
+    /// admitted by the profile table itself - FAPI 2.0 allows public
     /// clients with PKCE + DPoP-optional per the exemption decision matrix.
     /// Handle is auth method allowed.
     pub fn is_auth_method_allowed(&self, method: &str) -> bool {
         match self {
             // FAPI 1.0 Advanced: mTLS (tls_client_auth or self_signed) or
-            // private_key_jwt — NOT client_secret_post/basic.
+            // private_key_jwt - NOT client_secret_post/basic.
             Self::Fapi10Advanced => {
                 method == "tls_client_auth"
                     || method == "self_signed_tls_client_auth"
@@ -185,7 +185,7 @@ impl FapiProfile {
             // FAPI : public clients use DPoP/PKCE; confidential clients
             // use mTLS or private_key_jwt. Secrets are not sufficient for
             // confidentiality under FAPI 2.0 (sender-constraining is the
-            // defense — a shared secret is not sender-specific).
+            // defense - a shared secret is not sender-specific).
             Self::Fapi20 | Self::Fapi20MessageSigning => {
                 method == "none"
                     || method == "tls_client_auth"
@@ -339,7 +339,7 @@ pub fn fapi10_sender_constraining_satisfied(use_mtls: bool, use_dpop: bool) -> b
     use_mtls || use_dpop
 }
 
-/// Validate a FAPI 2.0 request — DPoP must be present.
+/// Validate a FAPI 2.0 request - DPoP must be present.
 /// Handle fapi20 validate DPoP required.
 pub fn fapi20_validate_dpop_required(dpop_present: bool) -> Result<(), String> {
     if !dpop_present {

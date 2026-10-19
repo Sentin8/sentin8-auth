@@ -3,14 +3,14 @@
 // SPDX-FileCopyrightText: Copyright Contributors to the Sentin8:Auth
 // SPDX-License-Identifier: Apache-2.0
 
-//! Dynamic Client Registration (DCR) — RFC 7591 + OIDC DCR 1.0.
-//! DCR Management Protocol — RFC 7592.
+//! Dynamic Client Registration (DCR) - RFC 7591 + OIDC DCR 1.0.
+//! DCR Management Protocol - RFC 7592.
 //!
 //! Endpoints:
-//! - `POST /oauth/register` — register a new OAuth/OIDC client (RFC 7591).
-//! - `GET /oauth/register/{client_id}` — read client metadata (RFC 7592).
-//! - `PUT /oauth/register/{client_id}` — update client metadata (RFC 7592).
-//! - `DELETE /oauth/register/{client_id}` — delete/deactivate (RFC 7592).
+//! - `POST /oauth/register` - register a new OAuth/OIDC client (RFC 7591).
+//! - `GET /oauth/register/{client_id}` - read client metadata (RFC 7592).
+//! - `PUT /oauth/register/{client_id}` - update client metadata (RFC 7592).
+//! - `DELETE /oauth/register/{client_id}` - delete/deactivate (RFC 7592).
 //!
 //! Authentication for GET/PUT/DELETE uses the `registration_access_token`
 //! returned at registration time, sent as a Bearer token in the
@@ -169,7 +169,7 @@ pub struct RegisterResponse {
 
 // ── RFC 7592 Management ───────────────────────────────────────────────
 
-/// Update request (RFC 7592 ) — same shape as RegisterRequest but all
+/// Update request (RFC 7592 ) - same shape as RegisterRequest but all
 /// fields are optional since the client may only update a subset.
 #[derive(Debug, Deserialize, utoipa::ToSchema)]
 /// Request body for update.
@@ -269,7 +269,7 @@ fn hex_encode(bytes: &[u8]) -> String {
 
 /// Resolve the tenant env ID from TLS headers, defaulting to the System
 /// env for platform-level registration. The auth tables no longer carry
-/// `org_id` — `env_id` is the sole tenant key. The org_id needed for bus
+/// `org_id` - `env_id` is the sole tenant key. The org_id needed for bus
 /// event routing is resolved from `sentin8_sys_environments` at emit time
 /// (or uses `SYSTEM_ORG_ID` as a fallback).
 fn resolve_tenant(headers: &HeaderMap) -> Uuid {
@@ -311,7 +311,7 @@ fn extract_bearer(headers: &HeaderMap) -> Option<String> {
         .and_then(|s| s.strip_prefix("Bearer ").map(|t| t.to_string()))
 }
 
-/// OIDC baseline scopes — never gated by the M2M scope grants.
+/// OIDC baseline scopes - never gated by the M2M scope grants.
 const OIDC_BASELINE: &[&str] = &["openid", "profile", "email", "offline_access"];
 
 /// Extract the *platform* (non-OIDC-baseline) scopes from a space-separated
@@ -325,19 +325,19 @@ fn platform_scopes(scope: Option<&str>) -> Vec<String> {
         .collect()
 }
 
-/// — certificate-bound DCR scope gate (auth design
+/// - certificate-bound DCR scope gate (auth design
 /// target-state revision).
 ///
 /// A `client_credentials`-only registration may request platform scopes
 /// only when the TLS handshake carries a client certificate that (1) chains
-/// to the platform CA (guaranteed by `sentin8-tls` optional client auth —
+/// to the platform CA (guaranteed by `sentin8-tls` optional client auth -
 /// the `X-Sentin8-Client-Cert-*` headers are injected ONLY for certs
 /// verified against `SENTIN8_TLS_CLIENT_CA_PEM`, the Acme Root CA), and
 /// (2) whose subject `CN` equals a grant row's `service_name` in
 /// `auth.m2m_scope_grants` (enroll-upserted from the service's
 /// `m2m_grants` self-declaration), with a superset of the requested scopes.
 ///
-/// **No fallback** — not even in dev: a caller without a certificate has no
+/// **No fallback** - not even in dev: a caller without a certificate has no
 /// identity, and an identity-less caller gets no platform scopes.
 /// Fail-closed always. The gate covers BOTH registration paths
 /// (`POST /oauth/register` and the RFC 7592 `PUT`, evaluating the merged
@@ -355,13 +355,13 @@ async fn m2m_scope_gate(
     if requested.is_empty() {
         return Ok(());
     }
-    // Identity resolution — certificate identity ONLY. The TLS layer
+    // Identity resolution - certificate identity ONLY. The TLS layer
     // injects the thumbprint header after verifying the presented cert
     // against the platform CA; a caller without a cert has no identity.
     let Some((thumbprint, _subject)) = crate::mtls::extract_mtls_identity(headers) else {
         return Err((
             StatusCode::BAD_REQUEST,
-            "invalid_client_metadata: mTLS client certificate required — \
+            "invalid_client_metadata: mTLS client certificate required - \
              certificate-bound mTLS is the only M2M registration path"
                 .into(),
         ));
@@ -399,7 +399,7 @@ async fn m2m_scope_gate(
             ),
         ));
     }
-    // The gate table is platform-internal (no RLS) — read on the pool.
+    // The gate table is platform-internal (no RLS) - read on the pool.
     // Keyed by service_name (= the cert CN), upserted by `vertical enroll`.
     let row = sqlx::query(
         r#"SELECT allowed_scopes FROM auth.m2m_scope_grants
@@ -444,14 +444,14 @@ async fn m2m_scope_gate(
         ));
     }
     // The verified thumbprint (TLS-injected, CA-checked) is returned for
-    // the registration row's `self_signed_tls_client_auth_thumbprint` —
+    // the registration row's `self_signed_tls_client_auth_thumbprint` -
     // token requests later match against it (RFC 8705).
     let _ = thumbprint;
     Ok(())
 }
 
 /// Is this grant-type set an M2M-only (service principal) client?
-/// `client_credentials` present and `authorization_code` absent — mirrors
+/// `client_credentials` present and `authorization_code` absent - mirrors
 /// the redirect-URI exemption check in `register`.
 fn is_m2m_only_grants(grant_types: &[String]) -> bool {
     grant_types.iter().any(|g| g == "client_credentials")
@@ -477,7 +477,7 @@ pub async fn register(
     headers: HeaderMap,
     Json(req): Json<RegisterRequest>,
 ) -> Result<(StatusCode, Json<RegisterResponse>), (StatusCode, String)> {
-    // Validate redirect_uris — required for interactive clients (RFC 7591 ),
+    // Validate redirect_uris - required for interactive clients (RFC 7591 ),
     // but M2M clients (client_credentials only) don't need redirect URIs.
     let is_m2m_only = is_m2m_only_grants(&req.grant_types);
     if req.redirect_uris.is_empty() && !is_m2m_only {
@@ -487,7 +487,7 @@ pub async fn register(
         ));
     }
 
-    // — mTLS-bound DCR for M2M scope registration (auth design
+    // - mTLS-bound DCR for M2M scope registration (auth design
     // b): platform scopes on a `client_credentials`-only
     // client require a granted certificate thumbprint (or the explicit
     // dev fallback). Interactive clients keep the RFC 7591 default.
@@ -507,14 +507,14 @@ pub async fn register(
         .await?;
     }
 
-    // Determine auth method — default to client_secret_basic for confidential clients.
+    // Determine auth method - default to client_secret_basic for confidential clients.
     let token_endpoint_auth_method = req
         .token_endpoint_auth_method
         .unwrap_or_else(|| "client_secret_basic".to_string());
 
     // Generate a client_secret for confidential clients.
     //
-    // (design ) — `private_key_jwt` clients
+    // (design ) - `private_key_jwt` clients
     // authenticate with an RFC 7523 client_assertion signed by their
     // registered key (`jwks` metadata); no shared secret is issued. `none`
     // = public client (no key, no secret).
@@ -558,7 +558,7 @@ pub async fn register(
     let rat_hash = hash_token(&registration_access_token);
 
     let now = Utc::now();
-    // SEC- — run the INSERT inside a transaction with the tenant
+    // SEC- - run the INSERT inside a transaction with the tenant
     // context on the same connection (RLS under the app role; set_config is
     // transaction-local so the pool-only path denied the write).
     let mut tx = state
@@ -612,7 +612,7 @@ pub async fn register(
         req.tos_uri.as_deref(),
         // `contacts`/`consent_required` are NOT NULL columns; RegisterRequest
         // coalesces them (Vec / bool with serde default) so no bound NULL is
-        // possible here — the RFC 7592 update path is the one that binds
+        // possible here - the RFC 7592 update path is the one that binds
         // Option values (UpdateRequest) and coalesces onto existing values.
         &req.contacts,
         req.jwks_uri.as_deref(),
@@ -627,7 +627,7 @@ pub async fn register(
     .fetch_one(&mut *tx)
     .await
     .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
-    let _ = tx.commit().await; // SEC-2.4.8 — persist the client
+    let _ = tx.commit().await; // SEC-2.4.8 - persist the client
 
     let issuer = resolve_issuer(&state, &headers);
     let registration_client_uri = format!("{issuer}/oauth/register/{}", row.client_id);
@@ -640,7 +640,7 @@ pub async fn register(
     )
     .await;
 
-    // RFC 7591 — the registration response MUST be 201 Created.
+    // RFC 7591 - the registration response MUST be 201 Created.
     Ok((
         StatusCode::CREATED,
         Json(RegisterResponse {
@@ -777,7 +777,7 @@ pub async fn update_client(
     let rat_hash = hash_token(&rat);
 
     // Fetch the existing client to validate the token.
-    // fix : `oauth_clients` is RLS-protected — the
+    // fix : `oauth_clients` is RLS-protected - the
     // fetch and the UPDATE must run inside ONE transaction with the
     // client's env context set (same connection). Without context
     // the SELECT is policy-blocked → `fetch_optional` returns None → the
@@ -825,7 +825,7 @@ pub async fn update_client(
         .unwrap_or(existing.scopes);
     let contacts = req.contacts.unwrap_or(existing.contacts);
 
-    // — the RFC 7592 update path is a first-class bypass route:
+    // - the RFC 7592 update path is a first-class bypass route:
     // a registrant could POST an OIDC-only client and then PUT platform
     // scopes onto it. Gate the MERGED scope set of M2M-only clients (the
     // same certificate rule as registration; the RAT holder is the

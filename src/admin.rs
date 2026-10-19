@@ -3,7 +3,7 @@
 // SPDX-FileCopyrightText: Copyright Contributors to the Sentin8:Auth
 // SPDX-License-Identifier: Apache-2.0
 
-//! Admin API handlers — users, roles, OAuth clients, API keys, sessions,
+//! Admin API handlers - users, roles, OAuth clients, API keys, sessions,
 //! memberships, invitations, and audit events.
 //!
 //!.
@@ -72,7 +72,7 @@ impl PaginationQuery {
     }
 }
 
-/// Query params for `GET /v1/admin/users` — extends [PaginationQuery].
+/// Query params for `GET /v1/admin/users` - extends [PaginationQuery].
 #[derive(Debug, Deserialize, ToSchema)]
 /// The listusersquery type.
 pub struct ListUsersQuery {
@@ -155,7 +155,7 @@ pub struct UserListResponse {
     pub page_size: i64,
 }
 
-/// `GET /v1/admin/users` — list users (paginated).
+/// `GET /v1/admin/users` - list users (paginated).
 #[utoipa::path(
     get,
     operation_id = "user.list",
@@ -181,8 +181,8 @@ pub async fn list_users(
 ) -> Result<Json<UserListResponse>, (StatusCode, String)> {
     let auth =
         require_sentin8or_access_with_env(&state, &headers, teq.target_env_id.as_deref()).await?;
-    // SEC- — begin instead of acquire: sentin8_set_tenant_context
-    // uses set_config(..., true) which is TRANSACTION-local — outside a
+    // SEC- - begin instead of acquire: sentin8_set_tenant_context
+    // uses set_config(..., true) which is TRANSACTION-local - outside a
     // transaction it evaporates and RLS denies every write. All queries for
     // this request run inside this transaction on the same connection.
     let mut conn = state
@@ -250,7 +250,7 @@ pub async fn list_users(
     }))
 }
 
-/// `POST /v1/admin/users` — create a new user.
+/// `POST /v1/admin/users` - create a new user.
 #[utoipa::path(
     post,
     operation_id = "user.create",
@@ -275,8 +275,8 @@ pub async fn create_user(
 ) -> Result<Response, (StatusCode, String)> {
     let auth =
         require_sentin8or_access_write(&state, &headers, teq.target_env_id.as_deref()).await?;
-    // SEC- — begin instead of acquire: sentin8_set_tenant_context
-    // uses set_config(..., true) which is TRANSACTION-local — outside a
+    // SEC- - begin instead of acquire: sentin8_set_tenant_context
+    // uses set_config(..., true) which is TRANSACTION-local - outside a
     // transaction it evaporates and RLS denies every write. All queries for
     // this request run inside this transaction on the same connection.
     let mut conn = state
@@ -290,7 +290,7 @@ pub async fn create_user(
     }
 
     // Use the auth context's env_id if not explicitly provided.
-    // SEC- — a request-supplied env_id must match the caller's
+    // SEC- - a request-supplied env_id must match the caller's
     // authorized env unless the caller is a platform admin; an org admin
     // could otherwise create users in any env.
     let env_id = match req.env_id {
@@ -340,7 +340,7 @@ pub async fn create_user(
         Err(e) => return Err((StatusCode::INTERNAL_SERVER_ERROR, e.to_string())),
     };
 
-    //— emit user.created event to Bus outbox.
+    //- emit user.created event to Bus outbox.
     crate::events::emit_event_tx(
         &mut conn,
         row.env_id,
@@ -396,11 +396,11 @@ pub async fn create_user(
         updated_at: row.updated_at,
     };
 
-    let _ = conn.commit().await; // SEC-2.4.8 — persist the write
+    let _ = conn.commit().await; // SEC-2.4.8 - persist the write
     Ok((StatusCode::CREATED, Json(resp)).into_response())
 }
 
-/// `GET /v1/admin/users/{id}` — get a user by ID.
+/// `GET /v1/admin/users/{id}` - get a user by ID.
 #[utoipa::path(
     get,
     operation_id = "user.get",
@@ -426,7 +426,7 @@ pub async fn get_user(
 ) -> Result<Json<UserResponse>, (StatusCode, String)> {
     let _auth =
         require_sentin8or_access_with_env(&state, &headers, teq.target_env_id.as_deref()).await?;
-    // SEC- — begin instead of acquire (see the note above).
+    // SEC- - begin instead of acquire (see the note above).
     let mut conn = state
         .pool
         .begin()
@@ -482,7 +482,7 @@ pub struct UpdateUserRequest {
     pub mfa_enabled: Option<bool>,
 }
 
-/// `PUT /v1/admin/users/{id}` — update a user.
+/// `PUT /v1/admin/users/{id}` - update a user.
 #[utoipa::path(
     put,
     operation_id = "user.update",
@@ -510,7 +510,7 @@ pub async fn update_user(
 ) -> Result<Json<UserResponse>, (StatusCode, String)> {
     let _auth =
         require_sentin8or_access_write(&state, &headers, teq.target_env_id.as_deref()).await?;
-    // SEC- — begin instead of acquire (see the note above).
+    // SEC- - begin instead of acquire (see the note above).
     let mut conn = state
         .pool
         .begin()
@@ -543,7 +543,7 @@ pub async fn update_user(
 
     match row {
         Some(r) => {
-            //— emit user.updated event to Bus outbox.
+            //- emit user.updated event to Bus outbox.
             crate::events::emit_event_tx(
                 &mut conn,
                 r.env_id,
@@ -552,7 +552,7 @@ pub async fn update_user(
             )
             .await
             .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
-            let _ = conn.commit().await; // SEC-2.4.8 — persist the write
+            let _ = conn.commit().await; // SEC-2.4.8 - persist the write
             Ok(Json(UserResponse {
                 id: r.id,
                 env_id: r.env_id,
@@ -570,7 +570,7 @@ pub async fn update_user(
     }
 }
 
-/// `DELETE /v1/admin/users/{id}` — delete a user.
+/// `DELETE /v1/admin/users/{id}` - delete a user.
 #[utoipa::path(
     delete,
     operation_id = "user.archive",
@@ -596,7 +596,7 @@ pub async fn delete_user(
 ) -> Result<StatusCode, (StatusCode, String)> {
     let _auth =
         require_sentin8or_access_write(&state, &headers, teq.target_env_id.as_deref()).await?;
-    // SEC- — begin instead of acquire (see the note above).
+    // SEC- - begin instead of acquire (see the note above).
     let mut conn = state
         .pool
         .begin()
@@ -611,7 +611,7 @@ pub async fn delete_user(
     if result.rows_affected() == 0 {
         Err((StatusCode::NOT_FOUND, "user not found".into()))
     } else {
-        //— emit user.deleted event to Bus outbox.
+        //- emit user.deleted event to Bus outbox.
         crate::events::emit_event_tx(
             &mut conn,
             _auth.env_id,
@@ -620,7 +620,7 @@ pub async fn delete_user(
         )
         .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
-        let _ = conn.commit().await; // SEC-2.4.8 — persist the write
+        let _ = conn.commit().await; // SEC-2.4.8 - persist the write
         Ok(StatusCode::NO_CONTENT)
     }
 }
@@ -685,7 +685,7 @@ where
     }
 }
 
-/// Same as [`deserialize_permissions`] but for `Option<Vec<String>>` fields —
+/// Same as [`deserialize_permissions`] but for `Option<Vec<String>>` fields -
 /// absent → None; present string → comma-split Vec; present array → as-is.
 fn deserialize_opt_permissions<'de, D>(deserializer: D) -> Result<Option<Vec<String>>, D::Error>
 where
@@ -719,7 +719,7 @@ pub struct CreateRoleRequest {
     pub permissions: Vec<String>,
 }
 
-/// `GET /v1/admin/roles` — list roles (paginated).
+/// `GET /v1/admin/roles` - list roles (paginated).
 #[utoipa::path(
     get,
     operation_id = "role.list",
@@ -745,8 +745,8 @@ pub async fn list_roles(
 ) -> Result<Json<RoleListResponse>, (StatusCode, String)> {
     let auth =
         require_sentin8or_access_with_env(&state, &headers, teq.target_env_id.as_deref()).await?;
-    // SEC- — begin instead of acquire: sentin8_set_tenant_context
-    // uses set_config(..., true) which is TRANSACTION-local — outside a
+    // SEC- - begin instead of acquire: sentin8_set_tenant_context
+    // uses set_config(..., true) which is TRANSACTION-local - outside a
     // transaction it evaporates and RLS denies every write. All queries for
     // this request run inside this transaction on the same connection.
     let mut conn = state
@@ -830,7 +830,7 @@ pub async fn list_roles(
 }
 
 /// Validate a role name: must be a DNS-label-style identifier
-/// (lowercase, digits, dot, underscore, hyphen, colon; 1–63
+/// (lowercase, digits, dot, underscore, hyphen, colon; 1-63
 /// chars; not all-numeric to avoid confusion with numeric IDs).
 /// Mirrors the validation in the front-end `RoleSelector`
 /// widget. Colons are allowed so that multi-word service
@@ -867,7 +867,7 @@ fn validate_role_name(name: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// `POST /v1/admin/roles` — create a new role.
+/// `POST /v1/admin/roles` - create a new role.
 #[utoipa::path(
     post,
     operation_id = "role.create",
@@ -899,8 +899,8 @@ pub async fn create_role(
     // sentin8or can only create roles in their own org/env.
     let auth =
         require_sentin8or_access_write(&state, &headers, teq.target_env_id.as_deref()).await?;
-    // SEC- — begin instead of acquire: sentin8_set_tenant_context
-    // uses set_config(..., true) which is TRANSACTION-local — outside a
+    // SEC- - begin instead of acquire: sentin8_set_tenant_context
+    // uses set_config(..., true) which is TRANSACTION-local - outside a
     // transaction it evaporates and RLS denies every write. All queries for
     // this request run inside this transaction on the same connection.
     let mut conn = state
@@ -934,7 +934,7 @@ pub async fn create_role(
         Err(e) => return Err((StatusCode::INTERNAL_SERVER_ERROR, e.to_string())),
     };
 
-    //— emit role.created event to Bus outbox.
+    //- emit role.created event to Bus outbox.
     crate::events::emit_event_tx(
         &mut conn,
         row.env_id,
@@ -954,7 +954,7 @@ pub async fn create_role(
         updated_at: row.updated_at,
     };
 
-    let _ = conn.commit().await; // SEC-2.4.8 — persist the write
+    let _ = conn.commit().await; // SEC-2.4.8 - persist the write
     Ok((StatusCode::CREATED, Json(resp)).into_response())
 }
 
@@ -969,7 +969,7 @@ pub struct UpdateRoleRequest {
     pub permissions: Option<Vec<String>>,
 }
 
-/// `PUT /v1/admin/roles/{id}` — update a role.
+/// `PUT /v1/admin/roles/{id}` - update a role.
 #[utoipa::path(
     put,
     operation_id = "role.update",
@@ -997,7 +997,7 @@ pub async fn update_role(
 ) -> Result<Json<RoleResponse>, (StatusCode, String)> {
     let _auth =
         require_sentin8or_access_write(&state, &headers, teq.target_env_id.as_deref()).await?;
-    // SEC- — begin instead of acquire (see the note above).
+    // SEC- - begin instead of acquire (see the note above).
     let mut conn = state
         .pool
         .begin()
@@ -1031,7 +1031,7 @@ pub async fn update_role(
             )
             .await
             .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
-            let _ = conn.commit().await; // SEC-2.4.8 — persist the write
+            let _ = conn.commit().await; // SEC-2.4.8 - persist the write
             Ok(Json(RoleResponse {
                 id: r.id,
                 env_id: r.env_id,
@@ -1046,7 +1046,7 @@ pub async fn update_role(
     }
 }
 
-/// `DELETE /v1/admin/roles/{id}` — delete a role.
+/// `DELETE /v1/admin/roles/{id}` - delete a role.
 #[utoipa::path(
     delete,
     operation_id = "role.delete",
@@ -1072,7 +1072,7 @@ pub async fn delete_role(
 ) -> Result<StatusCode, (StatusCode, String)> {
     let _auth =
         require_sentin8or_access_write(&state, &headers, teq.target_env_id.as_deref()).await?;
-    // SEC- — begin instead of acquire (see the note above).
+    // SEC- - begin instead of acquire (see the note above).
     let mut conn = state
         .pool
         .begin()
@@ -1095,7 +1095,7 @@ pub async fn delete_role(
         )
         .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
-        let _ = conn.commit().await; // SEC-2.4.8 — persist the write
+        let _ = conn.commit().await; // SEC-2.4.8 - persist the write
         Ok(StatusCode::NO_CONTENT)
     }
 }
@@ -1113,7 +1113,7 @@ pub struct RoleMemberResponse {
     pub created_at: chrono::DateTime<chrono::Utc>,
 }
 
-/// `GET /v1/admin/roles/{id}` — list role members.
+/// `GET /v1/admin/roles/{id}` - list role members.
 #[utoipa::path(
     get,
     operation_id = "role.get",
@@ -1138,7 +1138,7 @@ pub async fn list_role_members(
 ) -> Result<Json<Vec<RoleMemberResponse>>, (StatusCode, String)> {
     let _auth =
         require_sentin8or_access_with_env(&state, &headers, teq.target_env_id.as_deref()).await?;
-    // SEC- — begin instead of acquire (see the note above).
+    // SEC- - begin instead of acquire (see the note above).
     let mut conn = state
         .pool
         .begin()
@@ -1172,7 +1172,7 @@ pub struct AddRoleMemberRequest {
     pub user_id: Uuid,
 }
 
-/// `POST /v1/admin/roles/{role_id}/members` — add a member to a role.
+/// `POST /v1/admin/roles/{role_id}/members` - add a member to a role.
 #[utoipa::path(
     post,
     operation_id = "role.member-add",
@@ -1199,7 +1199,7 @@ pub async fn add_role_member(
 ) -> Result<Response, (StatusCode, String)> {
     let _auth =
         require_sentin8or_access_write(&state, &headers, teq.target_env_id.as_deref()).await?;
-    // SEC- — begin instead of acquire (see the note above).
+    // SEC- - begin instead of acquire (see the note above).
     let mut conn = state
         .pool
         .begin()
@@ -1226,11 +1226,11 @@ pub async fn add_role_member(
     .await
     .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
-    let _ = conn.commit().await; // SEC-2.4.8 — persist the write
+    let _ = conn.commit().await; // SEC-2.4.8 - persist the write
     Ok(StatusCode::CREATED.into_response())
 }
 
-/// `DELETE /v1/admin/roles/{role_id}/members/{user_id}` — remove a member from a role.
+/// `DELETE /v1/admin/roles/{role_id}/members/{user_id}` - remove a member from a role.
 #[utoipa::path(
     delete,
     operation_id = "role.member-remove",
@@ -1256,7 +1256,7 @@ pub async fn remove_role_member(
 ) -> Result<StatusCode, (StatusCode, String)> {
     let _auth =
         require_sentin8or_access_write(&state, &headers, teq.target_env_id.as_deref()).await?;
-    // SEC- — begin instead of acquire (see the note above).
+    // SEC- - begin instead of acquire (see the note above).
     let mut conn = state
         .pool
         .begin()
@@ -1281,7 +1281,7 @@ pub async fn remove_role_member(
     .await
     .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
-    let _ = conn.commit().await; // SEC-2.4.8 — persist the write
+    let _ = conn.commit().await; // SEC-2.4.8 - persist the write
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -1323,7 +1323,7 @@ pub struct CreateGroupRequest {
     pub name: String,
 }
 
-/// `GET /v1/admin/groups` — list groups (paginated).
+/// `GET /v1/admin/groups` - list groups (paginated).
 #[utoipa::path(
     get,
     operation_id = "group.list",
@@ -1349,8 +1349,8 @@ pub async fn list_groups(
 ) -> Result<Json<GroupListResponse>, (StatusCode, String)> {
     let auth =
         require_sentin8or_access_with_env(&state, &headers, teq.target_env_id.as_deref()).await?;
-    // SEC- — begin instead of acquire: sentin8_set_tenant_context
-    // uses set_config(..., true) which is TRANSACTION-local — outside a
+    // SEC- - begin instead of acquire: sentin8_set_tenant_context
+    // uses set_config(..., true) which is TRANSACTION-local - outside a
     // transaction it evaporates and RLS denies every write. All queries for
     // this request run inside this transaction on the same connection.
     let mut conn = state
@@ -1406,7 +1406,7 @@ fn validate_group_name(name: &str) -> Result<(), String> {
     validate_role_name(name)
 }
 
-/// `POST /v1/admin/groups` — create a new group.
+/// `POST /v1/admin/groups` - create a new group.
 #[utoipa::path(
     post,
     operation_id = "group.create",
@@ -1434,8 +1434,8 @@ pub async fn create_group(
 
     let auth =
         require_sentin8or_access_write(&state, &headers, teq.target_env_id.as_deref()).await?;
-    // SEC- — begin instead of acquire: sentin8_set_tenant_context
-    // uses set_config(..., true) which is TRANSACTION-local — outside a
+    // SEC- - begin instead of acquire: sentin8_set_tenant_context
+    // uses set_config(..., true) which is TRANSACTION-local - outside a
     // transaction it evaporates and RLS denies every write. All queries for
     // this request run inside this transaction on the same connection.
     let mut conn = state
@@ -1468,7 +1468,7 @@ pub async fn create_group(
         Err(e) => return Err((StatusCode::INTERNAL_SERVER_ERROR, e.to_string())),
     };
 
-    //— emit group.created event to Bus outbox.
+    //- emit group.created event to Bus outbox.
     crate::events::emit_event_tx(
         &mut conn,
         row.env_id,
@@ -1486,7 +1486,7 @@ pub async fn create_group(
         updated_at: row.updated_at,
     };
 
-    let _ = conn.commit().await; // SEC-2.4.8 — persist the write
+    let _ = conn.commit().await; // SEC-2.4.8 - persist the write
     Ok((StatusCode::CREATED, Json(resp)).into_response())
 }
 
@@ -1496,17 +1496,17 @@ pub struct UpdateGroupRequest {
     #[serde(default)]
     /// The name.
     pub name: Option<String>,
-    /// Optional list of user IDs — replaces the full set of members.
+    /// Optional list of user IDs - replaces the full set of members.
     #[serde(default)]
     /// The user ids.
     pub user_ids: Option<Vec<Uuid>>,
-    /// Optional list of role IDs — replaces the full set of roles.
+    /// Optional list of role IDs - replaces the full set of roles.
     #[serde(default)]
     /// The role ids.
     pub role_ids: Option<Vec<Uuid>>,
 }
 
-/// `PUT /v1/admin/groups/{id}` — update a group.
+/// `PUT /v1/admin/groups/{id}` - update a group.
 #[utoipa::path(
     put,
     operation_id = "group.update",
@@ -1540,7 +1540,7 @@ pub async fn update_group(
     })?;
     let _auth =
         require_sentin8or_access_write(&state, &headers, teq.target_env_id.as_deref()).await?;
-    // SEC- — begin instead of acquire (see the note above).
+    // SEC- - begin instead of acquire (see the note above).
     let mut conn = state
         .pool
         .begin()
@@ -1629,7 +1629,7 @@ pub async fn update_group(
     .await
     .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
-    let _ = conn.commit().await; // SEC-2.4.8 — persist the write
+    let _ = conn.commit().await; // SEC-2.4.8 - persist the write
     Ok(Json(GroupResponse {
         id: r.id,
         env_id: r.env_id,
@@ -1639,7 +1639,7 @@ pub async fn update_group(
     }))
 }
 
-/// `DELETE /v1/admin/groups/{id}` — delete a group.
+/// `DELETE /v1/admin/groups/{id}` - delete a group.
 #[utoipa::path(
     delete,
     operation_id = "group.delete",
@@ -1665,7 +1665,7 @@ pub async fn delete_group(
 ) -> Result<StatusCode, (StatusCode, String)> {
     let _auth =
         require_sentin8or_access_write(&state, &headers, teq.target_env_id.as_deref()).await?;
-    // SEC- — begin instead of acquire (see the note above).
+    // SEC- - begin instead of acquire (see the note above).
     let mut conn = state
         .pool
         .begin()
@@ -1688,7 +1688,7 @@ pub async fn delete_group(
         )
         .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
-        let _ = conn.commit().await; // SEC-2.4.8 — persist the write
+        let _ = conn.commit().await; // SEC-2.4.8 - persist the write
         Ok(StatusCode::NO_CONTENT)
     }
 }
@@ -1706,7 +1706,7 @@ pub struct GroupMemberResponse {
     pub created_at: chrono::DateTime<chrono::Utc>,
 }
 
-/// `GET /v1/admin/groups/{group_id}/members` — list group members.
+/// `GET /v1/admin/groups/{group_id}/members` - list group members.
 #[utoipa::path(
     get,
     operation_id = "group.get",
@@ -1731,7 +1731,7 @@ pub async fn list_group_members(
 ) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
     let _auth =
         require_sentin8or_access_with_env(&state, &headers, teq.target_env_id.as_deref()).await?;
-    // SEC- — begin instead of acquire (see the note above).
+    // SEC- - begin instead of acquire (see the note above).
     let mut conn = state
         .pool
         .begin()
@@ -1767,7 +1767,7 @@ pub struct AddGroupMemberRequest {
     pub user_id: Uuid,
 }
 
-/// `POST /v1/admin/groups/{group_id}/members` — add a member to a group.
+/// `POST /v1/admin/groups/{group_id}/members` - add a member to a group.
 #[utoipa::path(
     post,
     operation_id = "group.member-add",
@@ -1794,7 +1794,7 @@ pub async fn add_group_member(
 ) -> Result<Response, (StatusCode, String)> {
     let _auth =
         require_sentin8or_access_write(&state, &headers, teq.target_env_id.as_deref()).await?;
-    // SEC- — begin instead of acquire (see the note above).
+    // SEC- - begin instead of acquire (see the note above).
     let mut conn = state
         .pool
         .begin()
@@ -1822,7 +1822,7 @@ pub async fn add_group_member(
     .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
     // Identity-cache invalidation (auth DESIGN §7.1): SYSTEM-env `policy`
-    // row — the tenant-env fan-out above cannot reach the policy stream.
+    // row - the tenant-env fan-out above cannot reach the policy stream.
     crate::events::emit_identity_invalidation_tx(
         &mut conn,
         _auth.env_id,
@@ -1831,11 +1831,11 @@ pub async fn add_group_member(
     )
     .await;
 
-    let _ = conn.commit().await; // SEC-2.4.8 — persist the write
+    let _ = conn.commit().await; // SEC-2.4.8 - persist the write
     Ok(StatusCode::CREATED.into_response())
 }
 
-/// `DELETE /v1/admin/groups/{group_id}/members/{user_id}` — remove a member from
+/// `DELETE /v1/admin/groups/{group_id}/members/{user_id}` - remove a member from
 /// a group.
 #[utoipa::path(
     delete,
@@ -1862,7 +1862,7 @@ pub async fn remove_group_member(
 ) -> Result<StatusCode, (StatusCode, String)> {
     let _auth =
         require_sentin8or_access_write(&state, &headers, teq.target_env_id.as_deref()).await?;
-    // SEC- — begin instead of acquire (see the note above).
+    // SEC- - begin instead of acquire (see the note above).
     let mut conn = state
         .pool
         .begin()
@@ -1888,7 +1888,7 @@ pub async fn remove_group_member(
     .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
     // Identity-cache invalidation (auth DESIGN §7.1): SYSTEM-env `policy`
-    // row — the revocation must take effect on the next request.
+    // row - the revocation must take effect on the next request.
     crate::events::emit_identity_invalidation_tx(
         &mut conn,
         _auth.env_id,
@@ -1897,7 +1897,7 @@ pub async fn remove_group_member(
     )
     .await;
 
-    let _ = conn.commit().await; // SEC-2.4.8 — persist the write
+    let _ = conn.commit().await; // SEC-2.4.8 - persist the write
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -1914,7 +1914,7 @@ pub struct GroupRoleResponse {
     pub created_at: chrono::DateTime<chrono::Utc>,
 }
 
-/// `GET /v1/admin/groups/{group_id}/roles` — list roles assigned to a group.
+/// `GET /v1/admin/groups/{group_id}/roles` - list roles assigned to a group.
 #[utoipa::path(
     get,
     path = "/v1/admin/groups/{group_id}/roles",
@@ -1938,7 +1938,7 @@ pub async fn list_group_roles(
 ) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
     let _auth =
         require_sentin8or_access_with_env(&state, &headers, teq.target_env_id.as_deref()).await?;
-    // SEC- — begin instead of acquire (see the note above).
+    // SEC- - begin instead of acquire (see the note above).
     let mut conn = state
         .pool
         .begin()
@@ -1974,7 +1974,7 @@ pub struct AddGroupRoleRequest {
     pub role_id: Uuid,
 }
 
-/// `POST /v1/admin/groups/{group_id}/roles` — assign a role to a group.
+/// `POST /v1/admin/groups/{group_id}/roles` - assign a role to a group.
 #[utoipa::path(
     post,
     operation_id = "group.role-assign",
@@ -2001,7 +2001,7 @@ pub async fn add_group_role(
 ) -> Result<Response, (StatusCode, String)> {
     let _auth =
         require_sentin8or_access_write(&state, &headers, teq.target_env_id.as_deref()).await?;
-    // SEC- — begin instead of acquire (see the note above).
+    // SEC- - begin instead of acquire (see the note above).
     let mut conn = state
         .pool
         .begin()
@@ -2028,11 +2028,11 @@ pub async fn add_group_role(
     .await
     .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
-    let _ = conn.commit().await; // SEC-2.4.8 — persist the write
+    let _ = conn.commit().await; // SEC-2.4.8 - persist the write
     Ok(StatusCode::CREATED.into_response())
 }
 
-/// `DELETE /v1/admin/groups/{group_id}/roles/{role_id}` — remove a role from a group.
+/// `DELETE /v1/admin/groups/{group_id}/roles/{role_id}` - remove a role from a group.
 #[utoipa::path(
     delete,
     operation_id = "group.role-unassign",
@@ -2058,7 +2058,7 @@ pub async fn remove_group_role(
 ) -> Result<StatusCode, (StatusCode, String)> {
     let _auth =
         require_sentin8or_access_write(&state, &headers, teq.target_env_id.as_deref()).await?;
-    // SEC- — begin instead of acquire (see the note above).
+    // SEC- - begin instead of acquire (see the note above).
     let mut conn = state
         .pool
         .begin()
@@ -2083,7 +2083,7 @@ pub async fn remove_group_role(
     .await
     .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
-    let _ = conn.commit().await; // SEC-2.4.8 — persist the write
+    let _ = conn.commit().await; // SEC-2.4.8 - persist the write
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -2170,7 +2170,7 @@ fn default_consent_required() -> bool {
     true
 }
 
-/// `GET /v1/admin/oauth-clients` — list OAuth clients (paginated).
+/// `GET /v1/admin/oauth-clients` - list OAuth clients (paginated).
 #[utoipa::path(
     get,
     operation_id = "application.list",
@@ -2196,8 +2196,8 @@ pub async fn list_oauth_clients(
 ) -> Result<Json<OAuthClientListResponse>, (StatusCode, String)> {
     let auth =
         require_sentin8or_access_with_env(&state, &headers, teq.target_env_id.as_deref()).await?;
-    // SEC- — begin instead of acquire: sentin8_set_tenant_context
-    // uses set_config(..., true) which is TRANSACTION-local — outside a
+    // SEC- - begin instead of acquire: sentin8_set_tenant_context
+    // uses set_config(..., true) which is TRANSACTION-local - outside a
     // transaction it evaporates and RLS denies every write. All queries for
     // this request run inside this transaction on the same connection.
     let mut conn = state
@@ -2257,7 +2257,7 @@ pub async fn list_oauth_clients(
     Ok(Json(OAuthClientListResponse { clients, total }))
 }
 
-/// `POST /v1/admin/oauth-clients` — create an OAuth client.
+/// `POST /v1/admin/oauth-clients` - create an OAuth client.
 #[utoipa::path(
     post,
     operation_id = "application.register",
@@ -2282,7 +2282,7 @@ pub async fn create_oauth_client(
 ) -> Result<Response, (StatusCode, String)> {
     let _auth =
         require_sentin8or_access_write(&state, &headers, teq.target_env_id.as_deref()).await?;
-    // SEC- — begin instead of acquire (see the note above).
+    // SEC- - begin instead of acquire (see the note above).
     let mut conn = state
         .pool
         .begin()
@@ -2351,7 +2351,7 @@ pub async fn create_oauth_client(
         Err(e) => return Err((StatusCode::INTERNAL_SERVER_ERROR, e.to_string())),
     };
 
-    //— emit client.created event to Bus outbox.
+    //- emit client.created event to Bus outbox.
     crate::events::emit_event_tx(
         &mut conn,
         row.env_id,
@@ -2376,11 +2376,11 @@ pub async fn create_oauth_client(
         updated_at: row.updated_at,
     };
 
-    let _ = conn.commit().await; // SEC-2.4.8 — persist the write
+    let _ = conn.commit().await; // SEC-2.4.8 - persist the write
     Ok((StatusCode::CREATED, Json(resp)).into_response())
 }
 
-/// `GET /v1/admin/oauth-clients/{id}` — get an OAuth client by ID.
+/// `GET /v1/admin/oauth-clients/{id}` - get an OAuth client by ID.
 #[utoipa::path(
     get,
     path = "/v1/admin/oauth-clients/{id}",
@@ -2405,7 +2405,7 @@ pub async fn get_oauth_client(
 ) -> Result<Json<OAuthClientResponse>, (StatusCode, String)> {
     let _auth =
         require_sentin8or_access_with_env(&state, &headers, teq.target_env_id.as_deref()).await?;
-    // SEC- — begin instead of acquire (see the note above).
+    // SEC- - begin instead of acquire (see the note above).
     let mut conn = state
         .pool
         .begin()
@@ -2470,7 +2470,7 @@ pub struct UpdateOAuthClientRequest {
     pub consent_required: Option<bool>,
 }
 
-/// `PUT /v1/admin/oauth-clients/{id}` — update an OAuth client.
+/// `PUT /v1/admin/oauth-clients/{id}` - update an OAuth client.
 #[utoipa::path(
     put,
     path = "/v1/admin/oauth-clients/{id}",
@@ -2497,7 +2497,7 @@ pub async fn update_oauth_client(
 ) -> Result<Json<OAuthClientResponse>, (StatusCode, String)> {
     let _auth =
         require_sentin8or_access_write(&state, &headers, teq.target_env_id.as_deref()).await?;
-    // SEC- — begin instead of acquire (see the note above).
+    // SEC- - begin instead of acquire (see the note above).
     let mut conn = state
         .pool
         .begin()
@@ -2541,7 +2541,7 @@ pub async fn update_oauth_client(
             )
             .await
             .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
-            let _ = conn.commit().await; // SEC-2.4.8 — persist the write
+            let _ = conn.commit().await; // SEC-2.4.8 - persist the write
             Ok(Json(OAuthClientResponse {
                 id: r.id,
                 env_id: r.env_id,
@@ -2561,7 +2561,7 @@ pub async fn update_oauth_client(
     }
 }
 
-/// `DELETE /v1/admin/oauth-clients/{id}` — delete an OAuth client.
+/// `DELETE /v1/admin/oauth-clients/{id}` - delete an OAuth client.
 #[utoipa::path(
     delete,
     path = "/v1/admin/oauth-clients/{id}",
@@ -2586,7 +2586,7 @@ pub async fn delete_oauth_client(
 ) -> Result<StatusCode, (StatusCode, String)> {
     let _auth =
         require_sentin8or_access_write(&state, &headers, teq.target_env_id.as_deref()).await?;
-    // SEC- — begin instead of acquire (see the note above).
+    // SEC- - begin instead of acquire (see the note above).
     let mut conn = state
         .pool
         .begin()
@@ -2609,7 +2609,7 @@ pub async fn delete_oauth_client(
         )
         .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
-        let _ = conn.commit().await; // SEC-2.4.8 — persist the write
+        let _ = conn.commit().await; // SEC-2.4.8 - persist the write
         Ok(StatusCode::NO_CONTENT)
     }
 }
@@ -2630,7 +2630,7 @@ pub struct ClientRoleResponse {
     pub created_at: chrono::DateTime<chrono::Utc>,
 }
 
-/// `GET /v1/admin/oauth-clients/{id}/roles` — list roles assigned to an OAuth client.
+/// `GET /v1/admin/oauth-clients/{id}/roles` - list roles assigned to an OAuth client.
 #[utoipa::path(
     get,
     path = "/v1/admin/oauth-clients/{id}/roles",
@@ -2654,7 +2654,7 @@ pub async fn list_client_roles(
 ) -> Result<Json<Vec<ClientRoleResponse>>, (StatusCode, String)> {
     let _auth =
         require_sentin8or_access_with_env(&state, &headers, teq.target_env_id.as_deref()).await?;
-    // SEC- — begin instead of acquire (see the note above).
+    // SEC- - begin instead of acquire (see the note above).
     let mut conn = state
         .pool
         .begin()
@@ -2688,7 +2688,7 @@ pub struct AddClientRoleRequest {
     pub role_id: Uuid,
 }
 
-/// `POST /v1/admin/oauth-clients/{id}/roles` — assign a role to an OAuth client.
+/// `POST /v1/admin/oauth-clients/{id}/roles` - assign a role to an OAuth client.
 #[utoipa::path(
     post,
     path = "/v1/admin/oauth-clients/{id}/roles",
@@ -2715,7 +2715,7 @@ pub async fn add_client_role(
 ) -> Result<Response, (StatusCode, String)> {
     let _auth =
         require_sentin8or_access_write(&state, &headers, teq.target_env_id.as_deref()).await?;
-    // SEC- — begin instead of acquire (see the note above).
+    // SEC- - begin instead of acquire (see the note above).
     let mut conn = state
         .pool
         .begin()
@@ -2756,11 +2756,11 @@ pub async fn add_client_role(
     .await
     .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
-    let _ = conn.commit().await; // SEC-2.4.8 — persist the write
+    let _ = conn.commit().await; // SEC-2.4.8 - persist the write
     Ok(StatusCode::CREATED.into_response())
 }
 
-/// `DELETE /v1/admin/oauth-clients/{id}/roles/{role_id}` — remove a role from an OAuth client.
+/// `DELETE /v1/admin/oauth-clients/{id}/roles/{role_id}` - remove a role from an OAuth client.
 #[utoipa::path(
     delete,
     path = "/v1/admin/oauth-clients/{id}/roles/{role_id}",
@@ -2785,7 +2785,7 @@ pub async fn remove_client_role(
 ) -> Result<StatusCode, (StatusCode, String)> {
     let _auth =
         require_sentin8or_access_write(&state, &headers, teq.target_env_id.as_deref()).await?;
-    // SEC- — begin instead of acquire (see the note above).
+    // SEC- - begin instead of acquire (see the note above).
     let mut conn = state
         .pool
         .begin()
@@ -2810,7 +2810,7 @@ pub async fn remove_client_role(
     .await
     .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
-    let _ = conn.commit().await; // SEC-2.4.8 — persist the write
+    let _ = conn.commit().await; // SEC-2.4.8 - persist the write
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -2838,7 +2838,7 @@ pub struct FederatedCredentialResponse {
     pub created_at: chrono::DateTime<chrono::Utc>,
 }
 
-/// `GET /v1/admin/oauth-clients/{id}/federated-credentials` — list federated credentials for an OAuth client.
+/// `GET /v1/admin/oauth-clients/{id}/federated-credentials` - list federated credentials for an OAuth client.
 #[utoipa::path(
     get,
     path = "/v1/admin/oauth-clients/{id}/federated-credentials",
@@ -2862,7 +2862,7 @@ pub async fn list_federated_credentials(
 ) -> Result<Json<Vec<FederatedCredentialResponse>>, (StatusCode, String)> {
     let _auth =
         require_sentin8or_access_with_env(&state, &headers, teq.target_env_id.as_deref()).await?;
-    // SEC- — begin instead of acquire (see the note above).
+    // SEC- - begin instead of acquire (see the note above).
     let mut conn = state
         .pool
         .begin()
@@ -2909,7 +2909,7 @@ pub struct CreateFederatedCredentialRequest {
     pub description: String,
 }
 
-/// `POST /v1/admin/oauth-clients/{id}/federated-credentials` — create a federated credential.
+/// `POST /v1/admin/oauth-clients/{id}/federated-credentials` - create a federated credential.
 #[utoipa::path(
     post,
     path = "/v1/admin/oauth-clients/{id}/federated-credentials",
@@ -2938,7 +2938,7 @@ pub async fn create_federated_credential(
 ) -> Result<Response, (StatusCode, String)> {
     let _auth =
         require_sentin8or_access_write(&state, &headers, teq.target_env_id.as_deref()).await?;
-    // SEC- — begin instead of acquire (see the note above).
+    // SEC- - begin instead of acquire (see the note above).
     let mut conn = state
         .pool
         .begin()
@@ -3009,11 +3009,11 @@ pub async fn create_federated_credential(
         created_at: row.created_at,
     };
 
-    let _ = conn.commit().await; // SEC-2.4.8 — persist the write
+    let _ = conn.commit().await; // SEC-2.4.8 - persist the write
     Ok((StatusCode::CREATED, Json(resp)).into_response())
 }
 
-/// `DELETE /v1/admin/oauth-clients/{id}/federated-credentials/{cred_id}` — delete a federated credential.
+/// `DELETE /v1/admin/oauth-clients/{id}/federated-credentials/{cred_id}` - delete a federated credential.
 #[utoipa::path(
     delete,
     path = "/v1/admin/oauth-clients/{id}/federated-credentials/{cred_id}",
@@ -3039,7 +3039,7 @@ pub async fn delete_federated_credential(
 ) -> Result<StatusCode, (StatusCode, String)> {
     let _auth =
         require_sentin8or_access_write(&state, &headers, teq.target_env_id.as_deref()).await?;
-    // SEC- — begin instead of acquire (see the note above).
+    // SEC- - begin instead of acquire (see the note above).
     let mut conn = state
         .pool
         .begin()
@@ -3069,7 +3069,7 @@ pub async fn delete_federated_credential(
         )
         .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
-        let _ = conn.commit().await; // SEC-2.4.8 — persist the write
+        let _ = conn.commit().await; // SEC-2.4.8 - persist the write
         Ok(StatusCode::NO_CONTENT)
     }
 }
@@ -3079,7 +3079,7 @@ pub async fn delete_federated_credential(
 // by Dash and clients that want role/group names without the JWT (the
 // JWT only carries `scope`). See auth design.
 
-/// `GET /v1/admin/users/{id}/roles` — list resolved role names for a user.
+/// `GET /v1/admin/users/{id}/roles` - list resolved role names for a user.
 #[utoipa::path(
     get,
     operation_id = "user.roles",
@@ -3104,7 +3104,7 @@ pub async fn list_user_roles(
 ) -> Result<Json<Vec<String>>, (StatusCode, String)> {
     let _auth =
         require_sentin8or_access_with_env(&state, &headers, teq.target_env_id.as_deref()).await?;
-    // SEC- — begin instead of acquire (see the note above).
+    // SEC- - begin instead of acquire (see the note above).
     let mut conn = state
         .pool
         .begin()
@@ -3151,7 +3151,7 @@ pub async fn list_user_roles(
     Ok(Json(names))
 }
 
-/// `GET /v1/admin/users/{id}/groups` — list group names for a user.
+/// `GET /v1/admin/users/{id}/groups` - list group names for a user.
 #[utoipa::path(
     get,
     operation_id = "user.groups",
@@ -3176,7 +3176,7 @@ pub async fn list_user_groups(
 ) -> Result<Json<Vec<String>>, (StatusCode, String)> {
     let _auth =
         require_sentin8or_access_with_env(&state, &headers, teq.target_env_id.as_deref()).await?;
-    // SEC- — begin instead of acquire (see the note above).
+    // SEC- - begin instead of acquire (see the note above).
     let mut conn = state
         .pool
         .begin()
@@ -3237,7 +3237,7 @@ pub struct ApiKeyListResponse {
 #[derive(Debug, Deserialize, ToSchema)]
 /// Request body for createapikey.
 pub struct CreateApiKeyRequest {
-    /// Optional — the RFW form does not send it (env is resolved from the
+    /// Optional - the RFW form does not send it (env is resolved from the
     /// token's tenant context); the auth-context env is used when absent.
     #[serde(default)]
     /// env identifier.
@@ -3247,7 +3247,7 @@ pub struct CreateApiKeyRequest {
     pub user_id: Option<Uuid>,
     /// The name.
     pub name: String,
-    /// Accepts either a JSON array or a single comma-separated string —
+    /// Accepts either a JSON array or a single comma-separated string -
     /// the RFW form sends text fields as strings (the field label is
     /// "Scopes (comma-separated)"). Same contract as role permissions.
     #[serde(default, deserialize_with = "deserialize_permissions")]
@@ -3258,7 +3258,7 @@ pub struct CreateApiKeyRequest {
     pub expires_at: Option<chrono::DateTime<chrono::Utc>>,
 }
 
-/// `GET /v1/admin/api-keys` — list API keys (paginated).
+/// `GET /v1/admin/api-keys` - list API keys (paginated).
 #[utoipa::path(
     get,
     operation_id = "api-key.list",
@@ -3284,8 +3284,8 @@ pub async fn list_api_keys(
 ) -> Result<Json<ApiKeyListResponse>, (StatusCode, String)> {
     let auth =
         require_sentin8or_access_with_env(&state, &headers, teq.target_env_id.as_deref()).await?;
-    // SEC- — begin instead of acquire: sentin8_set_tenant_context
-    // uses set_config(..., true) which is TRANSACTION-local — outside a
+    // SEC- - begin instead of acquire: sentin8_set_tenant_context
+    // uses set_config(..., true) which is TRANSACTION-local - outside a
     // transaction it evaporates and RLS denies every write. All queries for
     // this request run inside this transaction on the same connection.
     let mut conn = state
@@ -3344,7 +3344,7 @@ pub async fn list_api_keys(
     }))
 }
 
-/// `POST /v1/admin/api-keys` — create an API key.
+/// `POST /v1/admin/api-keys` - create an API key.
 #[utoipa::path(
     post,
     operation_id = "api-key.create",
@@ -3368,7 +3368,7 @@ pub async fn create_api_key(
 ) -> Result<Response, (StatusCode, String)> {
     let _auth =
         require_sentin8or_access_write(&state, &headers, teq.target_env_id.as_deref()).await?;
-    // SEC- — begin instead of acquire (see the note above).
+    // SEC- - begin instead of acquire (see the note above).
     let mut conn = state
         .pool
         .begin()
@@ -3404,7 +3404,7 @@ pub async fn create_api_key(
     .await
     .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
-    //— emit apikey.created event to Bus outbox.
+    //- emit apikey.created event to Bus outbox.
     crate::events::emit_event_tx(
         &mut conn,
         row.env_id,
@@ -3421,11 +3421,11 @@ pub async fn create_api_key(
         "expires_at": row.expires_at, "created_at": row.created_at, "last_used_at": row.last_used_at,
     });
 
-    let _ = conn.commit().await; // SEC-2.4.8 — persist the write
+    let _ = conn.commit().await; // SEC-2.4.8 - persist the write
     Ok((StatusCode::CREATED, Json(resp)).into_response())
 }
 
-/// `POST /v1/admin/api-keys/{id}/revoke` — revoke an API key.
+/// `POST /v1/admin/api-keys/{id}/revoke` - revoke an API key.
 #[utoipa::path(
     post,
     operation_id = "api-key.revoke",
@@ -3451,7 +3451,7 @@ pub async fn revoke_api_key(
 ) -> Result<StatusCode, (StatusCode, String)> {
     let _auth =
         require_sentin8or_access_write(&state, &headers, teq.target_env_id.as_deref()).await?;
-    // SEC- — begin instead of acquire (see the note above).
+    // SEC- - begin instead of acquire (see the note above).
     let mut conn = state
         .pool
         .begin()
@@ -3469,7 +3469,7 @@ pub async fn revoke_api_key(
     if result.rows_affected() == 0 {
         Err((StatusCode::NOT_FOUND, "API key not found".into()))
     } else {
-        //— emit apikey.revoked event to Bus outbox.
+        //- emit apikey.revoked event to Bus outbox.
         crate::events::emit_event_tx(
             &mut conn,
             _auth.env_id,
@@ -3478,7 +3478,7 @@ pub async fn revoke_api_key(
         )
         .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
-        let _ = conn.commit().await; // SEC-2.4.8 — persist the write
+        let _ = conn.commit().await; // SEC-2.4.8 - persist the write
         Ok(StatusCode::NO_CONTENT)
     }
 }
@@ -3529,7 +3529,7 @@ pub struct SessionQuery {
     pub page_size: i64,
 }
 
-/// `GET /v1/admin/sessions` — list sessions (paginated).
+/// `GET /v1/admin/sessions` - list sessions (paginated).
 #[utoipa::path(
     get,
     operation_id = "session.list",
@@ -3556,8 +3556,8 @@ pub async fn list_sessions(
 ) -> Result<Json<SessionListResponse>, (StatusCode, String)> {
     let auth =
         require_sentin8or_access_with_env(&state, &headers, teq.target_env_id.as_deref()).await?;
-    // SEC- — begin instead of acquire: sentin8_set_tenant_context
-    // uses set_config(..., true) which is TRANSACTION-local — outside a
+    // SEC- - begin instead of acquire: sentin8_set_tenant_context
+    // uses set_config(..., true) which is TRANSACTION-local - outside a
     // transaction it evaporates and RLS denies every write. All queries for
     // this request run inside this transaction on the same connection.
     let mut conn = state
@@ -3616,7 +3616,7 @@ pub async fn list_sessions(
     Ok(Json(SessionListResponse { sessions, total }))
 }
 
-/// `DELETE /v1/admin/sessions/{id}` — terminate a session.
+/// `DELETE /v1/admin/sessions/{id}` - terminate a session.
 #[utoipa::path(
     delete,
     operation_id = "session.terminate",
@@ -3642,7 +3642,7 @@ pub async fn terminate_session(
 ) -> Result<StatusCode, (StatusCode, String)> {
     let _auth =
         require_sentin8or_access_write(&state, &headers, teq.target_env_id.as_deref()).await?;
-    // SEC- — begin instead of acquire (see the note above).
+    // SEC- - begin instead of acquire (see the note above).
     let mut conn = state
         .pool
         .begin()
@@ -3661,7 +3661,7 @@ pub async fn terminate_session(
         Err((StatusCode::NOT_FOUND, "session not found".into()))
     } else {
         // Continuous access evaluation (auth DESIGN §10): payload-complete
-        // `session:revoked` envelope — the BFF session-reaper kills the
+        // `session:revoked` envelope - the BFF session-reaper kills the
         // cached BFF session for this subject. Same transaction as the
         // UPDATE (§6.7).
         let _ = crate::events::emit_session_revoked(
@@ -3672,7 +3672,7 @@ pub async fn terminate_session(
             "admin_terminate",
         )
         .await;
-        //— emit session.terminated event to Bus outbox.
+        //- emit session.terminated event to Bus outbox.
         crate::events::emit_event_tx(
             &mut conn,
             _auth.env_id,
@@ -3681,7 +3681,7 @@ pub async fn terminate_session(
         )
         .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
-        let _ = conn.commit().await; // SEC-2.4.8 — persist the write
+        let _ = conn.commit().await; // SEC-2.4.8 - persist the write
         Ok(StatusCode::NO_CONTENT)
     }
 }
@@ -3703,7 +3703,7 @@ pub struct MembershipResponse {
     pub created_at: chrono::DateTime<chrono::Utc>,
 }
 
-/// `GET /v1/admin/memberships` — list memberships.
+/// `GET /v1/admin/memberships` - list memberships.
 #[utoipa::path(
     get,
     operation_id = "membership.list",
@@ -3729,8 +3729,8 @@ pub async fn list_memberships(
 ) -> Result<Json<Vec<MembershipResponse>>, (StatusCode, String)> {
     let auth =
         require_sentin8or_access_with_env(&state, &headers, teq.target_env_id.as_deref()).await?;
-    // SEC- — begin instead of acquire: sentin8_set_tenant_context
-    // uses set_config(..., true) which is TRANSACTION-local — outside a
+    // SEC- - begin instead of acquire: sentin8_set_tenant_context
+    // uses set_config(..., true) which is TRANSACTION-local - outside a
     // transaction it evaporates and RLS denies every write. All queries for
     // this request run inside this transaction on the same connection.
     let mut conn = state
@@ -3794,7 +3794,7 @@ fn default_role() -> String {
     "member".into()
 }
 
-/// `POST /v1/admin/memberships` — create a membership.
+/// `POST /v1/admin/memberships` - create a membership.
 #[utoipa::path(
     post,
     path = "/v1/admin/memberships",
@@ -3816,7 +3816,7 @@ pub async fn create_membership(
 ) -> Result<Response, (StatusCode, String)> {
     let _auth =
         require_sentin8or_access_write(&state, &headers, teq.target_env_id.as_deref()).await?;
-    // SEC- — begin instead of acquire (see the note above).
+    // SEC- - begin instead of acquire (see the note above).
     let mut conn = state
         .pool
         .begin()
@@ -3844,7 +3844,7 @@ pub async fn create_membership(
 
     use sqlx::Row as _;
     let user_id: Uuid = row.get("user_id");
-    //— emit membership.created event to Bus outbox.
+    //- emit membership.created event to Bus outbox.
     crate::events::emit_event_tx(
         &mut conn,
         _auth.env_id,
@@ -3855,12 +3855,12 @@ pub async fn create_membership(
     .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
     // Identity-cache invalidation (policy design -1, outbox-first):
-    // the user just received a role — every service's policy runtime must
+    // the user just received a role - every service's policy runtime must
     // drop its cached pre-grant identity. Transport: policy consumers are
     // M2M clients registered in the SYSTEM env, so the event rides the
     // system-env `policy` stream; the env to sweep rides in the payload.
     // DBX : local auth.outbox row (family `policy`); the relay pushes
-    // it to Bus POST /v1/produce — no definer function, no inbox RLS gate.
+    // it to Bus POST /v1/produce - no definer function, no inbox RLS gate.
     if let Err(e) = sentin8::bus::outbox::insert_outbox_row(
         &mut *conn,
         sentin8::config::SYSTEM_ENV_ID,
@@ -3881,11 +3881,11 @@ pub async fn create_membership(
         created_at: chrono::Utc::now(),
     };
 
-    let _ = conn.commit().await; // SEC-2.4.8 — persist the write
+    let _ = conn.commit().await; // SEC-2.4.8 - persist the write
     Ok((StatusCode::CREATED, Json(resp)).into_response())
 }
 
-/// `DELETE /v1/admin/memberships/{id}` — delete a membership.
+/// `DELETE /v1/admin/memberships/{id}` - delete a membership.
 #[utoipa::path(
     delete,
     path = "/v1/admin/memberships/{id}",
@@ -3909,8 +3909,8 @@ pub async fn delete_membership(
 ) -> Result<StatusCode, (StatusCode, String)> {
     let auth =
         require_sentin8or_access_write(&state, &headers, teq.target_env_id.as_deref()).await?;
-    // SEC- — begin instead of acquire: sentin8_set_tenant_context
-    // uses set_config(..., true) which is TRANSACTION-local — outside a
+    // SEC- - begin instead of acquire: sentin8_set_tenant_context
+    // uses set_config(..., true) which is TRANSACTION-local - outside a
     // transaction it evaporates and RLS denies every write. All queries for
     // this request run inside this transaction on the same connection.
     let mut conn = state
@@ -3943,7 +3943,7 @@ pub async fn delete_membership(
     .await
     .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
-    //— emit membership.deleted event to Bus outbox.
+    //- emit membership.deleted event to Bus outbox.
     crate::events::emit_event_tx(
         &mut conn,
         auth.env_id,
@@ -3953,11 +3953,11 @@ pub async fn delete_membership(
     .await
     .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
-    // Identity-cache invalidation (policy design -1, outbox-first) —
+    // Identity-cache invalidation (policy design -1, outbox-first) -
     // a revoked membership must take effect on the next request, not after
     // the 30s resolver TTL. System-env `policy` stream (consumer transport);
     // DBX : local auth.outbox row (family `policy`); the relay pushes
-    // it to Bus POST /v1/produce — no definer function, no inbox RLS gate.
+    // it to Bus POST /v1/produce - no definer function, no inbox RLS gate.
     if let Err(e) = sentin8::bus::outbox::insert_outbox_row(
         &mut *conn,
         sentin8::config::SYSTEM_ENV_ID,
@@ -3970,7 +3970,7 @@ pub async fn delete_membership(
         tracing::error!(error = %e, "auth: failed to emit policy identity event (invalidation degrades to 30s TTL)");
     }
 
-    let _ = conn.commit().await; // SEC-2.4.8 — persist the write
+    let _ = conn.commit().await; // SEC-2.4.8 - persist the write
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -4008,7 +4008,7 @@ pub struct CreateInvitationRequest {
     #[serde(default = "default_role")]
     /// The role.
     pub role: String,
-    /// TTL in days. RFW forms submit number fields as strings ("7") —
+    /// TTL in days. RFW forms submit number fields as strings ("7") -
     /// accept both JSON numbers and numeric strings.
     #[serde(
         default = "default_invitation_ttl_days",
@@ -4023,7 +4023,7 @@ fn default_invitation_ttl_days() -> i64 {
 }
 
 /// Deserialize an i64 from either a JSON number or a numeric string
-/// (RFW number fields submit text). Non-numeric strings fall back to 0 —
+/// (RFW number fields submit text). Non-numeric strings fall back to 0 -
 /// the handler's default (7) then applies via `unwrap_or`.
 fn deserialize_i64_lenient<'de, D>(deserializer: D) -> Result<i64, D::Error>
 where
@@ -4043,13 +4043,13 @@ where
     })
 }
 
-/// ── Invitations — sys-API proxy ───────────────────────────
-/// Invitations are OWNED by Sentin8:Sys (`sys.invitations` — the lifecycle
+/// ── Invitations - sys-API proxy ───────────────────────────
+/// Invitations are OWNED by Sentin8:Sys (`sys.invitations` - the lifecycle
 /// lives with org/env provisioning). Auth's admin surface below is a thin
 /// PROXY: the signed-in operator's request is re-issued to sys's
 /// `/v1/org/{id}/invitations` endpoints with the `auth-sys` M2M token
 /// (`sentin8:sys:memberships:admin`). Auth reads/writes ZERO invitation
-/// rows — its grants on `sys.invitations` are retired (platform.sql).
+/// rows - its grants on `sys.invitations` are retired (platform.sql).
 /// The URL surface is unchanged (dash admin UI + e2e call these paths).
 ///
 /// Extract the raw Bearer token from request headers (for the delegated
@@ -4067,7 +4067,7 @@ fn bearer_token(headers: &HeaderMap) -> Option<String> {
 /// Like [`sys_proxy`] but carries the ACTING USER through the hop: the
 /// caller's user access token is exchanged (RFC 8693 token-exchange) for a
 /// delegated token whose `act.sub` names the user, and THAT rides to Sys.
-/// A plain auth-sys M2M token's `sub` is the client_id — Sys's org-membership
+/// A plain auth-sys M2M token's `sub` is the client_id - Sys's org-membership
 /// check resolves the acting USER from `act.sub` (RFC 8693), so without the
 /// exchange the original caller's membership is invisible and every proxied
 /// org-scoped call 403s. `acting_token` is the caller's own Bearer token
@@ -4079,7 +4079,7 @@ async fn sys_proxy_with_actor(
     acting_token: Option<&str>,
 ) -> Result<reqwest::Response, (StatusCode, String)> {
     // auth DESIGN §4.3f: the `auth-sys` CERTIFICATE is the
-    // identity — the cert-presenting transport authenticates at Sys's TLS
+    // identity - the cert-presenting transport authenticates at Sys's TLS
     // layer; the registry map authorizes
     // `sentin8:sys:memberships:admin`.
     let issuer = sentin8::config::Sentin8Config::from_env().sentin8_auth_issuer();
@@ -4091,7 +4091,7 @@ async fn sys_proxy_with_actor(
     )
     .await
     .map_err(|e| {
-        tracing::error!(error = %e, "auth: auth-sys certificate ensure failed — sys proxy unavailable");
+        tracing::error!(error = %e, "auth: auth-sys certificate ensure failed - sys proxy unavailable");
         (StatusCode::BAD_GATEWAY, format!("sys proxy identity: {e}"))
     })?;
     let mtls = sentin8::middleware::mtls::MtlsConfig::new(
@@ -4103,7 +4103,7 @@ async fn sys_proxy_with_actor(
         .map_err(|e| (StatusCode::BAD_GATEWAY, format!("sys proxy transport: {e}")))?;
 
     // Token-exchange: swap the USER's access token for a delegated token
-    // carrying `act.sub` = the user (RFC 8693) — the delegated flow keeps
+    // carrying `act.sub` = the user (RFC 8693) - the delegated flow keeps
     // its JWT ( removes only the workload's own M2M token). The
     // call itself rides the cert-presenting transport.
     let delegated = match acting_token {
@@ -4116,7 +4116,7 @@ async fn sys_proxy_with_actor(
             {
                 Ok(tok) => Some(tok),
                 Err(e) => {
-                    tracing::warn!(error = %e, "auth: user-token exchange for sys proxy failed — cert identity used directly");
+                    tracing::warn!(error = %e, "auth: user-token exchange for sys proxy failed - cert identity used directly");
                     None
                 }
             }
@@ -4138,7 +4138,7 @@ async fn sys_proxy_with_actor(
         .map_err(|e| (StatusCode::BAD_GATEWAY, format!("sys proxy call: {e}")))
 }
 
-/// `GET /v1/admin/invitations` — list invitations (proxy → sys).
+/// `GET /v1/admin/invitations` - list invitations (proxy → sys).
 #[utoipa::path(
     get,
     path = "/v1/admin/invitations",
@@ -4184,7 +4184,7 @@ pub async fn list_invitations(
         .await
         .map_err(|e| (StatusCode::BAD_GATEWAY, format!("sys decode: {e}")))?;
     // Map into the dash-facing shape (adds created_at: sys's list endpoint
-    // keeps the same wire shape minus created_at — synthesize from now for
+    // keeps the same wire shape minus created_at - synthesize from now for
     // ordering stability; the UI shows email/role/status primarily).
     let invitations = raw
         .into_iter()
@@ -4212,7 +4212,7 @@ pub async fn list_invitations(
     Ok(Json(invitations))
 }
 
-/// `POST /v1/admin/invitations` — create an invitation (proxy → sys).
+/// `POST /v1/admin/invitations` - create an invitation (proxy → sys).
 #[utoipa::path(
     post,
     operation_id = "invitation.send",
@@ -4277,7 +4277,7 @@ pub async fn create_invitation(
     Ok((StatusCode::CREATED, Json(resp)).into_response())
 }
 
-/// `POST /v1/admin/invitations/{id}/revoke` — revoke an invitation
+/// `POST /v1/admin/invitations/{id}/revoke` - revoke an invitation
 /// (proxy → sys).
 #[utoipa::path(
     post,
@@ -4375,7 +4375,7 @@ pub struct AuditQuery {
     pub page_size: i64,
 }
 
-/// `GET /v1/admin/audit` — list audit events (paginated).
+/// `GET /v1/admin/audit` - list audit events (paginated).
 #[utoipa::path(
     get,
     operation_id = "audit.list",
@@ -4402,8 +4402,8 @@ pub async fn list_audit_events(
 ) -> Result<Json<AuditListResponse>, (StatusCode, String)> {
     let auth =
         require_sentin8or_access_with_env(&state, &headers, teq.target_env_id.as_deref()).await?;
-    // SEC- — begin instead of acquire: sentin8_set_tenant_context
-    // uses set_config(..., true) which is TRANSACTION-local — outside a
+    // SEC- - begin instead of acquire: sentin8_set_tenant_context
+    // uses set_config(..., true) which is TRANSACTION-local - outside a
     // transaction it evaporates and RLS denies every write. All queries for
     // this request run inside this transaction on the same connection.
     let mut conn = state

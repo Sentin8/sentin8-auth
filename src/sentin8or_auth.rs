@@ -3,32 +3,32 @@
 // SPDX-FileCopyrightText: Copyright Contributors to the Sentin8:Auth
 // SPDX-License-Identifier: Apache-2.0
 
-//! Sentin8or API authentication and authorization — tenant-scoped guards.
+//! Sentin8or API authentication and authorization - tenant-scoped guards.
 //!
 //! "Sentin8or" is the term for platform operators who manage the
 //! platform through Dash. Only users with admin scopes can access Dash
-//! admin endpoints — non-admin users are rejected.
+//! admin endpoints - non-admin users are rejected.
 //!
 //! This module guards all Dash admin/management endpoints with the same
 //! pattern as Sys's `auth::verify_token` + `authorize_org`:
 //!
 //! 1. Verify the Bearer token's signature using Auth's own signing keys.
-//! 2. Reject non-admin tokens — only users with admin scopes can access Dash.
+//! 2. Reject non-admin tokens - only users with admin scopes can access Dash.
 //! 3. Extract the target env from the token's `env_id` claim. org_id is
 //! resolved from env_id via `sentin8_sys_environments`. For tokens issued
 //! via the Delegation Gateway (BFF), the claims carry the target env.
 //! For direct platform tokens, the claims carry SystemEnvID.
 //! 4. Verify the caller has access to the target org (via the RBAC group/role
-//! model — `has_org_access` checks sentin8_auth_user_roles + sentin8_auth_group_members)
+//! model - `has_org_access` checks sentin8_auth_user_roles + sentin8_auth_group_members)
 //! unless the caller has the `sentin8:sys:admin` scope (platform admin bypass).
 //! Note: if the token was issued via the Delegation Gateway, the may_act
-//! check was already done at delegation time — this is defense-in-depth.
+//! check was already done at delegation time - this is defense-in-depth.
 //!
 //! ## Scoping rules
 //!
 //! - **Platform admin (sys:admin)**: users with `sentin8:sys:admin` scope bypass
 //! the membership check. Other admin users must have a role or group in
-//! the target org (checked via `has_org_access` — RBAC group/role model).
+//! the target org (checked via `has_org_access` - RBAC group/role model).
 //! The token's `env_id` claim determines the data scope.
 
 use axum::http::{HeaderMap, StatusCode};
@@ -54,7 +54,7 @@ pub struct Sentin8orAuthContext {
 }
 
 impl Sentin8orAuthContext {
-    /// Check if the caller is a platform admin — permission-based, not
+    /// Check if the caller is a platform admin - permission-based, not
     /// identity-based. Returns true if the token has the `sentin8:sys:admin`
     /// scope (granted via `org:sys:admins` group → `sentin8:org:sys:admin` →
     /// `sentin8:sys:admin` nesting). See auth design
@@ -78,7 +78,7 @@ impl Sentin8orAuthContext {
 /// plus the platform-admin scopes.
 /// - `Write` endpoints (POST/PUT/DELETE/PATCH) accept `sentin8:auth:admin:write`
 ///
-/// plus the platform-admin scopes — a read-only operator can no longer
+/// plus the platform-admin scopes - a read-only operator can no longer
 /// mutate admin resources.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AccessMode {
@@ -140,7 +140,7 @@ async fn resolve_certificate_context(
         ));
     }
 
-    // The SAME scope/mode gate the Bearer path runs — against the map's
+    // The SAME scope/mode gate the Bearer path runs - against the map's
     // granted scopes. `auth-sys` carries `sentin8:sys:memberships:admin`
     // (an is_platform_admin class grant); the Shield policy check below
     // still decides the precise action.
@@ -167,7 +167,7 @@ async fn resolve_certificate_context(
         ));
     }
 
-    // The Shield policy gate — same target as the Bearer path, fed the
+    // The Shield policy gate - same target as the Bearer path, fed the
     // synthetic workload context (the map's scopes).
     let now = chrono::Utc::now().timestamp();
     let sdk_claims = sentin8::auth::client::VerifiedClaims {
@@ -281,7 +281,7 @@ pub async fn require_sentin8or_access(
 
 /// Same as `require_sentin8or_access` but accepts an optional `target_env_id`
 /// from the `target_env_id` query param (forwarded by BFF proxy). When present,
-/// this overrides the token's env_id — the BFF-proxied request targets a
+/// this overrides the token's env_id - the BFF-proxied request targets a
 /// specific env, but the token carries SYSTEM_ENV_ID.
 pub async fn require_sentin8or_access_with_env(
     state: &AppState,
@@ -313,7 +313,7 @@ pub async fn require_sentin8or_access_mode(
     // Certificate-only platform-workload path (auth DESIGN §4.3f; group
     // DESIGN.md §3.1): when no Bearer is present but the TLS layer
     // injected a CA-verified client-certificate subject, the registry
-    // map resolves the workload — the certificate IS the
+    // map resolves the workload - the certificate IS the
     // authentication, the map IS the authorization record. The token
     // model is retired for platform workloads; without this path the
     // sys provisioning delegation (`auth-sys` certificate) 401s and
@@ -348,7 +348,7 @@ pub async fn require_sentin8or_access_mode(
 
     let claims = verify_token(&state.keys, &state.config, token)?;
 
-    // SEC- — actor-token revocation check. A token whose `jti`
+    // SEC- - actor-token revocation check. A token whose `jti`
     // appears in `actor_revocations` is refused even though its
     // signature/expiry are valid.
     if is_actor_token_revoked(&state.pool, &claims.jti).await {
@@ -363,7 +363,7 @@ pub async fn require_sentin8or_access_mode(
     // - delegated tokens issued via the Delegation Gateway (carries
     // the target env in the claims).
     // Both carry a `sub` (user id) and a tenant claim (`env_id`).
-    // Customer tokens from sign-in are rejected — those have a
+    // Customer tokens from sign-in are rejected - those have a
     // different `sub` semantics (subject user) and no `sentin8or` intent.
     //
     // Authorization is scope-based: the caller must have an admin scope.
@@ -373,7 +373,7 @@ pub async fn require_sentin8or_access_mode(
     // (e.g. `sentin8:auth:admin:read`), so we also accept those. Customer
     // tokens never carry any admin scope, so they're rejected.
     //
-    // SEC- — the read/write split: `sentin8:auth:admin:read` alone does
+    // SEC- - the read/write split: `sentin8:auth:admin:read` alone does
     // NOT authorize mutating endpoints.
     let scopes: Vec<&str> = claims.scope.split_whitespace().collect();
     let is_platform_admin = scopes.iter().any(|s| {
@@ -395,16 +395,16 @@ pub async fn require_sentin8or_access_mode(
             StatusCode::FORBIDDEN,
             match mode {
                 AccessMode::Read => {
-                    "missing admin scope — not authorized for Dash admin endpoints".to_string()
+                    "missing admin scope - not authorized for Dash admin endpoints".to_string()
                 }
                 AccessMode::Write => {
-                    "missing auth:admin:write scope — not authorized for mutating admin endpoints"
+                    "missing auth:admin:write scope - not authorized for mutating admin endpoints"
                         .to_string()
                 }
             },
         ));
     }
-    // ── Step 5 — the ONLY access gate (design ).
+    // ── Step 5 - the ONLY access gate (design ).
     // The JWT scope snapshot above is only the coarse pre-filter; the Shield
     // scope-mirror set over LIVE effective scopes decides. The headers pass
     // through so the raw Bearer drives live identity resolution. The local
@@ -439,7 +439,7 @@ pub async fn require_sentin8or_access_mode(
     .await?;
     // 3. Resolve the target env.
     // Resolve env_id from target_env_id query param (BFF proxy).
-    // No fallback — if target_env_id is missing, the request fails.
+    // No fallback - if target_env_id is missing, the request fails.
     // Auth is always env-scoped; there is no org-level auth.
     let env_id = target_env_id
         .filter(|s| !s.is_empty())
@@ -447,7 +447,7 @@ pub async fn require_sentin8or_access_mode(
         .ok_or_else(|| {
             (
                 StatusCode::BAD_REQUEST,
-                "missing target_env_id — auth is env-scoped".to_string(),
+                "missing target_env_id - auth is env-scoped".to_string(),
             )
         })?;
 
@@ -455,7 +455,7 @@ pub async fn require_sentin8or_access_mode(
     //
     // The lookup needs the caller's tenant context on the SAME connection
     // (auth design §6.3): `sys.environments` is FORCE-RLS'd on
-    // (context_initialized, env) and a bare-pool SELECT runs context-less —
+    // (context_initialized, env) and a bare-pool SELECT runs context-less -
     // the row is invisible and org_id silently defaulted to SystemOrgID,
     // which then failed every downstream org check with 403 "not a member".
     let org_id = if env_id == SYSTEM_ENV_ID {
@@ -478,13 +478,13 @@ pub async fn require_sentin8or_access_mode(
         resolved.unwrap_or(SYSTEM_ORG_ID)
     };
 
-    // 4. Access check — only for tokens targeting a real org
+    // 4. Access check - only for tokens targeting a real org
     // (not SystemOrgID). Uses the RBAC group/role model. Users with
     // `sentin8:sys:admin` scope bypass.
     //
     // Delegated tokens (Delegation Gateway, `token_tp: "delegated"`) carry
     // the target env in their claims. If the token is delegated,
-    // the Delegation Gateway already validated RBAC access — accept.
+    // the Delegation Gateway already validated RBAC access - accept.
     let has_admin_scope = claims
         .scope
         .split_whitespace()
@@ -492,7 +492,7 @@ pub async fn require_sentin8or_access_mode(
     let is_delegated = claims.token_tp == "delegated";
     // M2M service tokens (`token_tp: "m2m"`) are machine identities: their
     // authorization is the SCOPE gate above (e.g. `sentin8:auth:admin:write`
-    // for the provisioning surface) — never the user-membership probe, which
+    // for the provisioning surface) - never the user-membership probe, which
     // would only test a client_id against org groups and always fail. The
     // acting user, where one exists, rides the body of the call.
     let is_m2m = claims.token_tp == "m2m";
@@ -518,7 +518,7 @@ pub async fn require_sentin8or_access_mode(
 }
 
 /// Check whether a token `jti` has been revoked as an actor token
-/// (SEC- — `actor_revocations`).
+/// (SEC- - `actor_revocations`).
 async fn is_actor_token_revoked(pool: &sqlx::PgPool, jti: &str) -> bool {
     if jti.is_empty() {
         return false;
@@ -536,7 +536,7 @@ async fn is_actor_token_revoked(pool: &sqlx::PgPool, jti: &str) -> bool {
     .unwrap_or(false)
 }
 
-/// SEC- — backstop check for the route-guard middleware:
+/// SEC- - backstop check for the route-guard middleware:
 /// verify a Bearer token's signature/issuer/expiry and confirm it carries
 /// any admin scope. Returns `Ok` when the token may proceed to the
 /// per-handler guard (which performs the full tenant resolution).

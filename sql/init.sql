@@ -3,7 +3,7 @@
 -- SPDX-FileCopyrightText: Copyright Contributors to the Sentin8:Auth
 -- SPDX-License-Identifier: Apache-2.0
 
--- Sentin8:Auth — identity and access management tables.
+-- Sentin8:Auth - identity and access management tables.
 -- Covers users, sessions, OAuth clients, API keys, groups, audit, outbox,
 -- security profiles, MFA (factors/challenges/WebAuthn), password reset /
 -- email verify tokens, enterprise SSO connections + SSO sessions, actor
@@ -50,9 +50,9 @@ END $$;
 CREATE INDEX IF NOT EXISTS idx_auth_users_email ON auth.users (email);
 CREATE INDEX IF NOT EXISTS idx_auth_users_env ON auth.users (env_id);
 
--- RLS: auth.users — users can only see rows matching their org/env scope.
+-- RLS: auth.users - users can only see rows matching their org/env scope.
 -- Platform operators access via delegation (org-scoped token with real org UUID).
--- No bypass — every query is scoped to sentin8_current_env_id().
+-- No bypass - every query is scoped to sentin8_current_env_id().
 ALTER TABLE auth.users ENABLE ROW LEVEL SECURITY;
 
 DROP POLICY IF EXISTS auth_users_select_policy ON auth.users;
@@ -125,14 +125,14 @@ ALTER TABLE auth.sessions ENABLE ROW LEVEL SECURITY;
 -- stores only the bcrypt hash (same hashing discipline as the login
 -- password). Tokens issued via an app password carry
 -- `token_tp = 'app_password'` and the scope is downscoped to
--- (allowed_scopes ∩ requested) — never the full role set.
+-- (allowed_scopes ∩ requested) - never the full role set.
 CREATE TABLE IF NOT EXISTS auth.app_passwords (
     id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     user_id         UUID NOT NULL REFERENCES auth.users(id) ON DELETE CASCADE,
     env_id          UUID NOT NULL,
     label           TEXT NOT NULL,               -- user-chosen ("Mac Mail")
     password_hash   TEXT NOT NULL,               -- bcrypt of the raw secret
-    -- Space-separated scope whitelist; empty = deny-all (safe default —
+    -- Space-separated scope whitelist; empty = deny-all (safe default -
     -- the user must opt in to scopes at mint time).
     allowed_scopes  TEXT NOT NULL DEFAULT '',
     status          TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'revoked')),
@@ -166,13 +166,13 @@ CREATE POLICY auth_sessions_select_policy ON auth.sessions
             OR (env_id = sentin8_current_env_id())
             -- Platform plane (mirrors auth_oauth_clients_select_policy):
             -- Session::find_by_token resolves a session by token from the
-            -- SYSTEM env context before re-scoping to the session's env —
+            -- SYSTEM env context before re-scoping to the session's env -
             -- a token lookup cannot know the env in advance.
             OR (sentin8_current_env_id() = '00000000-0000-0000-0000-000000000002'::uuid)
         )
     );
 
--- Sessions are written by every sign-in/sign-out/refresh — the table is
+-- Sessions are written by every sign-in/sign-out/refresh - the table is
 -- FORCE-RLS (hardening parity with the other auth tenant tables), so the
 -- write policies must exist or every session write is denied (regression
 -- caught by the integration suite under the NOBYPASSRLS service role; the
@@ -212,7 +212,7 @@ ALTER TABLE auth.sessions FORCE ROW LEVEL SECURITY;
 -- ── EUDI credentials (OID4VCI, EUDI.2.1) ────────────────────────────
 -- One row per verifiable credential Auth issued to a wallet. The wallet
 -- holds the credential; Auth holds only the status/audit record (secret-free
--- — the wallet key is generated in the wallet, never transmitted here).
+-- - the wallet key is generated in the wallet, never transmitted here).
 -- Revocation flips the status AND marks the Status List 2021 entry.
 CREATE TABLE IF NOT EXISTS auth.credentials (
     id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -339,7 +339,7 @@ CREATE POLICY auth_regulatory_overlays_select ON auth.regulatory_overlays
         )
     );
 
--- Write policies (FORCE-RLS — env admins configure the overlay row).
+-- Write policies (FORCE-RLS - env admins configure the overlay row).
 DROP POLICY IF EXISTS auth_regulatory_overlays_insert ON auth.regulatory_overlays;
 CREATE POLICY auth_regulatory_overlays_insert ON auth.regulatory_overlays
     FOR INSERT WITH CHECK (
@@ -423,7 +423,7 @@ CREATE TABLE IF NOT EXISTS auth.oauth_clients (
     authorization_details_types TEXT[] NOT NULL DEFAULT '{}',
     -- DPoP exemption flag (SEC-2.2.5 / design §13.3.4). When true, the
     -- client is exempt from profile-level DPoP enforcement on the token
-    -- endpoint. Only platform-owned public clients (dash, sentin8-cli —
+    -- endpoint. Only platform-owned public clients (dash, sentin8-cli -
     -- seeded by auth's seed.sql) set this to true; it is NOT settable
     -- via DCR or the client-management API, so a third-party SPA can
     -- never self-exempt. Proofs presented by exempt clients are still
@@ -456,13 +456,13 @@ CREATE POLICY auth_oauth_clients_select_policy ON auth.oauth_clients
             OR (env_id = sentin8_current_env_id())
             -- Platform plane (mirrors sys_environments_select): auth's
             -- authorize/PAR/DCR paths resolve a client by client_id from the
-            -- SYSTEM env context (`with_client_env`) — a hostname-routed
+            -- SYSTEM env context (`with_client_env`) - a hostname-routed
             -- request cannot know the client's env in advance.
             OR (sentin8_current_env_id() = '00000000-0000-0000-0000-000000000002'::uuid)
         )
     );
 
--- INSERT/UPDATE/DELETE — DCR (RFC 7591/7592) and the client-management
+-- INSERT/UPDATE/DELETE - DCR (RFC 7591/7592) and the client-management
 -- API run under the service role with the tenant context set on the
 -- transaction (dcr.rs admin.rs). Without an INSERT policy, FORCE RLS
 -- denies every write ("new row violates row-level security policy").
@@ -531,7 +531,7 @@ CREATE POLICY auth_api_keys_select_policy ON auth.api_keys
         )
     );
 
--- Write policies: the table is FORCE-RLS — without these every API-key
+-- Write policies: the table is FORCE-RLS - without these every API-key
 -- create/revoke is denied under the NOBYPASSRLS service role (the shared
 -- superuser's BYPASSRLS masked the gap).
 DROP POLICY IF EXISTS auth_api_keys_insert_policy ON auth.api_keys;
@@ -590,7 +590,7 @@ CREATE TABLE IF NOT EXISTS auth.m2m_dcr_credentials (
     UNIQUE (service_name, sentin8_auth_base_url)
 );
 
--- Note: no RLS on this table — it's accessed by platform services
+-- Note: no RLS on this table - it's accessed by platform services
 -- (bff, log-agent, etc.) using the platform DB role, not
 -- tenant-scoped queries.
 
@@ -602,20 +602,20 @@ CREATE TABLE IF NOT EXISTS auth.m2m_dcr_credentials (
 -- closed set of platform scopes that cert-identified workload may request
 -- at registration (vocabulary-constrained to the platform scope catalog).
 -- Provisioned by `vertical enroll` from each service's `m2m_grants`
--- self-declaration — never by DCR itself, never by a static seed naming
+-- self-declaration - never by DCR itself, never by a static seed naming
 -- another service.
 CREATE TABLE IF NOT EXISTS auth.m2m_scope_grants (
     service_name    TEXT PRIMARY KEY,
     allowed_scopes  TEXT[] NOT NULL DEFAULT '{}',
     -- VDC-2 (design/sentin8-vertical-data-plane-contract.md §VDC.4): the
-    -- vertical this workload belongs to — stamped by `vertical enroll` from
+    -- vertical this workload belongs to - stamped by `vertical enroll` from
     -- the registry's `vertical` field. Auth embeds it as the M2M token's
     -- `vertical` claim; Bus rejects produce when the event_type's first
     -- colon segment disagrees (event ownership gate).
     vertical        TEXT NOT NULL DEFAULT 'sentin8',
     -- VDC-4 (§VDC.5): the service_type the workload performs work FOR
-    -- (workload names are inconsistent — `bank8-ledger-bus` vs
-    -- `ledger-audit` — so the registry must stamp the explicit mapping).
+    -- (workload names are inconsistent - `bank8-ledger-bus` vs
+    -- `ledger-audit` - so the registry must stamp the explicit mapping).
     -- Sys's tenant-snapshot API resolves the caller's service through this
     -- column for scoped discovery (answers only for envs where the
     -- caller's own service is enabled).
@@ -629,9 +629,9 @@ CREATE TABLE IF NOT EXISTS auth.m2m_scope_grants (
 -- (SBI-AUTH-2, self-registration §3.11) and `vertical enroll` upserts the
 -- rows into auth.m2m_scope_grants keyed by service_name exactly like
 -- verticals'. Auth's SQL must contain ZERO rows naming other services. Do
--- NOT re-add rows here — add the service's `m2m_grants` registration instead.
+-- NOT re-add rows here - add the service's `m2m_grants` registration instead.
 
--- Note: no RLS — platform-internal lookup during DCR (anonymous endpoint,
+-- Note: no RLS - platform-internal lookup during DCR (anonymous endpoint,
 -- server-side evaluation only; never tenant-scoped).
 
 -- Sentin8:Auth roles table.
@@ -657,7 +657,7 @@ CREATE POLICY auth_roles_select_policy ON auth.roles
             -- Platform plane (mirrors auth_oauth_clients_select_policy):
             -- the live identity resolution (sessions::fetch_role_scopes /
             -- user_role_names) resolves a user's RBAC closure from the
-            -- SYSTEM env context — a user's roles span their org's envs.
+            -- SYSTEM env context - a user's roles span their org's envs.
             OR (sentin8_current_env_id() = '00000000-0000-0000-0000-000000000002'::uuid)
         )
     );
@@ -696,7 +696,7 @@ CREATE POLICY auth_roles_delete_policy ON auth.roles
 CREATE TABLE IF NOT EXISTS auth.user_roles (
     role_id         UUID NOT NULL REFERENCES auth.roles(id) ON DELETE CASCADE,
     user_id         UUID NOT NULL REFERENCES auth.users(id) ON DELETE CASCADE,
-    -- SEC-2.4.7 — junctions carry env_id (bank8 convention): direct
+    -- SEC-2.4.7 - junctions carry env_id (bank8 convention): direct
     -- env-scoped RLS instead of parent-row EXISTS chains.
     env_id          UUID NOT NULL,
     created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
@@ -715,7 +715,7 @@ CREATE POLICY auth_user_roles_select ON auth.user_roles
         AND (
             sentin8_bypass_rls()
             OR (
-                -- SEC-2.4.7 — direct env scoping (junction carries env_id)
+                -- SEC-2.4.7 - direct env scoping (junction carries env_id)
                 auth.user_roles.env_id = sentin8_current_env_id()
                 OR EXISTS (
                     SELECT 1 FROM auth.roles r
@@ -826,7 +826,7 @@ CREATE POLICY auth_groups_delete_policy ON auth.groups
 CREATE TABLE IF NOT EXISTS auth.group_members (
     group_id        UUID NOT NULL REFERENCES auth.groups(id) ON DELETE CASCADE,
     user_id         UUID NOT NULL REFERENCES auth.users(id) ON DELETE CASCADE,
-    -- SEC-2.4.7 — junctions carry env_id (bank8 convention).
+    -- SEC-2.4.7 - junctions carry env_id (bank8 convention).
     env_id          UUID NOT NULL,
     created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
     PRIMARY KEY (group_id, user_id)
@@ -892,7 +892,7 @@ CREATE POLICY auth_group_members_delete ON auth.group_members
 CREATE TABLE IF NOT EXISTS auth.group_roles (
     group_id        UUID NOT NULL REFERENCES auth.groups(id) ON DELETE CASCADE,
     role_id         UUID NOT NULL REFERENCES auth.roles(id) ON DELETE CASCADE,
-    -- SEC-2.4.7 — junctions carry env_id (bank8 convention).
+    -- SEC-2.4.7 - junctions carry env_id (bank8 convention).
     env_id          UUID NOT NULL,
     created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
     PRIMARY KEY (group_id, role_id)
@@ -1005,7 +1005,7 @@ CREATE POLICY auth_client_roles_select_policy ON auth.client_roles
         )
     );
 
--- Write policies (FORCE-RLS — role assignment on service principals).
+-- Write policies (FORCE-RLS - role assignment on service principals).
 DROP POLICY IF EXISTS auth_client_roles_insert_policy ON auth.client_roles;
 CREATE POLICY auth_client_roles_insert_policy ON auth.client_roles
     FOR INSERT WITH CHECK (
@@ -1071,7 +1071,7 @@ CREATE POLICY auth_federated_credentials_select_policy ON auth.federated_credent
         )
     );
 
--- Write policies (FORCE-RLS — federated identity linking/unlinking).
+-- Write policies (FORCE-RLS - federated identity linking/unlinking).
 DROP POLICY IF EXISTS auth_federated_credentials_insert_policy ON auth.federated_credentials;
 CREATE POLICY auth_federated_credentials_insert_policy ON auth.federated_credentials
     FOR INSERT WITH CHECK (
@@ -1133,7 +1133,7 @@ CREATE POLICY auth_audit_select_policy ON auth.audit_events
     );
 
 -- Write policies: audit rows are inserted by handlers (same-transaction
--- audit emission) and revoked by admin flows — FORCE-RLS denies them
+-- audit emission) and revoked by admin flows - FORCE-RLS denies them
 -- without the WITH CHECK clauses.
 DROP POLICY IF EXISTS auth_audit_insert_policy ON auth.audit_events;
 CREATE POLICY auth_audit_insert_policy ON auth.audit_events
@@ -1166,7 +1166,7 @@ CREATE POLICY auth_audit_delete_policy ON auth.audit_events
     );
 
 -- ──────────────────────────────────────────────────────────────────────────
--- Sentin8:Auth security profiles — FAPI compliance levels for platform, org, and env auth
+-- Sentin8:Auth security profiles - FAPI compliance levels for platform, org, and env auth
 -- Each auth instance (platform, org, env) can have a security profile:
 --   - standard: Basic OAuth 2.0 / OIDC
 --   - fapi_1_baseline: FAPI 1.0 Baseline (RFC 9701)
@@ -1193,7 +1193,7 @@ CREATE TABLE IF NOT EXISTS auth.security_profiles (
     updated_at      TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
--- The table UNIQUE treats NULLs as distinct — (platform, NULL, NULL) could
+-- The table UNIQUE treats NULLs as distinct - (platform, NULL, NULL) could
 -- be inserted repeatedly (SEC.PROF.10 conformance caught exactly this);
 -- resolution then picked an arbitrary row via LIMIT 1. NULLS NOT DISTINCT
 -- makes NULLs equal so only one platform row can exist.
@@ -1207,7 +1207,7 @@ ON CONFLICT (scope, org_id, env_id) DO NOTHING;
 
 -- fapi_ciba / fapi_2_message_signing are opt-in per env (SEC.PROF.6): when an
 -- env selects one, the operator INSERTs the env-scoped row via
--- PUT /v1/security-profile (scope='env'). Nothing is seeded here — the
+-- PUT /v1/security-profile (scope='env'). Nothing is seeded here - the
 -- platform default row above is the only automatic value.
 
 CREATE INDEX IF NOT EXISTS idx_auth_security_profiles_scope ON auth.security_profiles (scope);
@@ -1240,10 +1240,10 @@ CREATE POLICY auth_security_profiles_update ON auth.security_profiles
         OR (sentin8_bypass_rls())
     );
 -- DELETE: env rows may be dropped by their own env (profile reset to inherit);
--- platform rows are platform-admin land — no DELETE for them (the admin API
+-- platform rows are platform-admin land - no DELETE for them (the admin API
 -- resets the platform row via UPDATE). SEC-RLS-fix 2026-09-04: the missing
 -- DELETE policy silently blocked every cleanup path (default-deny under
--- FORCE RLS) — caught by the revived auth conformance tests.
+-- FORCE RLS) - caught by the revived auth conformance tests.
 DROP POLICY IF EXISTS auth_security_profiles_delete ON auth.security_profiles;
 CREATE POLICY auth_security_profiles_delete ON auth.security_profiles
     FOR DELETE USING (
@@ -1252,9 +1252,9 @@ CREATE POLICY auth_security_profiles_delete ON auth.security_profiles
     );
 
 -- ──────────────────────────────────────────────────────────────────────────
--- Sentin8:Auth MFA factors — TOTP and (later) WebAuthn/passkey credentials.
+-- Sentin8:Auth MFA factors - TOTP and (later) WebAuthn/passkey credentials.
 -- Story 1.1.16: MFA enrollment and verification (TOTP).
--- Story 1.1.17: passkey enrollment and verification (WebAuthn) — factor_kind='webauthn'.
+-- Story 1.1.17: passkey enrollment and verification (WebAuthn) - factor_kind='webauthn'.
 CREATE TABLE IF NOT EXISTS auth.mfa_factors (
     id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     user_id         UUID NOT NULL REFERENCES auth.users(id) ON DELETE CASCADE,
@@ -1265,7 +1265,7 @@ CREATE TABLE IF NOT EXISTS auth.mfa_factors (
     -- Encrypted TOTP secret (base32 of the HMAC key, encrypted with the
     -- Sentin8:Auth M2M/MFA key). NULL for webauthn (uses `public_key` instead).
     secret_cipher  BYTEA,
-    -- Base32-encoded TOTP secret BEFORE encryption — only populated transiently
+    -- Base32-encoded TOTP secret BEFORE encryption - only populated transiently
     -- during enrollment so the UI can render the QR code. Cleared once
     -- enrollment is confirmed.
     secret_preview  TEXT,
@@ -1332,7 +1332,7 @@ CREATE POLICY auth_mfa_factors_delete ON auth.mfa_factors
         )
     );
 
--- Pending MFA challenge state — short-lived records used to validate the TOTP
+-- Pending MFA challenge state - short-lived records used to validate the TOTP
 -- code submitted to /v1/mfa/verify. The challenge references the factor being
 -- enrolled and expires after 10 minutes.
 CREATE TABLE IF NOT EXISTS auth.mfa_challenges (
@@ -1487,7 +1487,7 @@ CREATE POLICY auth_webauthn_challenges_delete ON auth.webauthn_challenges
     );
 
 -- ──────────────────────────────────────────────────────────────────────────
--- Sentin8:Auth password reset & email verification tokens — stories 1.1.18 and 1.1.19.
+-- Sentin8:Auth password reset & email verification tokens - stories 1.1.18 and 1.1.19.
 CREATE TABLE IF NOT EXISTS auth.tokens (
     id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     user_id         UUID NOT NULL REFERENCES auth.users(id) ON DELETE CASCADE,
@@ -1551,7 +1551,7 @@ CREATE POLICY auth_tokens_delete ON auth.tokens
     );
 
 -- ──────────────────────────────────────────────────────────────────────────
--- Sentin8:Auth enterprise connections — SAML / OIDC identity providers (story 1.1.27).
+-- Sentin8:Auth enterprise connections - SAML / OIDC identity providers (story 1.1.27).
 CREATE TABLE IF NOT EXISTS auth.enterprise_connections (
     id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
 
@@ -1626,7 +1626,7 @@ CREATE POLICY auth_enterprise_conn_delete ON auth.enterprise_connections
         )
     );
 
--- SSO session state — short-lived records used to track the in-flight SSO
+-- SSO session state - short-lived records used to track the in-flight SSO
 -- flow between the IdP redirect and the callback.
 CREATE TABLE IF NOT EXISTS auth.sso_sessions (
     id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -1689,7 +1689,7 @@ CREATE POLICY auth_sso_sessions_delete ON auth.sso_sessions
     );
 
 -- ──────────────────────────────────────────────────────────────────────────
--- Sentin8:Auth actor tokens — support / delegated admin audit (story 1.1.31).
+-- Sentin8:Auth actor tokens - support / delegated admin audit (story 1.1.31).
 -- Records every actor token issuance and revocation for strict audit.
 CREATE TABLE IF NOT EXISTS auth.actor_events (
     id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -1753,11 +1753,11 @@ CREATE POLICY auth_actor_events_update ON auth.actor_events
     );
 
 -- No DELETE policy on auth.actor_events: the table is an append-only
--- audit trail — auth's code paths INSERT/SELECT/UPDATE only, so no
+-- audit trail - auth's code paths INSERT/SELECT/UPDATE only, so no
 -- policy exists to admit DELETE rows (the former bypass-only policy
 -- admitted nothing for any NOBYPASSRLS role and was removed).
 
--- Active revocations — when an actor token is revoked, its jti is recorded
+-- Active revocations - when an actor token is revoked, its jti is recorded
 -- here so verifiers can reject it before natural expiry.
 CREATE TABLE IF NOT EXISTS auth.actor_revocations (
     token_id        UUID PRIMARY KEY,
@@ -1767,7 +1767,7 @@ CREATE TABLE IF NOT EXISTS auth.actor_revocations (
 CREATE INDEX IF NOT EXISTS idx_auth_actor_revocations_token ON auth.actor_revocations (token_id);
 
 -- ──────────────────────────────────────────────────────────────────────────
--- Sentin8:Auth webhooks — outbox + delivery attempts (story 1.1.32).
+-- Sentin8:Auth webhooks - outbox + delivery attempts (story 1.1.32).
 -- Webhooks are emitted by Sentin8:Auth events (user.created, session.started,
 -- password.reset, etc.) and delivered to registered endpoints via the
 -- outbox relay. Each endpoint has a signing secret (HMAC-SHA256).
@@ -1831,7 +1831,7 @@ CREATE POLICY auth_webhook_endpoints_delete ON auth.webhook_endpoints
         )
     );
 
--- Outbox — one row per webhook event to deliver. The relay worker reads
+-- Outbox - one row per webhook event to deliver. The relay worker reads
 -- rows with delivered_at IS NULL, attempts delivery, and records attempts
 -- in auth.webhook_attempts. On success (2xx) the row is marked delivered.
 -- On failure, retry_count increments; after max retries (default 5), the
@@ -1924,7 +1924,7 @@ CREATE POLICY auth_role_nesting_select_policy ON auth.role_nesting
         sentin8_context_initialized()
         AND (
             sentin8_bypass_rls()
-            -- SEC-2.4.7 — the PARENT role's env must match the caller's
+            -- SEC-2.4.7 - the PARENT role's env must match the caller's
             -- env (the previous empty EXISTS made nesting edges visible to
             -- any tenant context).
             OR EXISTS (
@@ -1935,11 +1935,11 @@ CREATE POLICY auth_role_nesting_select_policy ON auth.role_nesting
         )
     );
 
--- Sentin8:Auth signing keys — persists JWT signing keys across restarts.
+-- Sentin8:Auth signing keys - persists JWT signing keys across restarts.
 -- Without this, SigningKeys::generate() creates new random keys at every
 -- startup, invalidating all existing JWTs (access tokens, ID tokens, etc.)
 -- across the entire platform. By persisting the private key material, auth
--- restarts are transparent — existing tokens remain valid until they expire.
+-- restarts are transparent - existing tokens remain valid until they expire.
 --
 -- Key rotation is done by inserting a new row with a new key_id and deleting
 -- the old row (or keeping it for overlap, if graceful rotation is needed).
@@ -1961,10 +1961,10 @@ CREATE TABLE IF NOT EXISTS auth.signing_keys (
 
 ALTER TABLE auth.signing_keys ENABLE ROW LEVEL SECURITY;
 ALTER TABLE auth.signing_keys FORCE ROW LEVEL SECURITY;
--- Platform-global table (no env_id column — the JWKS material serves the
+-- Platform-global table (no env_id column - the JWKS material serves the
 -- whole platform). Admits only the SYSTEM-env tenant context, which auth's
 -- boot sets around load/persist (load_or_generate). Under DBX the auth
--- service connects with its NOBYPASSRLS role — without a policy the boot
+-- service connects with its NOBYPASSRLS role - without a policy the boot
 -- INSERT fails closed and auth crash-loops.
 DROP POLICY IF EXISTS signing_keys_select ON auth.signing_keys;
 CREATE POLICY signing_keys_select ON auth.signing_keys FOR SELECT
@@ -1976,13 +1976,13 @@ CREATE POLICY signing_keys_insert ON auth.signing_keys FOR INSERT
            AND sentin8_current_env_id() = '00000000-0000-0000-0000-000000000002'::uuid);
 
 -- ── FORCE ROW LEVEL SECURITY on all auth tenant tables ─────────────────
--- Story 12.4.36 — RLS is now fully enforced. The Delegation Gateway model
+-- Story 12.4.36 - RLS is now fully enforced. The Delegation Gateway model
 -- means all tokens (user, delegated, M2M) carry the target org/env, so RLS
 -- naturally scopes to the right tenant. No bypass is needed.
 -- Join tables (auth.user_roles, auth.group_members, auth.group_roles)
--- have no org/env columns — they're protected transitively by the parent
+-- have no org/env columns - they're protected transitively by the parent
 -- tables via EXISTS subquery RLS policies (see above).
--- auth.m2m_dcr_credentials is a platform-internal table — no RLS.
+-- auth.m2m_dcr_credentials is a platform-internal table - no RLS.
 
 ALTER TABLE auth.users FORCE ROW LEVEL SECURITY;
 ALTER TABLE auth.sessions FORCE ROW LEVEL SECURITY;
@@ -2009,7 +2009,7 @@ ALTER TABLE auth.webhook_outbox FORCE ROW LEVEL SECURITY;
 -- ── Write policies (SEC-2.4.7) ──────────────────────────────────
 -- Every env-scoped auth table needs INSERT/UPDATE/DELETE policies. With
 -- FORCE ROW LEVEL SECURITY, a table that only has a SELECT policy denies
--- ALL writes by default — the handlers connect as the NOBYPASSRLS app
+-- ALL writes by default - the handlers connect as the NOBYPASSRLS app
 -- role, so sign-ups, session creation, and client registration all
 -- failed with "new row violates row-level security policy". Each policy
 -- allows writes only when the tenant context is initialized and the row's
@@ -2045,7 +2045,7 @@ BEGIN
     END LOOP;
 END $$;
 
--- Users table (env-scoped) — write policy.
+-- Users table (env-scoped) - write policy.
 DROP POLICY IF EXISTS auth_users_write_policy ON auth.users;
 CREATE POLICY auth_users_write_policy ON auth.users
     FOR ALL USING (
@@ -2056,7 +2056,7 @@ CREATE POLICY auth_users_write_policy ON auth.users
         AND (sentin8_bypass_rls() OR env_id = sentin8_current_env_id())
     );
 
--- Roles / groups (env-scoped) — write policies.
+-- Roles / groups (env-scoped) - write policies.
 DROP POLICY IF EXISTS auth_roles_write_policy ON auth.roles;
 CREATE POLICY auth_roles_write_policy ON auth.roles
     FOR ALL USING (
@@ -2076,7 +2076,7 @@ CREATE POLICY auth_groups_write_policy ON auth.groups
         AND (sentin8_bypass_rls() OR env_id = sentin8_current_env_id())
     );
 
--- Role nesting (no env column — gate on the PARENT role's env, matching the
+-- Role nesting (no env column - gate on the PARENT role's env, matching the
 -- select policy's SEC-2.4.7 rule). The nesting edge belongs to the parent
 -- role's tenant; a caller with context on that env may add/remove edges.
 -- The bypass_rls escape hatch remains for platform-internal paths.
@@ -2104,12 +2104,12 @@ CREATE POLICY auth_role_nesting_write_policy ON auth.role_nesting
         )
     );
 
--- Actor revocations (no env column — platform-internal write path).
+-- Actor revocations (no env column - platform-internal write path).
 DROP POLICY IF EXISTS auth_actor_revocations_write_policy ON auth.actor_revocations;
 CREATE POLICY auth_actor_revocations_write_policy ON auth.actor_revocations
     FOR ALL USING (true) WITH CHECK (true);
 
--- Webhook attempts (delivery logs — written by the relay).
+-- Webhook attempts (delivery logs - written by the relay).
 DROP POLICY IF EXISTS auth_webhook_attempts_write_policy ON auth.webhook_attempts;
 CREATE POLICY auth_webhook_attempts_write_policy ON auth.webhook_attempts
     FOR ALL USING (true) WITH CHECK (true);
@@ -2129,22 +2129,22 @@ GRANT SELECT, INSERT, UPDATE, DELETE ON
     auth.webhook_attempts, auth.role_nesting, auth.signing_keys
     TO sentin8_auth_service;
 
--- Cross-service grants — RETIRED (SBI-SYS-3 / SBI, architecture-principles
+-- Cross-service grants - RETIRED (SBI-SYS-3 / SBI, architecture-principles
 -- §6.6a): sys and app provision membership rows through AUTH's provisioning
 -- API (`/v1/admin/provision/*`, SBI-AUTH-6) with their M2M
--- `sentin8:auth:admin:write` clients — no direct INSERTs into auth.* from
+-- `sentin8:auth:admin:write` clients - no direct INSERTs into auth.* from
 -- any other service. Auth's tables are read/written by `sentin8_auth_service`
 -- only (plus the dash/CLI admin surface under Shield).
 
--- M2M DCR credential storage — AUTH-PRIVATE (SBI-AUTH-4, architecture-
+-- M2M DCR credential storage - AUTH-PRIVATE (SBI-AUTH-4, architecture-
 -- principles §6.6a): credentials persist via the secrets client now
--- (SBI-AUTH-3 — `dcr/{service_name}/{auth_base}` + local file cache);
+-- (SBI-AUTH-3 - `dcr/{service_name}/{auth_base}` + local file cache);
 -- the table is retained only for auth's OWN workloads. The former
 -- cross-service GRANT block is retired; only `sentin8_auth_service` (the
 -- implicit owner via the service's own DSN) touches it.
 -- ── Seed data (bootstrap roles, groups, clients, admin user) ──
 
--- hash unless you regenerate it with the same crate version — a stale or
+-- hash unless you regenerate it with the same crate version - a stale or
 -- hand-edited hash will cause sign-in to silently fail with 401.
 INSERT INTO auth.users (id, env_id, email, password_hash, first_name, last_name, status, email_verified, mfa_enabled)
 VALUES (
@@ -2159,7 +2159,7 @@ VALUES (
     false
 )
 -- Email is now per-tenant unique (sentin8_auth_users_org_env_email_key).
--- The admin is in System Env — match that pair.
+-- The admin is in System Env - match that pair.
 ON CONFLICT (env_id, email) DO UPDATE SET
     status = EXCLUDED.status;
 
@@ -2175,7 +2175,7 @@ ON CONFLICT (env_id, email) DO UPDATE SET
 -- nest the service-admin roles as children, inheriting their scopes
 -- via the auth.role_nesting table.
 --
--- Hierarchy (uniform RBAC naming, architecture-principles §6.0b — every
+-- Hierarchy (uniform RBAC naming, architecture-principles §6.0b - every
 -- name starts with its vertical; the platform vertical uses `sentin8:`):
 --   sentin8:sys:admin ─┬── sentin8:sys:admin, sentin8:dash:admin, sentin8:auth:admin, sentin8:app:admin
 --                      ├── bank8:ledger:admin, bank8:payments:admin, bank8:fdx:admin
@@ -2251,7 +2251,7 @@ INSERT INTO auth.roles (id, env_id, name, permissions)
 VALUES (
     gen_random_uuid(), '00000000-0000-0000-0000-000000000002',
     -- All six storage scopes (storage design §6): handlers gate delete/move/
-    -- copy on `sentin8:storage:env:admin` / `sentin8:storage:org:admin` — read/write alone
+    -- copy on `sentin8:storage:env:admin` / `sentin8:storage:org:admin` - read/write alone
     -- would 403 every destructive operation.
     'sentin8:storage:admin', ARRAY['sentin8:storage:admin', 'sentin8:storage:env:read', 'sentin8:storage:env:write',
                            'sentin8:storage:env:admin', 'sentin8:storage:org:read', 'sentin8:storage:org:write',
@@ -2296,7 +2296,7 @@ VALUES (
 -- exist and be nested under sys:admin or even the platform super-user gets
 -- 403 (the live role closure never contains the scope). Permissions are the
 -- exact action set of the enforced scope-mirror; the scope is intentionally
--- NOT in the sys scope catalog — machine-operations scopes are minted only
+-- NOT in the sys scope catalog - machine-operations scopes are minted only
 -- through the role closure, never requested at the front door.
 INSERT INTO auth.roles (id, env_id, name, permissions)
 VALUES (
@@ -2325,7 +2325,7 @@ WHERE p.name = 'sentin8:sys:admin'
                   'sentin8:captain:admin')
 ON CONFLICT DO NOTHING;
 
--- NOTE: sys:admin nesting is dynamic — vertical service-admin roles
+-- NOTE: sys:admin nesting is dynamic - vertical service-admin roles
 -- (e.g. bank8:ledger:admin, hotel8:pms:admin) are added to the nesting at
 -- runtime by `sentin8-cli vertical enroll` which inserts into
 -- auth.role_nesting for each module's admin_scopes. The platform
@@ -2394,7 +2394,7 @@ WHERE name = 'sentin8-admin' OR name NOT LIKE 'sentin8:%';
 -- ── sentin8:sys:users role (auto-assigned at sign-up for platform operators) ──
 -- Every new platform operator who signs up is automatically added to this
 -- role so they get the basic scopes needed for self-service (create org,
--- read dash, etc.). This role does NOT include org-admin scopes — those
+-- read dash, etc.). This role does NOT include org-admin scopes - those
 -- are granted by the `sentin8:org:admin` role which is auto-assigned when the
 -- operator creates an org.
 INSERT INTO auth.roles (id, env_id, name, permissions)
@@ -2451,7 +2451,7 @@ WHERE p.name = 'sentin8:org:admin'
                   'sentin8:db:admin', 'sentin8:storage:admin', 'sentin8:bus:admin')
 ON CONFLICT DO NOTHING;
 
--- NOTE: org-admin nesting is dynamic — vertical service-admin roles are
+-- NOTE: org-admin nesting is dynamic - vertical service-admin roles are
 -- added at runtime by `sentin8-cli vertical enroll`.
 
 -- ── sentin8:org:view role (read-only org access) ─────────────────────
@@ -2486,7 +2486,7 @@ WHERE p.name = 'sentin8:env:admin'
                   'sentin8:db:admin', 'sentin8:storage:admin', 'sentin8:bus:admin')
 ON CONFLICT DO NOTHING;
 
--- NOTE: env-admin nesting is dynamic — vertical service-admin roles are
+-- NOTE: env-admin nesting is dynamic - vertical service-admin roles are
 -- added at runtime by `sentin8-cli vertical enroll`.
 
 -- ── sentin8:env:view role (read-only environment access) ─────────────
@@ -2506,7 +2506,7 @@ ON CONFLICT (env_id, name) DO UPDATE SET
 
 -- ── Sentin8:Dash OAuth client ──────────────────────────────────────────────────
 -- Platform-level PKCE public client for the Sentin8:Dash dashboard.
--- The client_id is `dash` — the Flutter app passes this during the
+-- The client_id is `dash` - the Flutter app passes this during the
 -- authorization code flow. The redirect_uri uses the BFF host since
 -- Sentin8:BFF handles the callback server-side before redirecting
 -- to the Sentin8:Dash frontend.
@@ -2557,11 +2557,11 @@ ON CONFLICT (client_id) DO UPDATE SET
 --
 -- Platform-level PKCE public client for the sentin8-cli. Uses the OAuth 2.0
 -- Device Authorization Grant (RFC 8628): `POST /oauth/device` resolves the
--- client by id (no secret — token_endpoint_auth_method = 'none'), and token
+-- client by id (no secret - token_endpoint_auth_method = 'none'), and token
 -- polling is bound to the same client_id. redirect_uris is empty (no browser
 -- redirect in the device flow). The grant merges the requested scope with
 -- the signing user's role scopes, so the registered scope list stays
--- minimal — CLI commands request the scope each command needs.
+-- minimal - CLI commands request the scope each command needs.
 INSERT INTO auth.oauth_clients (env_id, client_id, client_name, redirect_uris, grant_types, response_types, token_endpoint_auth_method, scopes, consent_required, dpop_exempt)
 VALUES (
     '00000000-0000-0000-0000-000000000002',
@@ -2600,7 +2600,7 @@ CREATE TABLE IF NOT EXISTS auth.outbox (
     relayed_at      TIMESTAMPTZ,
     relay_attempts  INT NOT NULL DEFAULT 0,
     -- WARN-5 (bus DESIGN §4.3, SDK outbox DDL): the retryable-failure
-    -- backoff column — a 429/5xx/transport failure parks the row until
+    -- backoff column - a 429/5xx/transport failure parks the row until
     -- this timestamp; the drain predicate skips future rows so a burst
     -- backlog drains at the rate limit instead of burning the retry
     -- budget. Matches the shared outbox DDL in the SDK outbox crate.
@@ -2668,7 +2668,7 @@ CREATE POLICY audit_journal_dml ON auth.audit_journal
 -- ── Local post_outbox (DBX-POST-3) ────────────────────────────────────────
 -- Queue for Sentin8:Post notifications (welcome emails, resets, MFA alerts).
 -- The auth post pusher drains it to POST post /v1/send (M2M,
--- sentin8:post:write) — no direct post.inbox writes.
+-- sentin8:post:write) - no direct post.inbox writes.
 CREATE TABLE IF NOT EXISTS auth.post_outbox (
     id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     env_id          UUID NOT NULL,
@@ -2694,7 +2694,7 @@ CREATE POLICY post_outbox_dml ON auth.post_outbox
     WITH CHECK (sentin8_context_initialized() AND env_id = sentin8_current_env_id());
 
 
--- ── Schema grants (service-owned — the 2026-10-03 ownership pass) ─────
+-- ── Schema grants (service-owned - the 2026-10-03 ownership pass) ─────
 -- This service's own schema: USAGE for its role (platform.sql no longer
 -- seeds per-service USAGE; the service declares it here).
 GRANT USAGE ON SCHEMA auth TO sentin8_auth_service;

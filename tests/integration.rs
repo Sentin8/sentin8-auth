@@ -10,12 +10,12 @@
 //! Set `DATABASE_URL` or `SENTIN8_AUTH_DB_DSN` to point to a test database.
 //! The repo `.env` is loaded explicitly here: cargo test does NOT run the
 // binary's dotenvy step (that lives in main), so without this the harness
-//! silently falls back to `default_database_url` (the `sentin8_app` role —
+//! silently falls back to `default_database_url` (the `sentin8_app` role -
 //! no search_path, no grants) and every DB-backed test 500s with
 //! `relation "oauth_clients" does not exist`.
 //!
 //! Runtime-skip gating (sentin8-testing strategy): each helper returns
-//! `None` when PostgreSQL is unreachable — the test prints one skip line and
+//! `None` when PostgreSQL is unreachable - the test prints one skip line and
 //! passes. Run the full suite with `make test-rust-integration` (from repo
 //! root) after `make infra-up`.
 
@@ -31,7 +31,7 @@ use sentin8_auth_server::{build_router, AppState, SigningKeys, TestConfig};
 
 /// Spin up an in-process Auth server with a test database pool.
 
-/// A unique client IP for a test — avoids cross-test/cross-run bot-protection
+/// A unique client IP for a test - avoids cross-test/cross-run bot-protection
 /// rate limits (per-IP 10/min on the shared Valkey).
 fn unique_ip() -> String {
     let n = uuid::Uuid::new_v4().as_u128() % 254;
@@ -39,14 +39,14 @@ fn unique_ip() -> String {
 }
 
 /// Probe whether the test database is reachable. One connection attempt per
-/// process — the result is cached so all tests print at most one skip line.
+/// process - the result is cached so all tests print at most one skip line.
 async fn db_reachable() -> bool {
     use tokio::sync::OnceCell;
     static CACHE: OnceCell<bool> = OnceCell::const_new();
     CACHE
         .get_or_init(|| async {
             // cargo test does NOT run the binary's dotenvy step (it lives in
-            // main), so the repo .env must be loaded HERE — otherwise the
+            // main), so the repo .env must be loaded HERE - otherwise the
             // harness silently falls back to `default_database_url` (the
             // `sentin8_app` role: no search_path, no grants) and every
             // DB-backed test 500s with `relation "..." does not exist`.
@@ -59,7 +59,7 @@ async fn db_reachable() -> bool {
                 }
                 Err(e) => {
                     eprintln!(
-                        "skipping DB-backed auth tests — PostgreSQL unreachable ({}): {e}",
+                        "skipping DB-backed auth tests - PostgreSQL unreachable ({}): {e}",
                         config.database_url
                     );
                     false
@@ -80,7 +80,7 @@ async fn spawn_server() -> Option<(axum::Router, PgPool)> {
     Some((app, pool))
 }
 
-/// — test server that also exposes its AppState so tests can
+/// - test server that also exposes its AppState so tests can
 /// mint admin tokens (the admin API now requires an admin scope).
 async fn spawn_server_with_state() -> Option<(axum::Router, PgPool, AppState)> {
     if !db_reachable().await {
@@ -107,7 +107,7 @@ async fn spawn_server_with_state() -> Option<(axum::Router, PgPool, AppState)> {
     Some((app, pool, state))
 }
 
-/// — mint a platform-admin access token for admin API tests.
+/// - mint a platform-admin access token for admin API tests.
 fn admin_token(state: &AppState) -> String {
     use sentin8_auth_server::jwt::AuthClaims;
     let claims = AuthClaims::access(
@@ -200,7 +200,7 @@ async fn users_sign_up_then_sign_in_returns_tokens() {
         .unwrap();
     let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
     assert_eq!(json["email"], email);
-    // (The `realm` claim was removed — tokens are env-scoped via env_id.)
+    // (The `realm` claim was removed - tokens are env-scoped via env_id.)
 }
 
 #[tokio::test]
@@ -238,7 +238,7 @@ async fn users_sign_up_duplicate_email_conflicts() {
             .await
             .unwrap();
         panic!(
-            "first signup failed: {status} — body: {}",
+            "first signup failed: {status} - body: {}",
             String::from_utf8_lossy(&b)
         );
     }
@@ -261,14 +261,14 @@ async fn users_sign_up_duplicate_email_conflicts() {
     assert_eq!(response.status(), StatusCode::CONFLICT);
 }
 
-/// — the same email can sign up on multiple tenants
+/// - the same email can sign up on multiple tenants
 /// (e.g. alice@a.com registers separately on iBank and on iFintech).
 /// Email is unique only within (org_id, env_id), not globally.
 ///
 /// Sys-schema fixtures (organizations/environments) are SEEDING, not what
 /// the test exercises: the service role holds SELECT-only on sys.* by
-/// design (production org creation goes through sys's API — architecture
-/// ), so the fixture uses the superuser DSN — never the harness pool.
+/// design (production org creation goes through sys's API - architecture
+/// ), so the fixture uses the superuser DSN - never the harness pool.
 async fn seed_tenant_fixture(
     super_dsn: &str,
     org_id: uuid::Uuid,
@@ -309,12 +309,12 @@ async fn users_sign_up_same_email_across_tenants_isolated() {
         return;
     };
 
-    // Create two distinct tenants via direct SQL — the test doesn't
+    // Create two distinct tenants via direct SQL - the test doesn't
     // depend on auth. These sys-schema fixtures (organizations/environments)
     // are SEEDING, not what the test exercises: the service role holds
     // SELECT-only on sys.* by design (production org creation goes through
     // sys's API, architecture ), so the fixture uses the superuser
-    // DSN (DATABASE_URL) — never the harness pool — and sets tenant
+    // DSN (DATABASE_URL) - never the harness pool - and sets tenant
     // context per statement .
     let super_dsn = std::env::var("DATABASE_URL")
         .or_else(|_| std::env::var("SENTIN8_TEST_FIXTURE_DSN"))
@@ -336,7 +336,7 @@ async fn users_sign_up_same_email_across_tenants_isolated() {
         "password": "test_password_123",
     });
 
-    // First sign-up on tenant A — should succeed.
+    // First sign-up on tenant A - should succeed.
     let resp_a = app
         .clone()
         .oneshot(
@@ -358,7 +358,7 @@ async fn users_sign_up_same_email_across_tenants_isolated() {
         "tenant A signup should succeed"
     );
 
-    // Second sign-up on tenant B with the SAME email — should also
+    // Second sign-up on tenant B with the SAME email - should also
     // succeed (per-tenant uniqueness, not global).
     let resp_b = app
         .clone()
@@ -382,9 +382,9 @@ async fn users_sign_up_same_email_across_tenants_isolated() {
     );
 
     // Verify both users exist in users and are scoped to their tenants.
-    // (org_id was removed from users — verify via the env → org join.)
+    // (org_id was removed from users - verify via the env → org join.)
     // RLS: read each tenant's user under that tenant's context (same-conn).
-    // The explicit `u.env_id = $2` filter is defense-in-depth ( rule 4) —
+    // The explicit `u.env_id = $2` filter is defense-in-depth ( rule 4) -
     // correct under the NOBYPASSRLS service role AND under a superuser test
     // connection where RLS is inert.
     let mut users: Vec<(uuid::Uuid, uuid::Uuid, uuid::Uuid, String)> = Vec::new();
@@ -396,7 +396,7 @@ async fn users_sign_up_same_email_across_tenants_isolated() {
             .await;
         let mut rows = sqlx::query_as::<_, (uuid::Uuid, uuid::Uuid, uuid::Uuid, String)>(
             // sys.environments is QUALIFIED: the harness pool runs under the
-            // service role whose search_path is `auth, public` (no `sys`) —
+            // service role whose search_path is `auth, public` (no `sys`) -
             // and the role holds the declared SELECT on sys.* only.
             "SELECT u.id, e.org_id, u.env_id, u.email
                FROM users u
@@ -636,9 +636,9 @@ async fn admin_users_list_requires_authentication() {
         .await
         .unwrap();
 
-    // — unauthenticated admin access is REJECTED. (The old
+    // - unauthenticated admin access is REJECTED. (The old
     // test asserted 200 with the comment "when auth middleware is added,
-    // this will be 401" — that day has arrived.)
+    // this will be 401" - that day has arrived.)
     assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
 }
 
@@ -685,13 +685,13 @@ async fn admin_users_create_then_list_roundtrip() {
             .await
             .unwrap();
         panic!(
-            "admin create user failed: {status} — body: {}",
+            "admin create user failed: {status} - body: {}",
             String::from_utf8_lossy(&b)
         );
     }
     assert_eq!(response.status(), StatusCode::CREATED);
 
-    // List users — should contain the new user.
+    // List users - should contain the new user.
     let response = app
         .clone()
         .oneshot(
@@ -709,7 +709,7 @@ async fn admin_users_create_then_list_roundtrip() {
             .await
             .unwrap();
         panic!(
-            "admin list failed: {status} — body: {}",
+            "admin list failed: {status} - body: {}",
             String::from_utf8_lossy(&b)
         );
     }
@@ -747,7 +747,7 @@ async fn branding_discovery_serves_org_theme() {
         .unwrap();
     let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
     // theme_mode defaults to "dark" when a branding row exists; with no
-    // branding row at all the value is null — accept both.
+    // branding row at all the value is null - accept both.
     assert!(json["themeMode"].is_string() || json["themeMode"].is_null());
 }
 
@@ -942,7 +942,7 @@ async fn consent_bypass_client_consent_required_true_serves_consent() {
     let client_id = json["client_id"].as_str().unwrap().to_string();
 
     // Call /oauth/authorize with PAR (Pushed Authorization Request).
-    // RFC 9126 — PAR is form-encoded, not JSON.
+    // RFC 9126 - PAR is form-encoded, not JSON.
     let form_body = format!(
         "response_type=code&client_id={}&redirect_uri={}&scope={}&state={}&code_challenge={}&code_challenge_method=S256",
         urlencode(&client_id),
@@ -971,21 +971,21 @@ async fn consent_bypass_client_consent_required_true_serves_consent() {
             .await
             .unwrap();
         panic!(
-            "PAR failed: {status} — body: {}",
+            "PAR failed: {status} - body: {}",
             String::from_utf8_lossy(&b)
         );
     }
-    // RFC 9126 — the PAR response is 200 OK (201 was never the contract).
+    // RFC 9126 - the PAR response is 200 OK (201 was never the contract).
     let par_body = axum::body::to_bytes(par_resp.into_body(), 1024 * 1024)
         .await
         .unwrap();
     let par_json: serde_json::Value = serde_json::from_slice(&par_body).unwrap();
     let request_uri = par_json["request_uri"].as_str().unwrap().to_string();
 
-    // Call /oauth/authorize with the request_uri — should redirect to sign-in
+    // Call /oauth/authorize with the request_uri - should redirect to sign-in
     // with consent_required=true in the URL.
-    // RFC 9126 — the authorize request carries client_id + request_uri
-    // (SEC- — they must match; the old flow overrode silently).
+    // RFC 9126 - the authorize request carries client_id + request_uri
+    // (SEC- - they must match; the old flow overrode silently).
     let auth_resp = app
         .clone()
         .oneshot(
@@ -1008,7 +1008,7 @@ async fn consent_bypass_client_consent_required_true_serves_consent() {
             .await
             .unwrap();
         panic!(
-            "authorize failed: {status} — body: {}",
+            "authorize failed: {status} - body: {}",
             String::from_utf8_lossy(&b)
         );
     }
@@ -1065,7 +1065,7 @@ async fn consent_bypass_client_consent_required_false_skips_consent() {
     assert_eq!(json["consent_required"], false);
     let client_id = json["client_id"].as_str().unwrap().to_string();
 
-    // PAR request — RFC 9126 form-encoded (not JSON).
+    // PAR request - RFC 9126 form-encoded (not JSON).
     let form_body = format!(
         "response_type=code&client_id={}&redirect_uri={}&scope={}&state={}&code_challenge={}&code_challenge_method=S256",
         urlencode(&client_id),
@@ -1087,8 +1087,8 @@ async fn consent_bypass_client_consent_required_false_skips_consent() {
         .await
         .unwrap();
 
-    // RFC 9126 — the PAR endpoint answers 201 Created (the resource
-    // — the request_uri — was created).
+    // RFC 9126 - the PAR endpoint answers 201 Created (the resource
+    // - the request_uri - was created).
     assert_eq!(par_resp.status(), StatusCode::CREATED);
     let par_body = axum::body::to_bytes(par_resp.into_body(), 1024 * 1024)
         .await
@@ -1097,7 +1097,7 @@ async fn consent_bypass_client_consent_required_false_skips_consent() {
     let request_uri = par_json["request_uri"].as_str().unwrap().to_string();
 
     // /oauth/authorize should redirect with consent_required=false. The
-    // request carries client_id + request_uri (RFC 9126 — client binding).
+    // request carries client_id + request_uri (RFC 9126 - client binding).
     let auth_resp = app
         .clone()
         .oneshot(
@@ -1247,11 +1247,11 @@ fn urlencode(s: &str) -> String {
         .collect()
 }
 
-// ── — certificate-bound DCR scope gate (auth design
+// ── - certificate-bound DCR scope gate (auth design
 // target state) ─────────────────────────────────────────────────────────
 
 /// POST /oauth/register with `client_credentials` + platform scopes and a
-/// certificate CN that has NO grant row: rejected with 400 (fail-closed —
+/// certificate CN that has NO grant row: rejected with 400 (fail-closed -
 /// tests provision exactly what they exercise).
 #[tokio::test]
 async fn dcr_m2m_platform_scope_rejected_without_grant() {
@@ -1289,7 +1289,7 @@ async fn dcr_m2m_platform_scope_rejected_without_grant() {
 
 /// POST /oauth/register with `client_credentials` + platform scopes and a
 /// cert whose CN HAS a grant row → accepted. The test seeds its own grant
-/// row (no scout rows, no env fallback — is fail-closed in every
+/// row (no scout rows, no env fallback - is fail-closed in every
 /// environment; tests provision exactly what they exercise).
 #[tokio::test]
 async fn dcr_m2m_platform_scope_granted_thumbprint_accepted() {
@@ -1297,11 +1297,11 @@ async fn dcr_m2m_platform_scope_granted_thumbprint_accepted() {
         return;
     };
     // Seed a grant row for this test's workload CN (unique per run). The
-    // grant is keyed by service_name — the cert Subject CN the gate matches.
+    // grant is keyed by service_name - the cert Subject CN the gate matches.
     // SEEDING, not what the test exercises: the service role holds
     // SELECT-only on auth.m2m_scope_grants by design (the gate reads; rows
     // are provisioned by `vertical enroll`), so the fixture uses the
-    // superuser DSN (DATABASE_URL) — never the harness pool.
+    // superuser DSN (DATABASE_URL) - never the harness pool.
     let workload = format!("gate-granted-{}", uuid::Uuid::new_v4().simple());
     let scopes: Vec<String> = vec!["sentin8:sys:instances:read".into()];
     let super_dsn = std::env::var("DATABASE_URL")
@@ -1343,7 +1343,7 @@ async fn dcr_m2m_platform_scope_granted_thumbprint_accepted() {
                 )
                 .header(
                     "x-sentin8-client-cert-subject",
-                    // The TLS layer reports the full CN — Acme mints
+                    // The TLS layer reports the full CN - Acme mints
                     // `CN=m2m-{workload}`; the gate strips the reserved
                     // `m2m-` prefix before matching the grant row.
                     format!("m2m-{workload}"),
@@ -1410,7 +1410,7 @@ async fn dcr_m2m_update_scope_escalation_rejected() {
     let Some((app, _pool, _state)) = spawn_server_with_state().await else {
         return;
     };
-    // 1. Register an OIDC-only interactive client (no gate — baseline only).
+    // 1. Register an OIDC-only interactive client (no gate - baseline only).
     let dcr_body = serde_json::json!({
         "client_name": format!("escalate-{}", uuid::Uuid::new_v4().simple()),
         "redirect_uris": ["https://app.example.com/callback"],
@@ -1471,7 +1471,7 @@ async fn dcr_m2m_update_scope_escalation_rejected() {
 }
 
 /// POST /oauth/register interactive client with platform scopes in `scope`:
-/// NOT gated (interactive clients keep the RFC 7591 default — the scopes are
+/// NOT gated (interactive clients keep the RFC 7591 default - the scopes are
 /// recorded but the client cannot use them without a user grant flow).
 #[tokio::test]
 async fn dcr_interactive_client_platform_scope_not_gated() {
@@ -1517,7 +1517,7 @@ fn seeded_auth_engine() -> std::sync::Arc<sentin8_auth_server::policy::Engine> {
     let engine = sentin8_auth_server::policy::Engine::new("sentin8:auth");
     let record = PolicySetRecord {
         id: uuid::Uuid::nil(),
- // The engine evaluates per-request env — seed under the SYSTEM env
+ // The engine evaluates per-request env - seed under the SYSTEM env
  // (the env admin tokens in these tests carry).
         env_id: uuid::Uuid::parse_str("00000000-0000-0000-0000-000000000002")
             .expect("static uuid"),

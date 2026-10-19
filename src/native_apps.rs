@@ -3,7 +3,7 @@
 // SPDX-FileCopyrightText: Copyright Contributors to the Sentin8:Auth
 // SPDX-License-Identifier: Apache-2.0
 
-//! OAuth 2.0 for Native Apps — RFC 8252 .
+//! OAuth 2.0 for Native Apps - RFC 8252 .
 //!
 //! Native apps (mobile, desktop, CLI) must use PKCE and one of these
 //! redirect_uri types:
@@ -40,7 +40,7 @@ fn parse_http_uri(uri: &str) -> Option<(String, String, Option<u16>)> {
         None => (after_scheme, "/"),
     };
     let (host, port) = if authority.starts_with('[') {
-        // IPv6 — [::1]:port or [::1]
+        // IPv6 - [::1]:port or [::1]
         {
             let end = authority.find(']')?;
             let h = &authority[..=end];
@@ -61,10 +61,10 @@ fn parse_http_uri(uri: &str) -> Option<(String, String, Option<u16>)> {
 /// Validate a redirect URI for native apps (RFC 8252 ).
 ///
 /// Native app redirect URIs must be one of:
-/// 1. A custom scheme (non-`http`/`https`) — e.g. `com.example.app:/oauth2redirect`.
+/// 1. A custom scheme (non-`http`/`https`) - e.g. `com.example.app:/oauth2redirect`.
 ///
 /// Must use the app's reverse-DNS-style scheme. NOT `http` or `https`.
-/// 2. A loopback redirect — `http://.1:{port}/...` or `http://[::1]:{port}/...`.
+/// 2. A loopback redirect - `http://.1:{port}/...` or `http://[::1]:{port}/...`.
 ///
 /// Any port is accepted (loopback equivalence).
 ///
@@ -73,11 +73,11 @@ pub fn is_valid_native_redirect_uri(uri: &str) -> bool {
     let Some(scheme) = parse_scheme(uri) else {
         return false;
     };
-    // Custom scheme — non-http/non-https.
+    // Custom scheme - non-http/non-https.
     if scheme != "http" && scheme != "https" {
         return true;
     }
-    // Loopback redirect — must be http on.1 or [::1] or localhost.
+    // Loopback redirect - must be http on.1 or [::1] or localhost.
     if scheme == "http" {
         if let Some((host, _path, _port)) = parse_http_uri(uri) {
             if host == "127.0.0.1" || host == "localhost" || host == "[::1]" {

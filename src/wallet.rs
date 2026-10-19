@@ -3,22 +3,22 @@
 // SPDX-FileCopyrightText: Copyright Contributors to the Sentin8:Auth
 // SPDX-License-Identifier: Apache-2.0
 
-//! EUDI wallet integration — OID4VP sign-in.
+//! EUDI wallet integration - OID4VP sign-in.
 //!
 //! Single-identity-plane invariants :
-//! 1. Wallet verification replaces **authentication only** — after a
+//! 1. Wallet verification replaces **authentication only** - after a
 //! successful presentation, Auth issues its own session + tokens.
 //! 2. Wallet keys are verified against the connection's trusted issuers,
 //! never added to Auth's JWKS.
 //!
 //! Endpoints (EUDI.1.3 + EUDI.):
-//! - `GET /oauth/authorize?prompt=wallet` — builds the OID4VP authorization
+//! - `GET /oauth/authorize?prompt=wallet` - builds the OID4VP authorization
 //! request as a signed request object + `openid4vp://` deep link.
-//! - `POST /oauth/vp/response` — wallet `direct_post` callback: verifies the
+//! - `POST /oauth/vp/response` - wallet `direct_post` callback: verifies the
 //! presentation (EUDI.1.1 `sd_jwt` module), checks trusted issuer + LoA
 //! (EUDI.), find-or-creates the user ( federation pattern), and
 //! issues the standard session + auth code.
-//! - `GET /v1/auth/wallet/metadata` — public wallet-facing metadata.
+//! - `GET /v1/auth/wallet/metadata` - public wallet-facing metadata.
 
 use axum::extract::{Path, Query, State};
 use axum::http::{HeaderMap, StatusCode};
@@ -31,7 +31,7 @@ use uuid::Uuid;
 
 use crate::handlers::AppState;
 
-// ── EUDI. — eudi_wallet enterprise-connection config ───────────────
+// ── EUDI. - eudi_wallet enterprise-connection config ───────────────
 
 /// Extended metadata for a `eudi_wallet` enterprise connection (stored in
 /// `enterprise_connections.config` JSONB).
@@ -44,7 +44,7 @@ pub struct WalletConnectionConfig {
     #[serde(default)]
     /// The trusted issuers.
     pub trusted_issuers: Vec<String>,
-    /// DIF Presentation Exchange `presentation_definition` — which
+    /// DIF Presentation Exchange `presentation_definition` - which
     /// credentials the env demands at sign-in.
     #[serde(default)]
     /// The required credentials.
@@ -119,7 +119,7 @@ fn trusted_jwks(cfg: &WalletConnectionConfig) -> Vec<(String, Vec<serde_json::Va
         .collect()
 }
 
-// ── EUDI. — OID4VP sign-in flow ─────────────────────────────────────
+// ── EUDI. - OID4VP sign-in flow ─────────────────────────────────────
 
 const VP_PENDING_TTL_SECS: u64 = 600;
 
@@ -138,7 +138,7 @@ pub struct WalletAuthorizeQuery {
     pub nonce: Option<String>,
 }
 
-/// `GET /oauth/authorize?prompt=wallet` — build the OID4VP authorization
+/// `GET /oauth/authorize?prompt=wallet` - build the OID4VP authorization
 /// request as a signed request object + `openid4vp://` deep link.
 /// Handle wallet authorize.
 #[utoipa::path(
@@ -165,7 +165,7 @@ pub async fn wallet_authorize(
         ));
     };
 
-    // Single-use verifier challenge — the wallet echoes it in the KB-JWT.
+    // Single-use verifier challenge - the wallet echoes it in the KB-JWT.
     let nonce = Uuid::new_v4().to_string();
     let issuer = state.config.issuer.clone();
     let request = serde_json::json!({
@@ -176,7 +176,7 @@ pub async fn wallet_authorize(
         "presentation_definition": cfg.required_credentials,
         "redirect_uri": format!("{issuer}/oauth/vp/response"),
     });
-    // JAR-style signed request object — the wallet verifies Auth's
+    // JAR-style signed request object - the wallet verifies Auth's
     // signature against the platform JWKS (OID4VP ).
     let request_object = state.keys.sign_value(&request).map_err(|e| {
         (
@@ -227,7 +227,7 @@ pub struct VpResponseRequest {
     pub presentation_submission: Option<serde_json::Value>,
 }
 
-/// `POST /oauth/vp/response` — the wallet's `direct_post` callback.
+/// `POST /oauth/vp/response` - the wallet's `direct_post` callback.
 /// Handle vp response.
 #[utoipa::path(
     post,
@@ -284,7 +284,7 @@ pub async fn vp_response(
         ));
     };
 
-    // ── EUDI. — SD-JWT verification ────────────────────────────────
+    // ── EUDI. - SD-JWT verification ────────────────────────────────
     let presentation: &str = &req.vp_token;
     // Trusted issuer keys from the connection config (EUDI trust-list
     // resolution is ; uses operator-provisioned JWKS).
@@ -324,7 +324,7 @@ pub async fn vp_response(
         ));
     }
 
-    // ── EUDI. — assurance mapping ──────────────────────────────────
+    // ── EUDI. - assurance mapping ──────────────────────────────────
     let presented_loa = verified
         .claims
         .get("acr")
@@ -364,7 +364,7 @@ pub async fn vp_response(
            "scope": "openid profile email",
            "user_id": user.id.to_string(),
            "env_id": pending_env.to_string(),
-    // EUDI. — assurance claims carried into the ID token.
+    // EUDI. - assurance claims carried into the ID token.
            "acr": acr,
            "amr": amr,
            "nonce": pending.get("nonce"),
@@ -393,7 +393,7 @@ struct WalletUser {
 }
 
 /// Find-or-create the user from the wallet's PID claims
-/// (`external_eudi` identifier — same shape as SSO find-or-create).
+/// (`external_eudi` identifier - same shape as SSO find-or-create).
 async fn find_or_create_wallet_user(
     state: &AppState,
     env_id: Uuid,
@@ -485,7 +485,7 @@ async fn fetch_status_list_doc(_valkey_url: &str, uri: &str) -> Result<serde_jso
 /// Fetch status bit.
 pub async fn fetch_status_bit(valkey_url: &str, uri: &str, entry: u32) -> Result<bool, String> {
     let cache_key = format!("auth:statuslist:{}", sha_hex(uri));
-    // GLIDE: the factory returns the connected client — a cache read is
+    // GLIDE: the factory returns the connected client - a cache read is
     // one typed GET.
     if let Ok(conn) = sentin8::middleware::valkey_client(valkey_url, "sentin8:auth").await {
         use glide::AsyncCommands as _;
@@ -510,9 +510,9 @@ fn sha_hex(input: &str) -> String {
     d.iter().map(|b| format!("{b:02x}")).collect()
 }
 
-// ── EUDI. — wallet-facing metadata ──────────────────────────────────
+// ── EUDI. - wallet-facing metadata ──────────────────────────────────
 
-/// `GET /v1/auth/wallet/metadata` — public wallet metadata (formats, trusted
+/// `GET /v1/auth/wallet/metadata` - public wallet metadata (formats, trusted
 /// issuers, the required presentation definition, the response endpoint).
 /// Handle wallet metadata.
 #[utoipa::path(
@@ -548,9 +548,9 @@ pub async fn wallet_metadata(
         "vp_response_endpoint": format!("{}/oauth/vp/response", state.config.issuer),
     }))
 }
-// ── EUDI. — OID4VCI credential issuance ───────────────────
+// ── EUDI. - OID4VCI credential issuance ───────────────────
 
-/// `POST /oauth/credentials` — credential offer: records the issuance
+/// `POST /oauth/credentials` - credential offer: records the issuance
 /// intent and returns the offer the wallet presents at its issuer.
 /// Authenticated via the user's session (the credential is about THEM).
 #[derive(Debug, Deserialize, utoipa::ToSchema)]
@@ -627,14 +627,14 @@ pub async fn credential_offer(
     })))
 }
 
-/// `POST /oauth/credentials/issue` — the wallet presents its authorization
+/// `POST /oauth/credentials/issue` - the wallet presents its authorization
 /// (the pending credential id + its key) and receives the signed SD-JWT.
 #[derive(Debug, Deserialize, utoipa::ToSchema)]
 /// Request body for credentialissue.
 pub struct CredentialIssueRequest {
     /// credential identifier.
     pub credential_id: Uuid,
-    /// The wallet's key JWK — must match the offer's `cnf_jwk`.
+    /// The wallet's key JWK - must match the offer's `cnf_jwk`.
     /// The cnf jwk.
     pub cnf_jwk: serde_json::Value,
 }
@@ -713,7 +713,7 @@ pub async fn credential_issue(
     }
 
     // Mint the SD-JWT: the payload carries the claims + cnf; per-claim
-    // disclosures are (wallet-side salt generation) — issues
+    // disclosures are (wallet-side salt generation) - issues
     // with zero selections (all claims non-selective), format-valid.
     let now = chrono::Utc::now().timestamp();
     let exp = now + 90 * 24 * 3600; // 90-day credential
@@ -745,7 +745,7 @@ pub async fn credential_issue(
     })))
 }
 
-/// `GET /oauth/credentials/status/{id}` — Status List 2021 endpoint: the
+/// `GET /oauth/credentials/status/{id}` - Status List 2021 endpoint: the
 /// compressed bitstring for this issuer's credentials (index = the
 /// credential's issuance ordinal, per-credential status lists).
 /// Handle credential status.
@@ -779,7 +779,7 @@ pub async fn credential_status(
     })))
 }
 
-/// `POST /oauth/credentials/revoke/{id}` — revoke (admin).
+/// `POST /oauth/credentials/revoke/{id}` - revoke (admin).
 /// Handle credential revoke.
 #[utoipa::path(
     post,
@@ -830,7 +830,7 @@ pub async fn credential_revoke(
     Ok(Json(serde_json::json!({ "status": "revoked" })))
 }
 
-/// Encode a 1-byte status list (MSB-first, entry 0 = bit 7) — EUDI.2.1.
+/// Encode a 1-byte status list (MSB-first, entry 0 = bit 7) - EUDI.2.1.
 fn status_list_b64(bit: u8) -> String {
     use base64::Engine as _;
     use std::io::Write as _;
@@ -841,22 +841,22 @@ fn status_list_b64(bit: u8) -> String {
     base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(&compressed)
 }
 
-// ── EUDI. — QES signature ceremony broker ────────────────
+// ── EUDI. - QES signature ceremony broker ────────────────
 
-/// `POST /oauth/signature/request` — QES signature-ceremony broker.
+/// `POST /oauth/signature/request` - QES signature-ceremony broker.
 /// The vertical payment service submits the transaction hash + binding
 /// wallet presents a signed challenge; Auth verifies the signature against
 /// the signer's eIDAS certificate and returns the signed artifact for the
-/// payment record. Auth is request-broker + verifier only — the detailed
+/// payment record. Auth is request-broker + verifier only - the detailed
 /// message; the flow lives in the calling vertical's design (zero
-/// `POST /oauth/signature/request` — QES signature-ceremony broker.
+/// `POST /oauth/signature/request` - QES signature-ceremony broker.
 /// The vertical payment service submits the transaction hash + binding
 /// wallet presents a signed challenge; Auth verifies the signature against
 /// the signer's eIDAS certificate and returns the signed artifact for the
-/// payment record. Auth is request-broker + verifier only — the detailed
+/// payment record. Auth is request-broker + verifier only - the detailed
 /// message; the flow lives in the calling vertical's design (zero
 /// Store a pending ceremony in Valkey; the wallet completes via
-/// `signature/complete` with the signed challenge ( — the
+/// `signature/complete` with the signed challenge ( - the
 /// ceremony-transport integration in the wallet app is pending market
 /// demand; the broker surface is implemented here per design ).
 /// Handle signature request.

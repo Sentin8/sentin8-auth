@@ -3,7 +3,7 @@
 // SPDX-FileCopyrightText: Copyright Contributors to the Sentin8:Auth
 // SPDX-License-Identifier: Apache-2.0
 
-//! RFC 9421 HTTP Message Signatures — FAPI 2.0 Message Signing (.).
+//! RFC 9421 HTTP Message Signatures - FAPI 2.0 Message Signing (.).
 //!
 //! When the caller's env-resolved security profile has
 //! `require_http_signatures = true`, mutating token-endpoint requests
@@ -15,9 +15,9 @@
 //!
 //! FAPI 2.0 Message Signing (request signatures) constrains:
 //! - the signature MUST cover the content of the request body (via a
-//! `Content-Digest` header, RFC 9530) — replay/swap protection;
+//! `Content-Digest` header, RFC 9530) - replay/swap protection;
 //! - the signing key MUST be an asymmetric key registered with the client
-//! (ES256 or RS256 — the platform JOSE set);
+//! (ES256 or RS256 - the platform JOSE set);
 //! - the `Created`/`Expires` signature parameters bound freshness
 //! (±5 minutes, matching the client_assertion window).
 //!
@@ -35,7 +35,7 @@ use sha2::{Digest, Sha256};
 
 use crate::oauth::AuthenticatedClient;
 
-/// Signature-parameter window (seconds) — matches the private_key_jwt
+/// Signature-parameter window (seconds) - matches the private_key_jwt
 /// assertion freshness policy (±5 min).
 pub const SIGNATURE_WINDOW_SECS: i64 = 300;
 
@@ -72,7 +72,7 @@ fn signature_base_line(
     let value = match field {
         "@method" => method.to_string(),
         "@target-uri" => target_uri.to_string(),
-        // Header fields — case-insensitive lookup. `content-digest` is a
+        // Header fields - case-insensitive lookup. `content-digest` is a
         // normal header (RFC 9530) sent by the client.
         f => headers
             .get(f.to_ascii_lowercase().as_str())?
@@ -95,7 +95,7 @@ fn signature_base_line(
 /// - the `Content-Digest` header matches the actual body (swap protection).
 ///
 /// Returns Err(reason) when the profile requires a signature and any of the
-/// above fails. When NO signature is present, returns Err("missing") — the
+/// above fails. When NO signature is present, returns Err("missing") - the
 /// caller decides whether that is fatal (`require_http_signatures`) or
 /// tolerated.
 pub fn verify_http_signature(
@@ -152,10 +152,10 @@ fn verify_rfc9421(
     body: &[u8],
 ) -> Result<(), String> {
     let _ = body;
-    // Possibly multiple labeled signatures — verify the first that covers
+    // Possibly multiple labeled signatures - verify the first that covers
     // the required fields.
     for component in input.split(',') {
-        // A component is `sig1=("@method" ...);created=...` — but split on
+        // A component is `sig1=("@method" ...);created=...` - but split on
         // commas inside the field list breaks it. Reassemble: find the first
         // `=(` ... `)` span.
         let Some(open) = component.find("=(") else {
@@ -205,7 +205,7 @@ fn verify_rfc9421(
                 .trim_end_matches(')')
         ));
         // Reconstruct params with created/keyid as in the raw input for the
-        // base line — RFC 9421 requires the exact serialized params. Build
+        // base line - RFC 9421 requires the exact serialized params. Build
         // from the raw substring after the fields list.
         let params_raw = component[close + 1..].trim_start_matches(';').trim();
         base_lines.pop();
@@ -342,7 +342,7 @@ mod tests {
         let body = b"hello";
         let computed = base64::engine::general_purpose::STANDARD.encode(Sha256::digest(body));
         let good = headers_with(&format!("sha-256={computed}"));
-        assert!(verify_http_signature(&mk_client(), &good, "POST", "https://a/x", body).is_err()); // missing signature — but digest passed (error mentions signature)
+        assert!(verify_http_signature(&mk_client(), &good, "POST", "https://a/x", body).is_err()); // missing signature - but digest passed (error mentions signature)
         let bad = headers_with("sha-256=AAAA");
         let err =
             verify_http_signature(&mk_client(), &bad, "POST", "https://a/x", body).unwrap_err();

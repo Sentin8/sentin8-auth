@@ -5,7 +5,7 @@
 
 //! Delegation Gateway endpoint
 //!
-//! `POST /delegate/access-token` — BFF (Delegation Gateway) requests a
+//! `POST /delegate/access-token` - BFF (Delegation Gateway) requests a
 //! cert-bound delegated token for cross-env access (platform → env).
 //!
 //! BFF authenticates with its cert-bound M2M token (cnf-validated). Auth
@@ -54,7 +54,7 @@ pub struct DelegateAccessTokenRequest {
     pub audience: String,
 }
 
-/// Response — same shape as OAuth token response.
+/// Response - same shape as OAuth token response.
 #[derive(Debug, Serialize, utoipa::ToSchema)]
 /// Response payload for delegateaccesstoken.
 pub struct DelegateAccessTokenResponse {
@@ -68,10 +68,10 @@ pub struct DelegateAccessTokenResponse {
     pub scope: Option<String>,
 }
 
-/// `POST /delegate/access-token` — issue a cert-bound delegated token.
+/// `POST /delegate/access-token` - issue a cert-bound delegated token.
 ///
 /// The caller (BFF) presents EITHER its workload certificate (the
-/// `bff-delegator` identity — the TLS layer CA-verifies and injects the
+/// `bff-delegator` identity - the TLS layer CA-verifies and injects the
 /// subject; the boot-loaded registry map grants `sentin8:delegate:read`,
 /// auth DESIGN §4.3f; group DESIGN.md §3.1) OR a valid M2M Bearer token
 /// with `sentin8:delegate:read` scope. A cert-bound M2M token keeps its
@@ -135,7 +135,7 @@ pub async fn delegate_access_token(
             return Err((StatusCode::FORBIDDEN, "missing scope: delegate:read".into()));
         }
         // The certificate thumbprint binds the delegated token (RFC 8705
-        // `cnf x5t#S256`) — a delegated token minted through the cert
+        // `cnf x5t#S256`) - a delegated token minted through the cert
         // path is cert-bound by construction.
         let thumbprint = headers
             .get("x-sentin8-client-cert-thumbprint")
@@ -147,7 +147,7 @@ pub async fn delegate_access_token(
         sentin8_bff_client_id = Some(workload.to_string());
     }
 
-    // 1b. Bearer path — verify the BFF's M2M token.
+    // 1b. Bearer path - verify the BFF's M2M token.
     let sentin8_bff_client_id = match sentin8_bff_client_id {
         Some(id) => id,
         None => {
@@ -158,7 +158,7 @@ pub async fn delegate_access_token(
                 .ok_or_else(|| (StatusCode::UNAUTHORIZED, "missing Bearer token".into()))?;
 
             // Verify the JWT signature using Auth's own signing keys.
-            // This prevents forged tokens — the caller must present a real M2M token
+            // This prevents forged tokens - the caller must present a real M2M token
             // issued by this Auth instance.
             let m2m_claims = verify_m2m_token(&state.keys, &state.config, bearer)
                 .ok_or_else(|| (StatusCode::UNAUTHORIZED, "invalid or forged token".into()))?;
@@ -200,7 +200,7 @@ pub async fn delegate_access_token(
                     .and_then(|v| v.to_str().ok());
                 match (expected_thumbprint, presented_thumbprint) {
                     (Some(expected), Some(presented)) if expected == presented => {
-                        // cnf matches — cert-bound token is valid.
+                        // cnf matches - cert-bound token is valid.
                     }
                     (Some(expected), Some(presented)) => {
                         tracing::warn!(
@@ -211,9 +211,9 @@ pub async fn delegate_access_token(
                         return Err((StatusCode::UNAUTHORIZED, "mTLS certificate mismatch".into()));
                     }
                     (Some(_), None) => {
-                        // SEC- — the token is cert-bound but no mTLS cert
+                        // SEC- - the token is cert-bound but no mTLS cert
                         // header was presented: the request bypassed TLS or mTLS
-                        // wasn't used. This is now a HARD REJECT — a stolen cert-bound
+                        // wasn't used. This is now a HARD REJECT - a stolen cert-bound
                         // token must be useless. `SENTIN8_AUTH_DEV_NO_MTLS=1` is the
                         // explicit local-dev escape hatch.
                         if std::env::var("SENTIN8_AUTH_DEV_NO_MTLS").is_ok() {
@@ -222,7 +222,7 @@ pub async fn delegate_access_token(
                             );
                         } else {
                             tracing::warn!(
-                                "delegation: M2M token has cnf but no mTLS cert header — REJECTED \
+                                "delegation: M2M token has cnf but no mTLS cert header - REJECTED \
                                  (set SENTIN8_AUTH_DEV_NO_MTLS=1 only for local dev without mTLS)"
                             );
                             return Err((
@@ -257,7 +257,7 @@ pub async fn delegate_access_token(
     // inside ONE `pool.begin` transaction with
     // `sentin8_set_tenant_context(SYSTEM_ENV_ID)` set on the same connection.
     // On a bare pool connection the FORCE-RLS SELECT policy's
-    // `sentin8_context_initialized` gate hides every row — a real platform
+    // `sentin8_context_initialized` gate hides every row - a real platform
     // user resolved to "not a valid user" (400) and every delegated mint
     // failed. Role resolution is platform-level (roles span the user's org
     // envs + the SYSTEM_ENV_ID role catalog), so the context is SYSTEM_ENV_ID,
@@ -284,7 +284,7 @@ pub async fn delegate_access_token(
         ));
     }
 
-    // 4. may_act check — the staff user must have access to the target
+    // 4. may_act check - the staff user must have access to the target
     // env via the RBAC group/role model, unless they have sys:admin
     // scope. The env check prevents cross-env escalation.
     // org_id is resolved from env_id via sentin8_sys_environments (no longer in JWT).
@@ -359,7 +359,7 @@ pub async fn delegate_access_token(
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
     // 7. Audit log.
-    // SEC- — tenant context on the same connection (design ).
+    // SEC- - tenant context on the same connection (design ).
     let mut conn = state
         .pool
         .begin()
@@ -416,7 +416,7 @@ async fn check_admin_scope(pool: &sqlx::PgPool, user_id: Uuid) -> Result<bool, S
 }
 
 /// Verify an M2M JWT using Auth's own signing keys.
-/// This prevents forged tokens — the caller must present a real M2M token
+/// This prevents forged tokens - the caller must present a real M2M token
 /// issued by this Auth instance.
 fn verify_m2m_token(
     keys: &crate::jwks::SigningKeys,

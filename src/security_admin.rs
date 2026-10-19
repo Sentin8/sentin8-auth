@@ -3,7 +3,7 @@
 // SPDX-FileCopyrightText: Copyright Contributors to the Sentin8:Auth
 // SPDX-License-Identifier: Apache-2.0
 
-//! Security-profile admin surface — the two-page UX:
+//! Security-profile admin surface - the two-page UX:
 //!
 //! - **High-level page** (`/sentin8-auth/security`): select the Profile,
 //! Extensions, and Overlay. Submitting this page is the ONLY way to
@@ -15,7 +15,7 @@
 //! flags never changes the high-level selection.
 //!
 //! Both write the env-scoped `security_profiles` row (the effective
-//! profile is env → org → platform; the env row is authoritative —
+//! profile is env → org → platform; the env row is authoritative -
 //! design scope model).
 
 use axum::extract::{Query, State};
@@ -34,11 +34,11 @@ use crate::sentin8or_auth::require_sentin8or_access_with_env;
 pub struct SecuritySelectionRequest {
     /// The profile.
     pub profile: String,
-    /// Enabled protocol extensions ( extensions) — additive.
+    /// Enabled protocol extensions ( extensions) - additive.
     #[serde(default)]
     /// The extensions.
     pub extensions: Vec<String>,
-    /// Regulatory overlay ( overlays) — none | obie | cdr | brazil.
+    /// Regulatory overlay ( overlays) - none | obie | cdr | brazil.
     #[serde(default)]
     /// The overlay.
     pub overlay: Option<String>,
@@ -123,7 +123,7 @@ pub async fn read_current(
             (true, profile, flags)
         }
         None => {
-            // No env row — show the platform default profile with its defaults.
+            // No env row - show the platform default profile with its defaults.
             let platform_profile: String = sqlx::query_scalar(
                 "SELECT profile FROM auth.security_profiles WHERE scope='platform' LIMIT 1",
             )
@@ -152,7 +152,7 @@ pub async fn read_current(
     };
 
     // Derive the extensions display from the detail flags (extensions are
-    // additive flags — the high-level view just shows which are on).
+    // additive flags - the high-level view just shows which are on).
     let mut extensions = Vec::new();
     if flags.require_http_signatures {
         extensions.push("http_signatures".to_string());
@@ -235,7 +235,7 @@ pub async fn read_detail_flags(
     }))
 }
 
-/// `GET /v1/admin/security` — read the current high-level selection
+/// `GET /v1/admin/security` - read the current high-level selection
 /// (prefill for the security page + CLI verify).
 #[utoipa::path(
     get,
@@ -259,7 +259,7 @@ pub async fn get_security_selection(
     Ok(Json(resp))
 }
 
-/// `POST /v1/admin/security` — the high-level submit. Selecting a new
+/// `POST /v1/admin/security` - the high-level submit. Selecting a new
 /// profile / extensions / overlay **resets the detail flags** to the
 /// profile's defaults (adjusted for the chosen extensions/overlay),
 /// then upserts the env row. The overlay row is written alongside.
@@ -358,7 +358,7 @@ pub async fn put_security_selection(
             if crate::overlays::OverlayKind::from_str(kind).is_none() {
                 return Err((StatusCode::BAD_REQUEST, format!("unknown overlay '{kind}'")));
             }
-            // Directory coordinates are required for SSA regimes — the form
+            // Directory coordinates are required for SSA regimes - the form
             // supplies them via the detail page for OBIE/Brazil. Defaults
             // here point at the well-known directory endpoints.
             let (jwks_uri, issuer) = match kind {
@@ -405,7 +405,7 @@ pub async fn put_security_selection(
     Ok(Json(resp))
 }
 
-/// `POST /v1/admin/security/detail` — the detail-page submit: write the
+/// `POST /v1/admin/security/detail` - the detail-page submit: write the
 /// individual `require_*` flags onto the env row **without** touching the
 /// high-level selection. Only the provided fields change (partial update).
 #[utoipa::path(
@@ -477,7 +477,7 @@ pub async fn put_security_detail(
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
     }
 
-    // Partial update of only the provided flags — the high-level selection
+    // Partial update of only the provided flags - the high-level selection
     // (profile name) is never modified here.
     sqlx::query(
         r#"UPDATE auth.security_profiles SET

@@ -3,7 +3,7 @@
 // SPDX-FileCopyrightText: Copyright Contributors to the Sentin8:Auth
 // SPDX-License-Identifier: Apache-2.0
 
-//! Regulatory overlays — env-scoped compliance constraints
+//! Regulatory overlays - env-scoped compliance constraints
 //! layered on top of the base security profile.
 //!
 //! An overlay constrains the OAuth machinery for a compliance market:
@@ -14,7 +14,7 @@
 //! - **Australia CDR**: forces mTLS holder-of-key (`require_mtls = true`)
 //! on the env's effective profile.
 //!
-//! Overlays are stored per environment (`regulatory_overlays` —
+//! Overlays are stored per environment (`regulatory_overlays` -
 //! one overlay per env; a regime is a property of the market an env
 //! serves, not of the org). They are enforced at client authentication
 //! time (`authenticate_client`) via the caller's tenant context.
@@ -30,13 +30,13 @@ use crate::oauth::AuthenticatedClient;
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 /// The overlaykind type.
 pub enum OverlayKind {
-    /// UK Open Banking (OBIE) — SSA validation via the OBIE directory.
+    /// UK Open Banking (OBIE) - SSA validation via the OBIE directory.
     /// The obie variant.
     Obie,
-    /// Australia Consumer Data Right — mTLS holder-of-key mandatory.
+    /// Australia Consumer Data Right - mTLS holder-of-key mandatory.
     /// The cdr variant.
     Cdr,
-    /// Brazil Open Finance — SSA via the central directory (participantes).
+    /// Brazil Open Finance - SSA via the central directory (participantes).
     /// The brazil variant.
     Brazil,
 }
@@ -79,7 +79,7 @@ pub struct RegulatoryOverlay {
 
 /// Resolve the env's overlay configuration. Returns None when the env has
 /// no overlay (the common case) or on any lookup failure (fail-open on the
-/// *overlay* — the base profile still governs; an overlay is additive).
+/// *overlay* - the base profile still governs; an overlay is additive).
 /// Resolve overlay.
 pub async fn resolve_overlay(pool: &sqlx::PgPool, env_id: Uuid) -> Option<RegulatoryOverlay> {
     use sqlx::Row as _;
@@ -108,7 +108,7 @@ pub async fn resolve_overlay(pool: &sqlx::PgPool, env_id: Uuid) -> Option<Regula
 /// is a JWT issued by the regime directory: verify its signature against
 /// the directory JWKS (Valkey-cached 24h), check `iss`/`exp` freshness,
 /// and require `software_id` to match the client's registration.
-/// - CDR: no SSA — the mTLS constraint is applied at the profile level
+/// - CDR: no SSA - the mTLS constraint is applied at the profile level
 ///
 /// (`require_mtls` forced true when the overlay is configured); this
 /// function only verifies that client auth actually used mTLS.
@@ -195,11 +195,11 @@ async fn verify_ssa(
         if !client_id_ssa.is_empty() {
             // The AS-registered client_id is checked by the caller against
             // the SSA claim via software_id; the Brazil directory additionally
-            // pins client_id — verified when the client row carries it.
+            // pins client_id - verified when the client row carries it.
         }
     }
 
-    // Signature: fetch the directory JWKS (Valkey cache, 24h — directories
+    // Signature: fetch the directory JWKS (Valkey cache, 24h - directories
     // rotate keys rarely) and verify with the platform JOSE verifier.
     let keys = fetch_directory_jwks(valkey_url, &overlay.directory_jwks_uri).await?;
     let mut verified = false;
@@ -224,7 +224,7 @@ async fn fetch_directory_jwks(
         let digest = Sha256::digest(jwks_uri.as_bytes());
         format!("auth:overlayjwks:{}", hex(&digest))
     };
-    // GLIDE: the factory returns the connected client — the cache read is
+    // GLIDE: the factory returns the connected client - the cache read is
     // one typed GET (group DESIGN.md §3.1).
     if let Ok(conn) = sentin8::middleware::valkey_client(valkey_url, "sentin8:auth").await {
         use glide::AsyncCommands as _;
@@ -271,7 +271,7 @@ fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 
-/// Resolve the tenant env from request headers for overlay lookup —
+/// Resolve the tenant env from request headers for overlay lookup -
 /// shared with the security-profile resolution path.
 /// Handle env from headers.
 pub fn env_from_headers(headers: &HeaderMap) -> Uuid {

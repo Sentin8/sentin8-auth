@@ -36,11 +36,11 @@ pub struct AppState {
     pub pool: PgPool,
     /// Shield engine (Phase ): step 5 gates the ADMIN
     /// API surface. Protocol endpoints (token issuance, JWKS) stay exempt by
-    /// design — the identity plane must not depend on its own policy table
+    /// design - the identity plane must not depend on its own policy table
     /// (circular risk, policy design note).
     /// The policy.
     pub policy: Arc<crate::policy::Engine>,
-    /// auth DESIGN §4.3f: the boot-loaded workload registry map —
+    /// auth DESIGN §4.3f: the boot-loaded workload registry map -
     /// the authorization record for certificate-only platform-workload
     /// calls (sys's provisioning delegation presents the `auth-sys`
     /// certificate; scopes ride the map, not a token).
@@ -114,7 +114,7 @@ pub async fn sign_in(
 
     // Resolve the current tenant from the request's Host / TLS headers.
     // The same email can exist as a different user in each tenant, so the
-    // lookup MUST be scoped to env_id — otherwise a sign-in on
+    // lookup MUST be scoped to env_id - otherwise a sign-in on
     // iFintech would silently match an iBank user with the same email.
     let (org_id, env_id) = resolve_tenant_from_headers(&state.pool, &headers).await;
     tracing::info!(
@@ -157,7 +157,7 @@ pub async fn sign_in(
     let user = match user {
         Some(u) => u,
         None => {
-            // SEC- — timing-safe rejection: run a dummy bcrypt
+            // SEC- - timing-safe rejection: run a dummy bcrypt
             // verify so the nonexistent-user path costs the same as the
             // wrong-password path. Without this, a timing side channel
             // enumerates registered emails (bcrypt ≈ 100ms vs ~0ms).
@@ -181,7 +181,7 @@ pub async fn sign_in(
         .map(|h| bcrypt_verify(&req.password, h).unwrap_or(false))
         .unwrap_or(false);
     if !valid {
-        // EUDI. — app-password fallback: the presented credential may
+        // EUDI. - app-password fallback: the presented credential may
         // be one of the user's scoped-down device credentials. A match
         // issues a DOWNSCOPED token (whitelist ∩ role scopes) with
         // token_tp = "app_password" and no session (short-lived by
@@ -217,7 +217,7 @@ pub async fn sign_in(
     //reset the failed-attempt counter on success.
     let _ = crate::bot_protection::reset_failed_signins(&state, user.id).await;
 
-    // Create a session. SEC- — run inside a transaction with the
+    // Create a session. SEC- - run inside a transaction with the
     // tenant context on the same connection (RLS insert under the app role).
     let token_id = Uuid::new_v4().to_string();
     let mut session_tx = state
@@ -260,7 +260,7 @@ pub async fn sign_in(
         .into_response());
     }
 
-    // Issue an access token — merge role permissions into scope .
+    // Issue an access token - merge role permissions into scope .
     let role_scopes = fetch_role_scopes(&state.pool, user.id)
         .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
@@ -379,7 +379,7 @@ pub async fn sign_up(
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
     let user_id = Uuid::new_v4();
-    // SEC- — set the tenant context on this connection via a
+    // SEC- - set the tenant context on this connection via a
     // transaction, then run the INSERT on the SAME connection. Without the
     // context, FORCE ROW LEVEL SECURITY blocks the insert for the app role
     // (the 500 sign-up failures under the NOBYPASSRLS role).
@@ -406,7 +406,7 @@ pub async fn sign_up(
     )
     .fetch_one(&mut *tx)
     .await;
-    // Commit the user insert (and context) — errors roll back atomically.
+    // Commit the user insert (and context) - errors roll back atomically.
     let user_id = match result {
         Ok(row) => {
             let _ = tx.commit().await;
@@ -432,12 +432,12 @@ pub async fn sign_up(
 
     // Auto-assign the new user to the "sentin8:sys:users" role so they get
     // basic scopes like dash:org:create (needed to create their first org).
-    // Best-effort — if the role doesn't exist, the user just gets no extra
+    // Best-effort - if the role doesn't exist, the user just gets no extra
     // scopes (they can still sign in).
     //
     // AUTH-4 (org-creation e2e): the previous autocommit form
     // ran on a pool connection with NO tenant context and silently inserted
-    // 0 rows under FORCE RLS — self-service users got no baseline scopes and
+    // 0 rows under FORCE RLS - self-service users got no baseline scopes and
     // Shield denied /v1/bootstrap + org-create. The context is
     // transaction-local : both statements must run in ONE explicit
     // transaction on the SAME connection. Track the outcome so a zero-
@@ -488,18 +488,18 @@ pub async fn sign_up(
     }
 
     // AUTH-4: a sign-up that provisions NO closure (no app-group membership
-    // AND no direct role) bricks the user — their token carries only the
+    // AND no direct role) bricks the user - their token carries only the
     // OIDC baseline and Shield denies every platform read. Silent zero-scope
     // sign-ups are a defect, not an acceptable degrade (design ).
     if !closure_provisioned {
         tracing::warn!(
             user_id = %user_id,
             %env_id,
-            "auth: sign_up provisioned NO permission closure — user will deny on every platform endpoint (check roles + app instance groups)"
+            "auth: sign_up provisioned NO permission closure - user will deny on every platform endpoint (check roles + app instance groups)"
         );
     }
 
-    //— emit user.created event to Bus outbox.
+    //- emit user.created event to Bus outbox.
     emit_event(
         &state.pool,
         env_id,
@@ -511,7 +511,7 @@ pub async fn sign_up(
     )
     .await;
 
-    // Create a session for the new user. SEC- — same-connection
+    // Create a session for the new user. SEC- - same-connection
     // tenant context: reuse a transaction so the RLS INSERT succeeds under
     // the app role.
     let token_id = Uuid::new_v4().to_string();
@@ -568,7 +568,7 @@ pub struct SessionInfo {
     pub env_id: Uuid,
     /// expires time.
     pub expires_at: chrono::DateTime<chrono::Utc>,
-    /// Session token id — the CSRF header value (SEC-) for
+    /// Session token id - the CSRF header value (SEC-) for
     /// cookie-authenticated SPA mutations after a page reload. Same-origin
     /// exposure only, identical to the sign-in response body. Optional so
     /// older internal callers parsing this struct stay compatible.
@@ -610,7 +610,7 @@ pub async fn get_session(
             // Same-origin SPA use only (SEC-): the token id is the CSRF
             // header value for cookie-authenticated mutations after a page
             // reload (the sign-in response body is not in flight anymore).
-            // Same exposure as the sign-in response body — never a new
+            // Same exposure as the sign-in response body - never a new
             // secret. email rides along so pages can greet the operator.
             let email = sqlx::query!(r#"SELECT email FROM users WHERE id = $1"#, s.user_id,)
                 .fetch_optional(&state.pool)
@@ -648,7 +648,7 @@ pub async fn get_session(
 )]
 pub async fn sign_out(State(state): State<AppState>, headers: HeaderMap) -> Response {
     if let Some(token_id) = extract_session_token(&headers) {
-        // SEC- — mutating session endpoint: CSRF-gated (Bearer exempt).
+        // SEC- - mutating session endpoint: CSRF-gated (Bearer exempt).
         if crate::handlers::check_csrf(&headers, &token_id).is_err() {
             return (
                 StatusCode::FORBIDDEN,
@@ -767,35 +767,35 @@ pub async fn resolve_tenant_from_hostname(pool: &PgPool, hostname: &str) -> (Uui
 
 ///auto-add a new user to all customer-mode app instance
 /// groups for the given org/env. Each installed app instance has a group
-/// named `sentin8:app:{instance_id}` ( — the name embeds the instance
+/// named `sentin8:app:{instance_id}` ( - the name embeds the instance
 /// UUID that app setup_instance provisions and the BFF app-group gate
-/// checks; the display-name snake_case form is retired — its drift caused
+/// checks; the display-name snake_case form is retired - its drift caused
 /// AUTH-3). Best-effort: logs errors but never fails the
 /// caller (sign-up or SSO).
 ///
 /// AUTH-4 (org-creation e2e): both statements below ran on pool
 /// connections with NO tenant context and silently inserted 0 rows under
-/// FORCE RLS — the `sys.app_instances` read (the role's search_path is
+/// FORCE RLS - the `sys.app_instances` read (the role's search_path is
 /// `auth, public`) and the membership INSERT. The context is
 /// transaction-local : every statement runs in an explicit
 /// transaction with `sentin8_set_tenant_context(env_id)` set on the SAME
 /// connection.
 ///
-/// Returns `true` when at least one membership row was provisioned — the
+/// Returns `true` when at least one membership row was provisioned - the
 /// sign-up caller uses this to warn when the user got NO permission closure
 /// (design ).
 pub(crate) async fn auto_add_to_app_groups(pool: &PgPool, user_id: Uuid, env_id: Uuid) -> bool {
     // DBX §6.6a (auth DESIGN invariant 12): the customer-mode instance
-    // enumeration rides Sentin8:App's OWNER API — auth holds no grant on
+    // enumeration rides Sentin8:App's OWNER API - auth holds no grant on
     // `sys.app_instances` (the sys.* grants are retired; the former direct
     // read failed RLS grantless and provisioned NO closure on every
     // customer-env sign-up). auth DESIGN §4.3f: the
-    // `sentin8:auth` CERTIFICATE is the identity — the cert-presenting
+    // `sentin8:auth` CERTIFICATE is the identity - the cert-presenting
     // transport authenticates at App's TLS layer; the registry map
     // authorizes `sentin8:app:instances:read`.
     //
     // Fail-soft without the platform CA (`try_platform_ca_path`): the
-    // closure provisioning is BEST-EFFORT (this fn's doc) — a missing CA
+    // closure provisioning is BEST-EFFORT (this fn's doc) - a missing CA
     // (bare `cargo test` / dev harness without captain's env propagation)
     // degrades to "closure not provisioned" + warning, never a sign-up
     // panic.
@@ -850,7 +850,7 @@ pub(crate) async fn auto_add_to_app_groups(pool: &PgPool, user_id: Uuid, env_id:
         let group_name = format!("sentin8:app:{instance_id}");
 
         // Find the group and add the user as a member. The group catalog
-        // is env-scoped — match on env_id ( fix; the previous
+        // is env-scoped - match on env_id ( fix; the previous
         // `g.org_id` filter referenced a nonexistent column). Context-first
         // write : the context rides the same transaction as the
         // INSERT.
@@ -891,7 +891,7 @@ pub(crate) async fn auto_add_to_app_groups(pool: &PgPool, user_id: Uuid, env_id:
     }
     if provisioned {
         // Identity-cache invalidation (auth DESIGN §7.1): the sign-up just
-        // provisioned access — every service's policy runtime must drop its
+        // provisioned access - every service's policy runtime must drop its
         // cached pre-grant identity NOW, not after the 30s TTL. SYSTEM-env
         // `policy` row; the tenant env to sweep rides the payload.
         if let Ok(mut tx) = pool.begin().await {
@@ -930,7 +930,7 @@ pub async fn branding(
     let (org_id, env_id) = resolve_tenant_from_headers(&state.pool, &headers).await;
 
     // Query merged org+env branding from sentin8_sys_branding (mirrors the App
-    // server's `fetch_merged_branding` logic — env overrides org per-field,
+    // server's `fetch_merged_branding` logic - env overrides org per-field,
     // non-empty wins). Falls back to safe defaults when the sentin8_sys_branding
     // table is absent (e.g. fresh dev DB) so the hosted UI still renders.
     let b = fetch_merged_branding(&state.pool, org_id, env_id)
@@ -1048,7 +1048,7 @@ pub async fn health() -> Json<serde_json::Value> {
 
 // ── Consent accounts (FDX UX Guidelines "Select Accounts") ───────
 
-/// Query params for `GET /v1/auth/consent/accounts` — fetch the customer's
+/// Query params for `GET /v1/auth/consent/accounts` - fetch the customer's
 /// accounts at this Data Provider so the consent screen can show
 /// them for selection.
 #[derive(Debug, serde::Deserialize, utoipa::IntoParams, utoipa::ToSchema)]
@@ -1062,7 +1062,7 @@ pub struct ConsentAccountsQuery {
     pub user_id: Uuid,
 }
 
-/// `GET /v1/auth/consent/accounts` — fetch the authenticated customer's accounts
+/// `GET /v1/auth/consent/accounts` - fetch the authenticated customer's accounts
 /// from consent data providers registered via `sentin8-cli vertical enroll`.
 ///
 /// This endpoint is called by the Auth Flutter consent page (served on the
@@ -1223,7 +1223,7 @@ pub async fn consent_accounts(
 /// expansion time.
 /// Fetch role scopes.
 pub async fn fetch_role_scopes(pool: &PgPool, user_id: Uuid) -> Result<Vec<String>, sqlx::Error> {
-    // (F1 activation) — the RBAC tables are RLS'd; under a
+    // (F1 activation) - the RBAC tables are RLS'd; under a
     // NOBYPASSRLS per-service role the read requires a tenant context.
     // Role resolution is platform-level (a user's roles span their org's
     // envs + the SYSTEM_ENV_ID role catalog), so the context is SYSTEM_ENV_ID
@@ -1243,7 +1243,7 @@ pub async fn fetch_role_scopes(pool: &PgPool, user_id: Uuid) -> Result<Vec<Strin
             WHERE ur.user_id = $1
         ),
         -- Roles attached to any group the user is a member of. The TABLE is
-        -- schema-qualified — under WITH RECURSIVE an unqualified `group_roles`
+        -- schema-qualified - under WITH RECURSIVE an unqualified `group_roles`
         -- resolves to the CTE itself (self-reference ⇒ malformed recursion).
         grp_roles AS (
             SELECT gr.role_id AS id
@@ -1285,7 +1285,7 @@ pub async fn fetch_role_scopes(pool: &PgPool, user_id: Uuid) -> Result<Vec<Strin
 /// Check if a user has access to a target org via the RBAC group/role model.
 ///
 /// Returns `true` if the user has ANY role or group membership in the target
-/// org. This replaces the old `sentin8_sys_memberships` table lookup — the same
+/// org. This replaces the old `sentin8_sys_memberships` table lookup - the same
 /// information now lives in Auth's RBAC system (groups like
 /// `org:{slug}:owners`, roles like `org-admin`, etc.).
 ///
@@ -1298,7 +1298,7 @@ pub async fn fetch_role_scopes(pool: &PgPool, user_id: Uuid) -> Result<Vec<Strin
 /// to the target org.
 ///
 /// Platform admins (users with `sentin8:sys:admin` scope) should bypass this check
-/// — the caller is responsible for checking that before calling this function.
+/// - the caller is responsible for checking that before calling this function.
 /// Handle has org access.
 pub async fn has_org_access(
     pool: &PgPool,
@@ -1308,15 +1308,15 @@ pub async fn has_org_access(
     if org_id == crate::config::SYSTEM_ORG_ID {
         return Ok(false);
     }
-    // — platform-level membership probe: SYSTEM_ENV_ID context
+    // - platform-level membership probe: SYSTEM_ENV_ID context
     // on this helper's own transaction ( rule 2).
     //
     // RLS alignment (auth design §6.2): the sys-realm org groups
     // (`sentin8:org:{org_id}:owners/admins/viewers`, created by sys's
-    // provision_org_access_tx at SYSTEM_ENV_ID) are org-scoped BY NAME —
+    // provision_org_access_tx at SYSTEM_ENV_ID) are org-scoped BY NAME -
     // the row's `env_id` is the provisioning realm, not the org. The old
     // predicate joined `sys.environments` on `g.env_id`/`r.env_id` and
-    // compared `e.org_id` — that match can only hit env-scoped rows
+    // compared `e.org_id` - that match can only hit env-scoped rows
     // (realms other than SYSTEM_ENV_ID), so org-level owners/admins were
     // never visible and every direct (non-admin) caller was denied with
     // "not a member of this organization". The probe now matches the
@@ -1359,7 +1359,7 @@ pub async fn has_org_access(
 /// prevent cross-env escalation within the same org.
 ///
 /// Org-admin roles have `env_id = SYSTEM_ENV_ID` (they are org-level, not
-/// env-level) — they pass the env check automatically. Platform admins
+/// env-level) - they pass the env check automatically. Platform admins
 /// should be checked by the caller before calling this function.
 /// Handle has org env access.
 pub async fn has_org_env_access(
@@ -1376,7 +1376,7 @@ pub async fn has_org_env_access(
     if env_id == crate::config::SYSTEM_ENV_ID {
         return has_org_access(pool, user_id, org_id).await;
     }
-    // — same-connection tenant context ( rule 2): the probe
+    // - same-connection tenant context ( rule 2): the probe
     // spans the env's rows + the SYSTEM_ENV_ID org-admin role, so the
     // context is the target env (RLS policies on roles/
     // groups are env-scoped; the SYSTEM_ENV_ID role rows are visible
@@ -1402,7 +1402,7 @@ pub async fn has_org_env_access(
                    OR g.name = 'sentin8:env:' || $3::text || ':viewers')
             UNION
             -- Org-level access at the system realm (sentin8:org:* names
-            -- embed the org UUID — prov-org-access_tx at SYSTEM_ENV_ID)
+            -- embed the org UUID - prov-org-access_tx at SYSTEM_ENV_ID)
             SELECT 1 FROM group_members gm
             JOIN groups g ON g.id = gm.group_id
             WHERE gm.user_id = $1
@@ -1433,11 +1433,11 @@ pub async fn has_org_env_access(
 /// keys, and the minted token carries:
 /// - `sub` = the auth-sys delegator client_id (the proxy's M2M identity),
 /// - `act.sub` = the original user (Sys's org-membership check resolves the
-///   acting user from `act.sub` — a plain M2M sub is a client_id, not a user),
+///   acting user from `act.sub` - a plain M2M sub is a client_id, not a user),
 /// - `token_tp: "delegated"`, the requested scope, and the user's `env_id`
 ///   (tenant binding preserved).
 ///
-/// The delegator identity is `auth-sys` — the cert-bound M2M workload the
+/// The delegator identity is `auth-sys` - the cert-bound M2M workload the
 /// invitation/membership proxy registers. TTL is 5 minutes: the token is a
 /// single-hop credential, never persisted client-side.
 pub(crate) async fn exchange_for_delegated(
@@ -1451,13 +1451,13 @@ pub(crate) async fn exchange_for_delegated(
     let keys = SigningKeys::load_or_generate(&pool)
         .await
         .map_err(|e| format!("signing keys: {e}"))?;
-    // Verify the caller's user token (signature + issuer + expiry) — the
+    // Verify the caller's user token (signature + issuer + expiry) - the
     // delegated mint is only as trustworthy as this check.
-    // Verify the caller's user token (signature + issuer + expiry) — the
+    // Verify the caller's user token (signature + issuer + expiry) - the
     // delegated mint is only as trustworthy as this check. The Bearer may
     // itself be a delegated token (Dash → BFF proxy): in that case the
     // ACTING user is `act.sub`, not `sub` (which is the delegator's
-    // client_id — a hex string that parses as a UUID, so the plain parse
+    // client_id - a hex string that parses as a UUID, so the plain parse
     // would silently mint a delegated token naming a client as the user).
     let claims = keys
         .verify(user_token)
@@ -1521,7 +1521,7 @@ pub async fn fetch_client_role_scopes(
     pool: &PgPool,
     client_db_id: Uuid,
 ) -> Result<Vec<String>, sqlx::Error> {
-    // — same-connection tenant context ( rule 2): client
+    // - same-connection tenant context ( rule 2): client
     // role resolution spans the client's env + the SYSTEM_ENV_ID role
     // catalog (nesting closure); SYSTEM_ENV_ID context covers both.
     let mut tx = pool.begin().await?;
@@ -1582,7 +1582,7 @@ pub async fn fetch_client_role_scopes(
 /// admin `GET /v1/admin/users/{id}/roles` introspection endpoint.
 /// Handle user role names.
 pub async fn user_role_names(pool: &PgPool, user_id: Uuid) -> Result<Vec<String>, sqlx::Error> {
-    // ( rule 2) — the RBAC tables are RLS'd; under a
+    // ( rule 2) - the RBAC tables are RLS'd; under a
     // NOBYPASSRLS per-service role the read requires a tenant context.
     // Role resolution is platform-level (a user's roles span their org's
     // envs + the SYSTEM_ENV_ID role catalog), so the context is
@@ -1639,7 +1639,7 @@ pub async fn user_role_names(pool: &PgPool, user_id: Uuid) -> Result<Vec<String>
 /// `/oauth/userinfo` and `GET /v1/admin/users/{id}/groups`.
 /// Handle user group names.
 pub async fn user_group_names(pool: &PgPool, user_id: Uuid) -> Result<Vec<String>, sqlx::Error> {
-    // Same-connection tenant context ( rule 2) — groups/group_members
+    // Same-connection tenant context ( rule 2) - groups/group_members
     // are RLS'd; a bare-pool read silently returns 0 rows under FORCE RLS.
     let mut tx = pool.begin().await?;
     let _ = sqlx::query("SELECT sentin8_set_tenant_context($1)")
@@ -1669,7 +1669,7 @@ pub async fn client_role_names(
     pool: &PgPool,
     client_db_id: Uuid,
 ) -> Result<Vec<String>, sqlx::Error> {
-    // Same-connection tenant context ( rule 2) — SYSTEM_ENV_ID covers
+    // Same-connection tenant context ( rule 2) - SYSTEM_ENV_ID covers
     // the client's env + the role catalog (nesting closure).
     let mut tx = pool.begin().await?;
     let _ = sqlx::query("SELECT sentin8_set_tenant_context($1)")
@@ -1703,11 +1703,11 @@ pub async fn client_role_names(
 }
 
 /// Extract the session token from the `__session` cookie header.
-/// SEC- — run a read/write against RLS tables with the tenant
+/// SEC- - run a read/write against RLS tables with the tenant
 /// context set on the same connection.
 ///
 /// `sentin8_set_tenant_context` uses `set_config(..., true)` which is
-/// TRANSACTION-local — on a bare pooled connection it evaporates before
+/// TRANSACTION-local - on a bare pooled connection it evaporates before
 /// the next statement. This helper opens a transaction, sets the context,
 /// runs the closure on that connection, and commits (persisting writes).
 ///
@@ -1749,7 +1749,7 @@ where
 
 /// Extract session token.
 pub fn extract_session_token(headers: &HeaderMap) -> Option<String> {
-    // SEC- — also accept `Authorization: Bearer <session_token>`
+    // SEC- - also accept `Authorization: Bearer <session_token>`
     // so non-browser clients (e2e fixtures, the authenticator app) can
     // drive session-authenticated endpoints without cookies.
     if let Some(auth) = headers
@@ -1771,10 +1771,10 @@ pub fn extract_session_token(headers: &HeaderMap) -> Option<String> {
     None
 }
 
-/// SEC- — CSRF defense on mutating session-authenticated endpoints.
+/// SEC- - CSRF defense on mutating session-authenticated endpoints.
 ///
 /// A cross-site form POST cannot set custom headers, so requiring the
-/// `X-Sentin8-CSRF` header defeats it. Bearer-token callers are exempt —
+/// `X-Sentin8-CSRF` header defeats it. Bearer-token callers are exempt -
 /// the `Authorization` header is itself a custom header a form cannot set.
 /// The header value is the session token id (the SPA reads it from the
 /// sign-in response body); the server compares it against the resolved

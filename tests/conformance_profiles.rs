@@ -4,11 +4,11 @@
 // SPDX-License-Identifier: Apache-2.0
 
 // ═══════════════════════════════════════════════════════════════════════
-// — security-profile conformance tests
+// - security-profile conformance tests
 // ═══════════════════════════════════════════════════════════════════════
 //
 // Per-profile discovery-vs-behavior assertions for the profile taxonomy
-// (–9) plus env-override resolution tests:
+// (-9) plus env-override resolution tests:
 // - env row stricter than org/platform → enforcement follows the env row
 // - no env/org row → platform fallback
 // - discovery reflects the caller's env profile
@@ -18,7 +18,7 @@
 //
 // Run: make test-rust-integration (from repo root) after `make infra-up`.
 // Runtime-skip gating (sentin8-testing strategy): returns `None` when
-// PostgreSQL is unreachable — the caller skips with one printed line.
+// PostgreSQL is unreachable - the caller skips with one printed line.
 
 use axum::{body::Body, http::Request};
 use sqlx::PgPool;
@@ -30,17 +30,17 @@ use sentin8_auth_server::{build_router, AppState, SigningKeys, TestConfig};
 const SYS_ENV: &str = "00000000-0000-0000-0000-000000000002";
 const SYS_ORG: &str = "00000000-0000-0000-0000-000000000001";
 
-/// Serialize the DB-mutating profile tests — they all write the same
+/// Serialize the DB-mutating profile tests - they all write the same
 /// `security_profiles` rows (delete-then-insert), so concurrent runs
 /// race on `idx_auth_security_profiles_unique`. Same pattern as the bank8
 /// payments-worker mutex-serialized tests.
 static DB_MUTEX: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 async fn spawn_server() -> Option<(axum::Router, PgPool)> {
-    // cargo test does NOT run the binary's dotenvy step — load the repo
+    // cargo test does NOT run the binary's dotenvy step - load the repo
     // .env here so SENTIN8_AUTH_DB_DSN (the service role, auth search_path)
     // applies; without it the harness silently falls back to
-    // `default_database_url` (sentin8_app — no USAGE on schema auth) and
+    // `default_database_url` (sentin8_app - no USAGE on schema auth) and
     // every DB-backed test fails with "permission denied for schema auth".
     let _ = dotenvy::dotenv();
     let config = TestConfig::for_testing();
@@ -48,7 +48,7 @@ async fn spawn_server() -> Option<(axum::Router, PgPool)> {
         Ok(p) => p,
         Err(e) => {
             eprintln!(
-                "skipping DB-backed auth tests — PostgreSQL unreachable ({}): {e}",
+                "skipping DB-backed auth tests - PostgreSQL unreachable ({}): {e}",
                 config.database_url
             );
             return None;
@@ -73,13 +73,13 @@ async fn spawn_server() -> Option<(axum::Router, PgPool)> {
 /// table (default-deny under FORCE RLS), so the delete-then-insert fixture
 /// silently deletes 0 rows and every INSERT collides on the unique index.
 /// The superuser is the role init/seed SQL runs as (architecture-principles
-/// ) — test seeding of shared platform rows is the same class of
+/// ) - test seeding of shared platform rows is the same class of
 /// operation. Returns `None` (skip) when unreachable.
 async fn superuser_pool() -> Option<PgPool> {
     match sqlx::PgPool::connect(sentin8::config::Sentin8Config::superuser_database_url()).await {
         Ok(p) => Some(p),
         Err(e) => {
-            eprintln!("skipping — superuser PostgreSQL unreachable: {e}");
+            eprintln!("skipping - superuser PostgreSQL unreachable: {e}");
             None
         }
     }
@@ -129,7 +129,7 @@ async fn set_profile_row(
     .unwrap();
 }
 
-/// — env row overrides the platform row: discovery flips
+/// - env row overrides the platform row: discovery flips
 /// immediately when the env row exists (PAR endpoint appears/disappears).
 #[tokio::test]
 async fn secprof_env_row_overrides_platform() {
@@ -164,7 +164,7 @@ async fn secprof_env_row_overrides_platform() {
     );
 
     // Insert the env row (fapi_2, PAR on) → discovery must advertise PAR now.
-    // The request carries the tenant env header (X-Sentin8-Env-Id) — without
+    // The request carries the tenant env header (X-Sentin8-Env-Id) - without
     // tenant context, resolution correctly falls back to the platform row.
     set_profile_row(&su, "env", Some(SYS_ENV), "fapi_2", true, true).await;
     let resp = app
@@ -185,7 +185,7 @@ async fn secprof_env_row_overrides_platform() {
         "env fapi_2 row must flip discovery to PAR advertised"
     );
 
-    // Cleanup: restore the platform default and drop the env row — via the
+    // Cleanup: restore the platform default and drop the env row - via the
     // superuser (no DELETE policy for the app role on this table).
     let sys_env: uuid::Uuid = SYS_ENV.parse().unwrap();
     sqlx::query("DELETE FROM auth.security_profiles WHERE scope='env' AND env_id=$1")
@@ -196,11 +196,11 @@ async fn secprof_env_row_overrides_platform() {
     set_profile_row(&su, "platform", None, "fapi_2", true, true).await;
 }
 
-/// — RAR: authorize rejects authorization_details whose `type`
+/// - RAR: authorize rejects authorization_details whose `type`
 /// is not in the client's registered `authorization_details_types`.
 #[tokio::test]
 async fn secprof_rar_type_validation_rejects_unregistered() {
-    // Unit-level: the validator is pure — no server needed.
+    // Unit-level: the validator is pure - no server needed.
     let client_types: Vec<String> = vec!["payment_initiation".into()];
     let ok = serde_json::json!([{ "type": "payment_initiation", "instructedAmount": { "currency": "EUR", "amount": "50.00" } }]);
     assert!(sentin8_auth_server::oauth::validate_authorization_details(&client_types, &ok).is_ok());
@@ -217,7 +217,7 @@ async fn secprof_rar_type_validation_rejects_unregistered() {
     );
 }
 
-/// — grant lifecycle: revoke cascades the Valkey denylist key.
+/// - grant lifecycle: revoke cascades the Valkey denylist key.
 #[tokio::test]
 async fn secprof_grant_revocation_cascade() {
     let _guard = DB_MUTEX.lock().await;
@@ -226,9 +226,9 @@ async fn secprof_grant_revocation_cascade() {
     };
 
     // Self-sufficient fixture: create the user the grant needs (per
-    // testing-strategy — unique per-run rows, no cross-test shared
+    // testing-strategy - unique per-run rows, no cross-test shared
     // state). The platform user count may be zero on a fresh vertical init.
-    // RLS applies to test connections too — set tenant context on the SAME
+    // RLS applies to test connections too - set tenant context on the SAME
     // connection/transaction as the INSERT (architecture-principles ).
     let env: uuid::Uuid = SYS_ENV.parse().unwrap();
     let user: uuid::Uuid = {
@@ -252,7 +252,7 @@ async fn secprof_grant_revocation_cascade() {
         .unwrap()
     };
 
-    // Insert an active grant for the CLI client + the test user — inside
+    // Insert an active grant for the CLI client + the test user - inside
     // the same tenant-context transaction (RLS requires it).
     let _grant_id: uuid::Uuid = {
         let mut tx = pool.begin().await.unwrap();
@@ -287,8 +287,8 @@ async fn secprof_grant_revocation_cascade() {
     };
 }
 
-/// /8 — discovery honesty: the two new flags round-trip via the
-/// admin API surface structs (compile-time contract test — the serde field
+/// /8 - discovery honesty: the two new flags round-trip via the
+/// admin API surface structs (compile-time contract test - the serde field
 /// names are part of the public API).
 #[tokio::test]
 async fn secprof_new_flag_fields_serialize() {
@@ -316,7 +316,7 @@ fn seeded_auth_engine() -> std::sync::Arc<sentin8_auth_server::policy::Engine> {
     let engine = sentin8_auth_server::policy::Engine::new("sentin8:auth");
     let record = PolicySetRecord {
         id: uuid::Uuid::nil(),
- // The engine evaluates per-request env — seed under the SYSTEM env
+ // The engine evaluates per-request env - seed under the SYSTEM env
  // (the env admin tokens in these tests carry).
         env_id: uuid::Uuid::parse_str("00000000-0000-0000-0000-000000000002")
             .expect("static uuid"),

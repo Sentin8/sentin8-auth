@@ -10,12 +10,12 @@
 //! random keys, base32-encoded for the QR code (`otpauth://` URL).
 //!
 //! Endpoints:
-//! - `POST /v1/mfa/enroll` — start enrollment: generate secret, store encrypted
+//! - `POST /v1/mfa/enroll` - start enrollment: generate secret, store encrypted
 //! (status=pending), return the `otpauth://` URL + base32 secret for QR code.
-//! - `POST /v1/mfa/verify` — verify a TOTP code. When used during enrollment,
+//! - `POST /v1/mfa/verify` - verify a TOTP code. When used during enrollment,
 //! confirms the factor (status→active, sets `mfa_enabled=true` on the user).
 //! When used during sign-in, activates the pending session.
-//! - `POST /v1/mfa/disable` — disable and delete an MFA factor (requires
+//! - `POST /v1/mfa/disable` - disable and delete an MFA factor (requires
 //! password re-confirmation).
 
 use axum::{
@@ -40,7 +40,7 @@ type HmacSha1 = Hmac<Sha1>;
 const TOTP_STEP: u64 = 30;
 /// TOTP code length (6 digits).
 const TOTP_DIGITS: u32 = 6;
-/// TOTP secret length in bytes (160 bits — RFC 6238 recommended).
+/// TOTP secret length in bytes (160 bits - RFC 6238 recommended).
 const TOTP_SECRET_BYTES: usize = 20;
 /// Enrollment challenge TTL in seconds.
 const ENROLL_CHALLENGE_TTL_SECS: i64 = 600;
@@ -66,10 +66,10 @@ pub struct EnrollRequest {
 pub struct EnrollResponse {
     /// factor identifier.
     pub factor_id: Uuid,
-    /// `otpauth://totp/...` URL — the client renders this as a QR code.
+    /// `otpauth://totp/...` URL - the client renders this as a QR code.
     /// The otpauth URL.
     pub otpauth_url: String,
-    /// Base32-encoded secret — shown to the user as a fallback to QR scan.
+    /// Base32-encoded secret - shown to the user as a fallback to QR scan.
     /// The secret.
     pub secret: String,
 }
@@ -116,7 +116,7 @@ pub struct DisableRequest {
 
 // ── Handlers ───────────────────────────────────────────────────────────
 
-/// `POST /v1/mfa/enroll` — start TOTP enrollment.
+/// `POST /v1/mfa/enroll` - start TOTP enrollment.
 ///
 /// Generates a random secret, stores it encrypted (status=pending), and
 /// returns the `otpauth://` URL + base32 secret for the QR code. The user
@@ -149,7 +149,7 @@ pub async fn enroll(
 
     let env_id = user_env(&state.pool, user_id).await?;
 
-    // SEC- — tenant context on the same connection (design ).
+    // SEC- - tenant context on the same connection (design ).
     let mut conn = state
         .pool
         .begin()
@@ -214,7 +214,7 @@ pub async fn enroll(
     }
 }
 
-/// `POST /v1/mfa/verify` — verify a TOTP code.
+/// `POST /v1/mfa/verify` - verify a TOTP code.
 ///
 /// Behavior depends on the request:
 /// - `factor_id` present → enrollment verification: confirm the pending
@@ -249,8 +249,8 @@ pub async fn verify(
         return Err((StatusCode::BAD_REQUEST, "code must be 6 digits".into()));
     }
 
-    // SEC- — rate limit the verify endpoint (brute-force defense).
-    // Per-IP 10/min — same policy as sign-in.
+    // SEC- - rate limit the verify endpoint (brute-force defense).
+    // Per-IP 10/min - same policy as sign-in.
     let ip = crate::bot_protection::extract_client_ip(&headers);
     crate::bot_protection::check_signin_rate(&state, &ip, "mfa-verify").await?;
 
@@ -269,7 +269,7 @@ pub async fn verify(
     verify_signin(&state, &headers, &pending_token_id, &req.code).await
 }
 
-/// `POST /v1/mfa/disable` — disable an MFA factor (password re-confirmation).
+/// `POST /v1/mfa/disable` - disable an MFA factor (password re-confirmation).
 /// Handle disable.
 #[utoipa::path(
     post,
@@ -291,7 +291,7 @@ pub async fn disable(
 ) -> Result<Response, (StatusCode, String)> {
     let user_id = resolve_user_id(&state.pool, &headers, None).await?;
 
-    // SEC- — mutating session endpoint: CSRF-gated (Bearer exempt).
+    // SEC- - mutating session endpoint: CSRF-gated (Bearer exempt).
     if let Some(token) = crate::handlers::extract_session_token(&headers) {
         crate::handlers::check_csrf(&headers, &token)?;
     }
@@ -313,7 +313,7 @@ pub async fn disable(
     }
 
     // Delete the factor.
-    // SEC- — tenant context on the same connection (design ).
+    // SEC- - tenant context on the same connection (design ).
     let env_id = user_env(&state.pool, user_id)
         .await
         .unwrap_or(crate::config::SYSTEM_ENV_ID);
@@ -447,7 +447,7 @@ async fn verify_enrollment(
     // RLS : mfa_factors is FORCE-RLS and the factor's env is only
     // known after the row is found. Two-step single-transaction resolve:
     // the factor's env under a SYSTEM-context step (the caller holds the
-    // factor id from the enroll response — a random UUID), then the row +
+    // factor id from the enroll response - a random UUID), then the row +
     // all confirmation writes under the factor's own tenant policy.
     let mut conn = state
         .pool
@@ -593,7 +593,7 @@ async fn verify_signin(
         return Err((StatusCode::UNAUTHORIZED, "invalid TOTP code".into()));
     }
 
-    // SEC- — TOTP replay cache: a code is single-use for the
+    // SEC- - TOTP replay cache: a code is single-use for the
     // remainder of its validity window. Without this, the same code works
     // for any number of requests inside its ~90s window (the challenge is
     // consumed, but an attacker with one phished code could race it).
@@ -608,7 +608,7 @@ async fn verify_signin(
             if matches!(setnx, Ok(0)) {
                 tracing::warn!(
                     user_id = %challenge.user_id,
-                    "TOTP code replayed within its validity window — rejected"
+                    "TOTP code replayed within its validity window - rejected"
                 );
                 return Err((StatusCode::UNAUTHORIZED, "TOTP code already used".into()));
             }
@@ -642,10 +642,10 @@ async fn verify_signin(
     .into_response())
 }
 
-/// Resolve the acting user id (SEC- — hardened):
+/// Resolve the acting user id (SEC- - hardened):
 ///
-/// 1. Session (cookie or Bearer session token) — the acting user.
-/// 2. Explicit `user_id` — **admin-initiated enrollment only**: requires
+/// 1. Session (cookie or Bearer session token) - the acting user.
+/// 2. Explicit `user_id` - **admin-initiated enrollment only**: requires
 ///
 /// a Bearer token with `sentin8:auth:admin:write` (verified). Previously any
 /// caller could enroll/disable MFA for an arbitrary user id.
@@ -654,7 +654,7 @@ async fn resolve_user_id(
     headers: &HeaderMap,
     explicit: Option<Uuid>,
 ) -> Result<Uuid, (StatusCode, String)> {
-    // Session path first — the acting user themselves.
+    // Session path first - the acting user themselves.
     if let Some(token_id) = crate::handlers::extract_session_token(headers) {
         if let Some(session) = Session::find_by_token(pool, &token_id)
             .await
@@ -666,7 +666,7 @@ async fn resolve_user_id(
         }
     }
 
-    // Explicit user id — admin only. The Bearer token must verify and
+    // Explicit user id - admin only. The Bearer token must verify and
     // carry auth:admin:write (or a platform-admin scope).
     if explicit.is_some() {
         let bearer = headers
@@ -680,12 +680,12 @@ async fn resolve_user_id(
                 )
             })?;
         // NOTE: signature verification requires the signing keys, which
-        // live on AppState — we re-verify via a DB-free scope check is not
+        // live on AppState - we re-verify via a DB-free scope check is not
         // possible here without pool+keys. We use the session-token trick
         // above for users; for admin targeting we require an *access*
         // token verified by the caller-provided keys via a lightweight
         // decode + scope check is unsafe. Instead: admins use the admin
-        // API (`POST /v1/admin/users/{id}/mfa`) — refusing here is the
+        // API (`POST /v1/admin/users/{id}/mfa`) - refusing here is the
         // fail-closed option.
         let _ = bearer;
         return Err((
@@ -698,7 +698,7 @@ async fn resolve_user_id(
 }
 
 async fn user_env(pool: &PgPool, user_id: Uuid) -> Result<Uuid, (StatusCode, String)> {
-    // RLS : delegate to the shared two-step lookup — a context-less
+    // RLS : delegate to the shared two-step lookup - a context-less
     // SELECT on the FORCE-RLS users table returns no row under the
     // NOBYPASSRLS service role.
     crate::sessions::user_env(pool, user_id).await
@@ -805,7 +805,7 @@ fn encrypt_secret(config: &AuthConfig, secret: &[u8]) -> Vec<u8> {
 fn decrypt_secret(config: &AuthConfig, cipher: &[u8]) -> Vec<u8> {
     // Envelope path: `open` recognizes BOTH the raw BYTEA form (literal
     // "v2:" prefix) and the base64 TEXT form ("djI6..." prefix). Legacy
-    // XOR rows (no envelope marker) fall through to the XOR path —
+    // XOR rows (no envelope marker) fall through to the XOR path -
     // upgrade-on-read: the caller re-encrypts on next write.
     if sentin8::crypto::is_envelope(cipher) {
         if let Some(mk) = &master_key_for_at_rest() {
@@ -832,7 +832,7 @@ fn master_key_for_at_rest() -> Option<sentin8::crypto::MasterKey> {
     }
 }
 
-/// Legacy XOR (issuer-derived key) — kept ONLY for reading pre-envelope
+/// Legacy XOR (issuer-derived key) - kept ONLY for reading pre-envelope
 /// rows; new writes always use the AES-GCM envelope.
 fn xor_encrypt_secret(config: &AuthConfig, secret: &[u8]) -> Vec<u8> {
     let key = derive_mfa_key(config);
@@ -879,7 +879,7 @@ mod tests {
 
     #[test]
     fn base32_round_trip_known_vector() {
-        // Unpadded base32 (RFC 4648 without the `=` padding) — the encoder
+        // Unpadded base32 (RFC 4648 without the `=` padding) - the encoder
         // here drops trailing `=` padding since TOTP clients accept it.
         assert_eq!(base32_encode(b"f"), "MY");
         assert_eq!(base32_encode(b"fo"), "MZXQ");

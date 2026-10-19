@@ -3,7 +3,7 @@
 // SPDX-FileCopyrightText: Copyright Contributors to the Sentin8:Auth
 // SPDX-License-Identifier: Apache-2.0
 
-//!— Bus event publication helpers for Auth.
+//!- Bus event publication helpers for Auth.
 //!
 //! Provides [`emit_event`] for writing a row directly to the shared
 //! `inbox` table. The Bus inbox relay (spawned in bus)
@@ -12,7 +12,7 @@
 //! `emit_event` is best-effort: it logs a warning on failure but never
 //! returns an error, so it can be called after a successful domain write
 //! without affecting the HTTP response. The inbox row is written in a
-//! separate statement (not the domain transaction) — if the DB is down the
+//! separate statement (not the domain transaction) - if the DB is down the
 //! event is simply lost, which is acceptable for non-critical telemetry
 //! events. For strict transactional guarantees, use
 //! [`sentin8::bus::outbox::insert_inbox_row`] within the domain transaction instead.
@@ -22,16 +22,16 @@ use uuid::Uuid;
 
 /// Append an event to the shared `inbox` table.
 ///
-/// - `env_id` — tenant context (globally unique). Use `Uuid::nil` for
+/// - `env_id` - tenant context (globally unique). Use `Uuid::nil` for
 ///
 /// system-scoped operations with no tenant context.
-/// - `event_type` — e.g. `"sentin8:auth:user:created"`.
-/// - `payload` — the JSON event payload.
+/// - `event_type` - e.g. `"sentin8:auth:user:created"`.
+/// - `payload` - the JSON event payload.
 pub async fn emit_event(pool: &PgPool, env_id: Uuid, event_type: &str, payload: serde_json::Value) {
-    // DBX : auth's LOCAL outbox (`auth.outbox`, RLS-enabled) — the
+    // DBX : auth's LOCAL outbox (`auth.outbox`, RLS-enabled) - the
     // shell's relay pushes rows to Bus POST /v1/produce. The tenant context
     // is transaction-local (set_config …, true), so the context-set and the
-    // INSERT must share ONE transaction — in autocommit the context
+    // INSERT must share ONE transaction - in autocommit the context
     // evaporates before the INSERT and RLS denies the write.
     let mut tx = match pool.begin().await {
         Ok(t) => t,
@@ -67,7 +67,7 @@ pub async fn emit_event(pool: &PgPool, env_id: Uuid, event_type: &str, payload: 
 /// The BFF session-reaper consumes this event and kills every cached BFF
 /// session for `subject_id`, so role/consent changes take effect
 /// immediately instead of at TTL (design DESIGN.md §10). The envelope is
-/// self-contained per the event-first rule — the consumer never calls
+/// self-contained per the event-first rule - the consumer never calls
 /// back: `subject_id`, `env_id`, `session_id` (when a single session was
 /// revoked), `revoked_by`, and `reason`.
 pub fn session_revoked_payload(
@@ -86,7 +86,7 @@ pub fn session_revoked_payload(
     })
 }
 
-/// Emit `sentin8:auth:session:revoked` onto the caller's transaction —
+/// Emit `sentin8:auth:session:revoked` onto the caller's transaction -
 /// the outbox row commits atomically with the revocation UPDATE (§6.7).
 ///
 /// Best-effort: a failed outbox write is logged and swallowed so the
@@ -105,17 +105,17 @@ pub async fn emit_session_revoked(
     }
 }
 
-/// SEC- — **transactional** inbox emission.
+/// SEC- - **transactional** inbox emission.
 ///
 /// Writes the `inbox` row on the caller's open transaction connection,
 /// so the domain change and the event are committed atomically (the
-/// inbox-first pattern per AGENTS.md — the domain write and the inbox row
+/// inbox-first pattern per AGENTS.md - the domain write and the inbox row
 /// either both land or neither does). Handlers that already hold a
 /// transaction for the domain mutation should call this instead of
 /// [`emit_event`].
 ///
 /// Sets the tenant context on the same connection first (`set_config` is
-/// transaction-local — exactly what we want inside a tx).
+/// transaction-local - exactly what we want inside a tx).
 pub async fn emit_event_tx(
     tx: &mut sqlx::PgConnection,
     env_id: Uuid,
@@ -152,7 +152,7 @@ pub async fn emit_event_tx(
 /// caller that follows with tenant-plane statements keeps its context.
 ///
 /// Best-effort by contract: a failure logs and degrades to the
-/// RoleResolver's 30s TTL — never blocks the domain mutation.
+/// RoleResolver's 30s TTL - never blocks the domain mutation.
 pub async fn emit_identity_invalidation_tx(
     tx: &mut sqlx::PgConnection,
     env_id: Uuid,
@@ -238,26 +238,26 @@ pub async fn emit_post_notification(
 
 /// Spawn the auth post pusher: drains `auth.post_outbox` and calls
 /// Sentin8:Post `POST /v1/send` with an M2M token (`sentin8:post:write`).
-/// Failures leave rows unpushed for the next pass — a Post outage never
+/// Failures leave rows unpushed for the next pass - a Post outage never
 /// drops notifications.
 ///
 /// The `auth-post` M2M identity (`TokenSource` + Post HTTP client) is
-/// resolved ONCE for the process lifetime and reused across passes — the
+/// resolved ONCE for the process lifetime and reused across passes - the
 /// audit-pusher pattern (crates/audit §6.8). A per-pass
 /// `register_or_load_m2m_client` load + credential probe + fresh mTLS
 /// client would run two PQ TLS handshakes + two token POSTs every pass
 /// whose transient allocations ratchet allocator arenas (auth DESIGN §7:
 /// idle RSS growth). Stale identities re-establish through the token
-/// source's own 401 single-flight self-heal (60s cooldown) — never by
+/// source's own 401 single-flight self-heal (60s cooldown) - never by
 /// rebuilding the client. First-pass DCR failure only retries (rows stay
 /// queued), matching the pre-DCR first-boot behavior.
 pub fn spawn_post_pusher(pool: PgPool, post_url: String, auth_issuer: String) {
     tokio::spawn(async move {
         // auth DESIGN §4.3f: the `auth-post` CERTIFICATE is
-        // the identity — ensure it once (mint retries while Acme comes
+        // the identity - ensure it once (mint retries while Acme comes
         // up), then build the ONE cert-presenting client for the task
         // lifetime (connection reuse across passes; webhook relay
-        // pattern — a per-pass client churns pools). No token exists on
+        // pattern - a per-pass client churns pools). No token exists on
         // this path; Post's TLS layer authenticates the handshake.
         let cert = loop {
             match sentin8::auth::m2m::ensure_workload_certificate(
@@ -282,7 +282,7 @@ pub fn spawn_post_pusher(pool: PgPool, post_url: String, auth_issuer: String) {
         let client = match sentin8::middleware::mtls::build_mtls_client(&mtls) {
             Ok(c) => c,
             Err(e) => {
-                tracing::warn!(error = %e, "auth: post push transport build failed — pusher disabled");
+                tracing::warn!(error = %e, "auth: post push transport build failed - pusher disabled");
                 return;
             }
         };
@@ -297,8 +297,8 @@ pub fn spawn_post_pusher(pool: PgPool, post_url: String, auth_issuer: String) {
 
 /// One drain pass: fetch unpushed rows, push each to POST /v1/send, mark
 /// pushed on 2xx. The HTTP client is the cert-presenting transport
-/// provided by the caller (the process-lifetime `auth-post` identity —
-/// — this function owns only DB access.
+/// provided by the caller (the process-lifetime `auth-post` identity -
+/// - this function owns only DB access.
 async fn drain_and_push_post(
     pool: PgPool,
     client: &reqwest::Client,
@@ -343,10 +343,10 @@ async fn drain_and_push_post(
                 pushed += 1;
             }
             Ok(r) => {
-                tracing::warn!(status = %r.status(), "auth: post send rejected — will retry");
+                tracing::warn!(status = %r.status(), "auth: post send rejected - will retry");
             }
             Err(e) => {
-                tracing::warn!(error = %e, "auth: post send failed — will retry");
+                tracing::warn!(error = %e, "auth: post send failed - will retry");
             }
         }
     }
@@ -357,7 +357,7 @@ async fn drain_and_push_post(
 mod tests {
     use super::*;
 
-    /// The envelope the BFF session-reaper parses — the exact JSON shape is
+    /// The envelope the BFF session-reaper parses - the exact JSON shape is
     /// a cross-service contract (auth DESIGN §10 → bff DESIGN §10), so the
     /// builder's output is pinned here.
     #[test]
@@ -379,7 +379,7 @@ mod tests {
     }
 
     /// A subject-scope revocation (no single session) must omit
-    /// `session_id` as `null` — the BFF reaper treats `null` as
+    /// `session_id` as `null` - the BFF reaper treats `null` as
     /// "kill every cached session for the subject".
     #[test]
     fn session_revoked_payload_without_session() {

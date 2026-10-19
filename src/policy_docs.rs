@@ -8,11 +8,11 @@
 //!
 //! Auth mounts the policy-admin routes inline (its own `AppState`, without
 //! the shell's `Arc<AppState>` mount), and the underlying handlers are
-//! GENERIC (`sentin8::shield::admin::*<T>`) — utoipa cannot reference a
+//! GENERIC (`sentin8::shield::admin::*<T>`) - utoipa cannot reference a
 //! generic handler from `paths()` (no turbofish support in 5.5). Each
 //! route binds one of these concrete-state wrappers; the spec references
 //! these (OAPEC design §2 rule 3). The wrappers add nothing: same handler
-//! body, same gates, same state — only the concrete type is pinned.
+//! body, same gates, same state - only the concrete type is pinned.
 
 use crate::handlers::AppState;
 use axum::extract::{Path, Query, State};
@@ -27,7 +27,7 @@ use sentin8::shield::admin::{
     PutAttributeBody, PutPolicySetBody, PutRelationBody,
 };
 
-/// `GET /v1/admin/policy-sets` — the env's policy sets.
+/// `GET /v1/admin/policy-sets` - the env's policy sets.
 #[utoipa::path(
     get,
     path = "/v1/admin/policy-sets",
@@ -46,7 +46,7 @@ pub async fn policy_list_sets(
     list_policy_sets(State(state), headers, Query(q)).await
 }
 
-/// `GET /v1/admin/policy-sets/{name}` — one policy set.
+/// `GET /v1/admin/policy-sets/{name}` - one policy set.
 #[utoipa::path(
     get,
     path = "/v1/admin/policy-sets/{name}",
@@ -68,7 +68,7 @@ pub async fn policy_get_set(
     get_policy_set(State(state), headers, Path(name), Query(q)).await
 }
 
-/// `PUT /v1/admin/policy-sets/{name}` — store a policy set.
+/// `PUT /v1/admin/policy-sets/{name}` - store a policy set.
 #[utoipa::path(
     put,
     path = "/v1/admin/policy-sets/{name}",
@@ -92,7 +92,7 @@ pub async fn policy_put_set(
     put_policy_set(State(state), headers, Path(name), Query(q), body).await
 }
 
-/// `DELETE /v1/admin/policy-sets/{name}` — delete a policy set.
+/// `DELETE /v1/admin/policy-sets/{name}` - delete a policy set.
 #[utoipa::path(
     delete,
     path = "/v1/admin/policy-sets/{name}",
@@ -113,7 +113,7 @@ pub async fn policy_delete_set(
     delete_policy_set(State(state), headers, Path(name), Query(q)).await
 }
 
-/// `POST /v1/admin/policy-sets/{name}/test` — dry-run evaluate against
+/// `POST /v1/admin/policy-sets/{name}/test` - dry-run evaluate against
 /// the set.
 #[utoipa::path(
     post,
@@ -137,7 +137,7 @@ pub async fn policy_test_set(
     test_policy_set(State(state), headers, Path(name), Query(q), body).await
 }
 
-/// `POST /v1/admin/policy-sets/enforce` — switch the named sets to
+/// `POST /v1/admin/policy-sets/enforce` - switch the named sets to
 /// enforce mode (RFW row action).
 #[utoipa::path(
     post,
@@ -159,7 +159,7 @@ pub async fn policy_enforce(
     admin_enforce_policy_set(State(state), headers, Query(q), body).await
 }
 
-/// `POST /v1/admin/policy-sets/shadow` — switch the named sets to shadow
+/// `POST /v1/admin/policy-sets/shadow` - switch the named sets to shadow
 /// mode (RFW row action).
 #[utoipa::path(
     post,
@@ -181,7 +181,7 @@ pub async fn policy_shadow(
     admin_shadow_policy_set(State(state), headers, Query(q), body).await
 }
 
-/// `POST /v1/admin/policy-sets/disable` — disable the named sets (RFW row
+/// `POST /v1/admin/policy-sets/disable` - disable the named sets (RFW row
 /// action).
 #[utoipa::path(
     post,
@@ -203,7 +203,7 @@ pub async fn policy_disable(
     admin_disable_policy_set(State(state), headers, Query(q), body).await
 }
 
-/// `GET /v1/admin/relations` — the env's ReBAC relations.
+/// `GET /v1/admin/relations` - the env's ReBAC relations.
 #[utoipa::path(
     get,
     path = "/v1/admin/relations",
@@ -222,7 +222,7 @@ pub async fn policy_relations(
     list_relations(State(state), headers, Query(q)).await
 }
 
-/// `PUT /v1/admin/relations` — store a relation tuple.
+/// `PUT /v1/admin/relations` - store a relation tuple.
 #[utoipa::path(
     put,
     path = "/v1/admin/relations",
@@ -244,7 +244,7 @@ pub async fn policy_put_relation(
     put_relation(State(state), headers, Query(q), body).await
 }
 
-/// `DELETE /v1/admin/relations` — delete a relation by id (query param).
+/// `DELETE /v1/admin/relations` - delete a relation by id (query param).
 #[utoipa::path(
     delete,
     path = "/v1/admin/relations",
@@ -264,7 +264,7 @@ pub async fn policy_delete_relation(
     delete_relation(State(state), headers, Query(q)).await
 }
 
-/// `GET /v1/admin/relations/check` — dry-run relation check.
+/// `GET /v1/admin/relations/check` - dry-run relation check.
 #[utoipa::path(
     get,
     path = "/v1/admin/relations/check",
@@ -288,7 +288,7 @@ pub async fn policy_check_relation(
     check_relation(State(state), headers, Query(q)).await
 }
 
-/// `GET /v1/admin/attributes` — the env's principal attributes.
+/// `GET /v1/admin/attributes` - the env's principal attributes.
 #[utoipa::path(
     get,
     path = "/v1/admin/attributes",
@@ -307,7 +307,7 @@ pub async fn policy_attributes(
     list_attributes(State(state), headers, Query(q)).await
 }
 
-/// `PUT /v1/admin/attributes` — store a principal attribute.
+/// `PUT /v1/admin/attributes` - store a principal attribute.
 #[utoipa::path(
     put,
     path = "/v1/admin/attributes",
@@ -329,7 +329,7 @@ pub async fn policy_put_attribute(
     put_attribute(State(state), headers, Query(q), body).await
 }
 
-/// `DELETE /v1/admin/attributes` — delete an attribute by id (query
+/// `DELETE /v1/admin/attributes` - delete an attribute by id (query
 /// param).
 #[utoipa::path(
     delete,

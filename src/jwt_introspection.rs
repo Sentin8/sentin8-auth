@@ -3,7 +3,7 @@
 // SPDX-FileCopyrightText: Copyright Contributors to the Sentin8:Auth
 // SPDX-License-Identifier: Apache-2.0
 
-//! JWT Response for Token Introspection — RFC 9701 .
+//! JWT Response for Token Introspection - RFC 9701 .
 //!
 //! When the client sends `Accept: application/token-introspection+jwt`, the
 //! introspection endpoint returns a **signed JWT** (content type
@@ -11,10 +11,10 @@
 //! response claims, instead of plain JSON.
 //!
 //! The JWT is signed with the AS's signing key. Claims include:
-//! - `iss` — the AS issuer
-//! - `aud` — the requesting client_id
-//! - `iat` — issued-at
-//! - `active` — boolean
+//! - `iss` - the AS issuer
+//! - `aud` - the requesting client_id
+//! - `iat` - issued-at
+//! - `active` - boolean
 //! - plus the standard introspection response fields (scope, sub, exp, etc.)
 
 use axum::http::{HeaderMap, StatusCode};

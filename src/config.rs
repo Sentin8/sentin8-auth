@@ -47,10 +47,10 @@ pub struct AuthConfig {
     ///Stat base URL.
     /// The sentin8 stat URL.
     pub sentin8_stat_url: String,
-    ///— Bus base URL for event publication.
+    ///- Bus base URL for event publication.
     /// The sentin8 bus URL.
     pub sentin8_bus_url: String,
-    ///— Bus stream family for Auth events
+    ///- Bus stream family for Auth events
     /// (default `"auth"`).
     /// The stream family.
     pub stream_family: String,
@@ -75,7 +75,7 @@ impl AuthConfig {
                 })
             }),
             // VALKEYDERIVE-1 (group DESIGN.md §3.1): explicit env override,
-            // else the plane-derived URL — the historical `/1` DB number was
+            // else the plane-derived URL - the historical `/1` DB number was
             // inert (GLIDE connects at DB 0; ACLs are the isolation).
             valkey_url: env::var("SENTIN8_AUTH_VALKEY_URL")
                 .ok()

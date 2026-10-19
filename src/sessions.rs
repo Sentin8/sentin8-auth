@@ -3,7 +3,7 @@
 // SPDX-FileCopyrightText: Copyright Contributors to the Sentin8:Auth
 // SPDX-License-Identifier: Apache-2.0
 
-//! Session management — create, verify, refresh, revoke.
+//! Session management - create, verify, refresh, revoke.
 //!
 //! Auth sessions are stored in PostgreSQL (`sentin8_auth_sessions`) and
 //! referenced by an opaque `__session` cookie (cross-subdomain, HttpOnly).
@@ -87,14 +87,14 @@ impl Session {
     /// therefore a two-step, single-transaction resolve:
     /// 1. under a SYSTEM-context tx, resolve the session's `env_id` by
     ///
-    /// token (a token id is a random 128-bit secret — the SYSTEM step
+    /// token (a token id is a random 128-bit secret - the SYSTEM step
     /// leaks nothing a caller doesn't already hold: you must already
     /// possess the token to use it);
     /// 2. re-set the context to THAT env and fetch the full row under
     ///
     /// the session's own tenant policy.
     ///
-    /// `set_config(..., true)` is transaction-local — both steps share one
+    /// `set_config(..., true)` is transaction-local - both steps share one
     /// `pool.begin` ( rule 2).
     ///
     /// Handle find by token.
@@ -112,7 +112,7 @@ impl Session {
         .fetch_optional(&mut *tx)
         .await?;
         let Some(env_id) = env_id else {
-            // Token unknown or inactive — rollback (no partial context).
+            // Token unknown or inactive - rollback (no partial context).
             tx.rollback().await.ok();
             return Ok(None);
         };
@@ -131,14 +131,14 @@ impl Session {
         )
         .fetch_optional(&mut *tx)
         .await?;
-        tx.rollback().await.ok(); // read-only — nothing to commit
+        tx.rollback().await.ok(); // read-only - nothing to commit
         Ok(row)
     }
 
     /// Revoke a session by token_id and emit `sentin8:auth:session:revoked`.
     ///
     /// The revocation UPDATE and the outbox row land in one transaction
-    /// (outbox-first §6.7 — design DESIGN.md §10): the relay drains
+    /// (outbox-first §6.7 - design DESIGN.md §10): the relay drains
     /// `auth.outbox` to Bus `POST /v1/produce`, and BFF's session-reaper
     /// subscription kills the cached BFF session for the subject. Best-effort
     /// at the emit's own tolerance: a failed outbox write rolls back ONLY the
@@ -159,7 +159,7 @@ impl Session {
                 .fetch_optional(&mut *tx)
                 .await?;
         let Some((user_id, env_id)) = row else {
-            tx.rollback().await.ok(); // read-only — nothing to commit
+            tx.rollback().await.ok(); // read-only - nothing to commit
             return Ok(());
         };
         let _ = sqlx::query("SELECT sentin8_set_tenant_context($1)")
@@ -219,7 +219,7 @@ impl Session {
     }
 }
 
-/// Resolve a user's `env_id` — the RLS-correct lookup used by handlers that
+/// Resolve a user's `env_id` - the RLS-correct lookup used by handlers that
 /// must derive a user's tenant BEFORE setting context (MFA enroll/verify,
 /// passkey finish, code exchange). `auth.users` is FORCE-RLS under
 /// NOBYPASSRLS service roles, so a context-less

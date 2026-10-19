@@ -15,18 +15,18 @@
 //! ## Endpoints
 //!
 //! Admin API:
-//! - `GET /v1/admin/enterprise-connections` — list connections
-//! - `POST /v1/admin/enterprise-connections` — create connection
-//! - `GET /v1/admin/enterprise-connections/{id}` — connection detail
-//! - `PUT /v1/admin/enterprise-connections/{id}` — update
-//! - `DELETE /v1/admin/enterprise-connections/{id}` — delete
+//! - `GET /v1/admin/enterprise-connections` - list connections
+//! - `POST /v1/admin/enterprise-connections` - create connection
+//! - `GET /v1/admin/enterprise-connections/{id}` - connection detail
+//! - `PUT /v1/admin/enterprise-connections/{id}` - update
+//! - `DELETE /v1/admin/enterprise-connections/{id}` - delete
 //!
 //! SSO flow:
-//! - `GET /v1/sso/{connection_id}/authorize` — redirect to the IdP authorize
+//! - `GET /v1/sso/{connection_id}/authorize` - redirect to the IdP authorize
 //! URL (OIDC) or SAML SSO URL.
-//! - `GET /v1/sso/{connection_id}/callback` — OIDC code exchange callback.
-//! - `GET /v1/saml/metadata/{connection_id}` — SP metadata XML.
-//! - `POST /v1/saml/acs/{connection_id}` — SAML ACS (accepts SAMLResponse).
+//! - `GET /v1/sso/{connection_id}/callback` - OIDC code exchange callback.
+//! - `GET /v1/saml/metadata/{connection_id}` - SP metadata XML.
+//! - `POST /v1/saml/acs/{connection_id}` - SAML ACS (accepts SAMLResponse).
 
 use axum::{
     extract::{Path, Query, State},
@@ -42,7 +42,7 @@ use uuid::Uuid;
 use crate::admin::{set_tenant_context, TargetEnvQuery};
 use crate::handlers::AppState;
 
-/// SSO session TTL (10 minutes — enough for an IdP round trip).
+/// SSO session TTL (10 minutes - enough for an IdP round trip).
 const SSO_SESSION_TTL_SECS: i64 = 600;
 
 // ── Admin API: requests / responses ───────────────────────────────────
@@ -142,7 +142,7 @@ pub struct ListConnectionsQuery {
     #[serde(default)]
     /// env identifier.
     pub env_id: Option<Uuid>,
-    /// Target env (BFF proxy contract — design Fix A/B/C: admin
+    /// Target env (BFF proxy contract - design Fix A/B/C: admin
     /// endpoints resolve their tenant from this param; required).
     #[serde(default)]
     /// target env identifier.
@@ -151,7 +151,7 @@ pub struct ListConnectionsQuery {
 
 // ── Admin API: handlers ────────────────────────────────────────────────
 
-/// `GET /v1/admin/enterprise-connections` — list enterprise connections.
+/// `GET /v1/admin/enterprise-connections` - list enterprise connections.
 #[utoipa::path(
     get,
     operation_id = "connection.list",
@@ -169,9 +169,9 @@ pub async fn list_connections(
     headers: HeaderMap,
     Query(q): Query<ListConnectionsQuery>,
 ) -> Result<Json<Vec<ConnectionResponse>>, (StatusCode, String)> {
-    // SEC- — admin guard + tenant scoping. The previous
+    // SEC- - admin guard + tenant scoping. The previous
     // `WHERE ($1::uuid IS NULL OR env_id = $1)` listed EVERY tenant's IdP
-    // connections when env_id was omitted — a cross-tenant leak.
+    // connections when env_id was omitted - a cross-tenant leak.
     let env_param = q
         .target_env_id
         .clone()
@@ -184,7 +184,7 @@ pub async fn list_connections(
     .await?;
     // Tenant context on the same connection (auth DESIGN §6.3):
     // sentin8_set_tenant_context is transaction-local (set_config(…, true))
-    // — a pool-direct query runs context-less and the FORCE-RLS policy
+    // - a pool-direct query runs context-less and the FORCE-RLS policy
     // filters every row, so the admin UI's connection list came back empty.
     let mut conn = state
         .pool
@@ -232,7 +232,7 @@ pub async fn list_connections(
     Ok(Json(conns))
 }
 
-/// `POST /v1/admin/enterprise-connections` — create an enterprise connection.
+/// `POST /v1/admin/enterprise-connections` - create an enterprise connection.
 #[utoipa::path(
     post,
     operation_id = "connection.create",
@@ -253,8 +253,8 @@ pub async fn create_connection(
     Query(teq): Query<TargetEnvQuery>,
     Json(req): Json<CreateConnectionRequest>,
 ) -> Result<Response, (StatusCode, String)> {
-    // SEC- — admin guard. target_env_id is forwarded by the BFF proxy
-    // (design Fix A) — auth is env-scoped, no fallback.
+    // SEC- - admin guard. target_env_id is forwarded by the BFF proxy
+    // (design Fix A) - auth is env-scoped, no fallback.
     let _auth = crate::sentin8or_auth::require_sentin8or_access_write(
         &state,
         &headers,
@@ -278,7 +278,7 @@ pub async fn create_connection(
         .scopes
         .unwrap_or_else(|| vec!["openid".into(), "profile".into(), "email".into()]);
 
-    // SEC- — tenant context on the same connection (design ).
+    // SEC- - tenant context on the same connection (design ).
     let mut conn = state
         .pool
         .begin()
@@ -363,7 +363,7 @@ pub async fn create_connection(
     }
 }
 
-/// `GET /v1/admin/enterprise-connections/{id}` — get an enterprise connection.
+/// `GET /v1/admin/enterprise-connections/{id}` - get an enterprise connection.
 #[utoipa::path(
     get,
     path = "/v1/admin/enterprise-connections/{id}",
@@ -382,14 +382,14 @@ pub async fn get_connection(
     Path(id): Path<Uuid>,
     Query(teq): Query<TargetEnvQuery>,
 ) -> Result<Json<ConnectionResponse>, (StatusCode, String)> {
-    // SEC- — admin guard. target_env_id forwarded by BFF proxy.
+    // SEC- - admin guard. target_env_id forwarded by BFF proxy.
     let _auth = crate::sentin8or_auth::require_sentin8or_access_with_env(
         &state,
         &headers,
         teq.target_env_id.as_deref(),
     )
     .await?;
-    // Tenant context on the same connection (auth DESIGN §6.3) — the
+    // Tenant context on the same connection (auth DESIGN §6.3) - the
     // FORCE-RLS policy filters pool-direct reads otherwise.
     let mut conn = state
         .pool
@@ -433,7 +433,7 @@ pub async fn get_connection(
     }))
 }
 
-/// `PUT /v1/admin/enterprise-connections/{id}` — update an enterprise connection.
+/// `PUT /v1/admin/enterprise-connections/{id}` - update an enterprise connection.
 #[utoipa::path(
     put,
     path = "/v1/admin/enterprise-connections/{id}",
@@ -454,7 +454,7 @@ pub async fn update_connection(
     Query(teq): Query<TargetEnvQuery>,
     Json(req): Json<CreateConnectionRequest>,
 ) -> Result<StatusCode, (StatusCode, String)> {
-    // SEC- — admin guard. target_env_id forwarded by BFF proxy.
+    // SEC- - admin guard. target_env_id forwarded by BFF proxy.
     let _auth = crate::sentin8or_auth::require_sentin8or_access_write(
         &state,
         &headers,
@@ -466,7 +466,7 @@ pub async fn update_connection(
         .as_ref()
         .filter(|s| !s.is_empty())
         .map(|s| encrypt_secret(&state.config, s.as_bytes()));
-    // SEC- — tenant context on the same connection (design ).
+    // SEC- - tenant context on the same connection (design ).
     let mut conn = state
         .pool
         .begin()
@@ -532,7 +532,7 @@ pub async fn update_connection(
     }
 }
 
-/// `DELETE /v1/admin/enterprise-connections/{id}` — delete an enterprise connection.
+/// `DELETE /v1/admin/enterprise-connections/{id}` - delete an enterprise connection.
 #[utoipa::path(
     delete,
     path = "/v1/admin/enterprise-connections/{id}",
@@ -551,14 +551,14 @@ pub async fn delete_connection(
     Path(id): Path<Uuid>,
     Query(teq): Query<TargetEnvQuery>,
 ) -> Result<StatusCode, (StatusCode, String)> {
-    // SEC- — admin guard. target_env_id forwarded by BFF proxy.
+    // SEC- - admin guard. target_env_id forwarded by BFF proxy.
     let _auth = crate::sentin8or_auth::require_sentin8or_access_write(
         &state,
         &headers,
         teq.target_env_id.as_deref(),
     )
     .await?;
-    // SEC- — tenant context on the same connection (design ).
+    // SEC- - tenant context on the same connection (design ).
     let mut conn = state
         .pool
         .begin()
@@ -605,12 +605,12 @@ pub struct SsoAuthorizeQuery {
     pub return_to: Option<String>,
 }
 
-/// `GET /v1/sso/{connection_id}/authorize` — start the SSO flow.
+/// `GET /v1/sso/{connection_id}/authorize` - start the SSO flow.
 ///
 /// For OIDC connections, generates a state + PKCE pair, stores the SSO
 /// session, and redirects to the IdP's authorize endpoint. For SAML
 /// connections, redirects to the IdP's SSO URL (extracted from the
-/// metadata — when not available, returns 501).
+/// metadata - when not available, returns 501).
 /// Handle sso authorize.
 #[utoipa::path(
     get,
@@ -699,7 +699,7 @@ pub async fn sso_authorize(
         );
         Ok(Redirect::to(&url).into_response())
     } else {
-        // SAML — redirect to the IdP SSO URL (parsed from metadata).
+        // SAML - redirect to the IdP SSO URL (parsed from metadata).
         let sso_url = conn
             .metadata_url
             .as_deref()
@@ -726,7 +726,7 @@ pub struct SsoCallbackQuery {
     pub error: Option<String>,
 }
 
-/// `GET /v1/sso/{connection_id}/callback` — OIDC code exchange callback.
+/// `GET /v1/sso/{connection_id}/callback` - OIDC code exchange callback.
 #[utoipa::path(
     get,
     path = "/v1/sso/{connection_id}/callback",
@@ -865,7 +865,7 @@ pub async fn sso_callback(
 
     // Decode the id_token, then VERIFY its signature against the IdP's JWKS
     // (SEC-). Previously the payload was decoded with no signature
-    // check and the stored nonce was never compared — a forged or replayed
+    // check and the stored nonce was never compared - a forged or replayed
     // id_token minted a real session.
     let claims = decode_jwt_unverified(id_token)
         .map_err(|e| (StatusCode::BAD_GATEWAY, format!("invalid id_token: {e}")))?;
@@ -885,7 +885,7 @@ pub async fn sso_callback(
     if id_token_exp < chrono::Utc::now().timestamp() {
         return Err((StatusCode::BAD_GATEWAY, "id_token has expired".into()));
     }
-    // Nonce — MUST match the SSO session's stored nonce (OIDC Core ).
+    // Nonce - MUST match the SSO session's stored nonce (OIDC Core ).
     let id_token_nonce = claims.get("nonce").and_then(|v| v.as_str()).unwrap_or("");
     let expected_nonce = sso.nonce.as_deref().unwrap_or("");
     if expected_nonce.is_empty() || id_token_nonce != expected_nonce {
@@ -989,7 +989,7 @@ pub async fn sso_callback(
 
 // ── SAML SP metadata ───────────────────────────────────────────────────
 
-/// `GET /v1/saml/metadata/{connection_id}` — return the SP metadata XML.
+/// `GET /v1/saml/metadata/{connection_id}` - return the SP metadata XML.
 #[utoipa::path(
     get,
     path = "/v1/saml/metadata/{connection_id}",
@@ -1041,14 +1041,14 @@ pub async fn saml_metadata(
         .into_response())
 }
 
-/// `POST /v1/saml/acs/{connection_id}` — SAML Assertion Consumer Service.
+/// `POST /v1/saml/acs/{connection_id}` - SAML Assertion Consumer Service.
 ///
-/// SEC- — **default deny**. Without a vendored SAML signature
+/// SEC- - **default deny**. Without a vendored SAML signature
 /// validation library, unsigned assertions are rejected in production
 /// (`SENTIN8_AUTH_ALLOW_UNSIGNED_SAML=1` opts in for dev/test). When
 /// allowed, we additionally validate: RelayState session (below),
 /// `InResponseTo`, audience restriction, and `NotOnOrAfter`. Full XML
-/// signature validation remains a documented gap — SAML connections are
+/// signature validation remains a documented gap - SAML connections are
 /// not used by any vertical today; use OIDC connections for SSO.
 /// Handle SAML acs.
 #[utoipa::path(
@@ -1097,7 +1097,7 @@ pub async fn saml_acs(
         return Err((StatusCode::GONE, "SSO session expired".into()));
     }
 
-    // SEC- — default deny: unsigned SAML assertions are refused
+    // SEC- - default deny: unsigned SAML assertions are refused
     // in production unless the explicit dev flag is set.
     let allow_unsigned = std::env::var("SENTIN8_AUTH_ALLOW_UNSIGNED_SAML").is_ok();
     if !allow_unsigned {
@@ -1107,7 +1107,7 @@ pub async fn saml_acs(
         );
         return Err((
             StatusCode::UNPROCESSABLE_ENTITY,
-            "SAML assertion signature validation is not implemented — this connection must use OIDC".into(),
+            "SAML assertion signature validation is not implemented - this connection must use OIDC".into(),
         ));
     }
     tracing::warn!(connection_id = %connection_id, "SAML ACS: UNSIGNED ASSERTION ACCEPTED (dev flag)");
@@ -1126,7 +1126,7 @@ pub async fn saml_acs(
     })?;
     let xml = String::from_utf8_lossy(&decoded);
 
-    // SEC- — partial validation when the dev flag is set:
+    // SEC- - partial validation when the dev flag is set:
     // InResponseTo must reference the SSO session state when present, the
     // audience must contain our entity, and NotOnOrAfter must be future.
     if let Some(in_response_to) = extract_saml_attribute(&xml, "InResponseTo") {
@@ -1195,7 +1195,7 @@ async fn find_or_create_sso_user(
     env_id: Option<Uuid>,
 ) -> Result<Uuid, (StatusCode, String)> {
     let env_id = env_id.unwrap_or(sentin8::config::SYSTEM_ENV_ID);
-    // Look up the user scoped to env_id — the same email can
+    // Look up the user scoped to env_id - the same email can
     // exist as a separate user in each tenant, so a global lookup
     // would either find the wrong user or create a duplicate that
     // violates the (env_id, email) unique constraint.
@@ -1228,10 +1228,10 @@ async fn find_or_create_sso_user(
         Ok(_) => {
             //auto-add new SSO users to all customer-mode
             // app instance groups for this env. Staff-mode apps are NOT
-            // auto-added — admin must explicitly grant group membership.
+            // auto-added - admin must explicitly grant group membership.
             // AUTH-4: the helper now returns whether anything was
             // provisioned; a zero result means the user has NO permission
-            // closure (design auth ) — warn so it is visible.
+            // closure (design auth ) - warn so it is visible.
             if env_id != sentin8::config::SYSTEM_ENV_ID {
                 let provisioned =
                     crate::handlers::auto_add_to_app_groups(&state.pool, id, env_id).await;
@@ -1239,7 +1239,7 @@ async fn find_or_create_sso_user(
                     tracing::warn!(
                         user_id = %id,
                         %env_id,
-                        "auth: SSO find-or-create provisioned NO permission closure — user will deny on every platform endpoint"
+                        "auth: SSO find-or-create provisioned NO permission closure - user will deny on every platform endpoint"
                     );
                 }
             }
@@ -1276,7 +1276,7 @@ async fn resolve_oidc_endpoint(discovery_url: &str, field: &str) -> Option<Strin
 }
 
 /// Decode a JWT's payload without verifying the signature (for IdP id_token
-/// inspection — signature verification is performed by the caller against
+/// inspection - signature verification is performed by the caller against
 /// the IdP's JWKS in a full implementation).
 pub(crate) fn decode_jwt_unverified(jwt: &str) -> Result<serde_json::Value, String> {
     sentin8::auth::jwt::decode_payload(jwt)
@@ -1284,7 +1284,7 @@ pub(crate) fn decode_jwt_unverified(jwt: &str) -> Result<serde_json::Value, Stri
 
 /// Extract the NameID (email) from a SAML response XML.
 fn extract_saml_nameid(xml: &str) -> Option<String> {
-    // Naive XML substring extraction — sufficient for the typical NameID
+    // Naive XML substring extraction - sufficient for the typical NameID
     // format `urn:oasis:names:tc:SAML::nameid-format:emailAddress`.
     let start = xml.find("<saml:NameID")?;
     let end = xml[start..].find("</saml:NameID>")?;
@@ -1293,7 +1293,7 @@ fn extract_saml_nameid(xml: &str) -> Option<String> {
     Some(segment[gt + 1..].trim().to_string())
 }
 
-/// Extract a SAML **attribute** value (SEC-) — used for the
+/// Extract a SAML **attribute** value (SEC-) - used for the
 /// InResponseTo / NotOnOrAfter checks on the dev-flag path. Looks for
 /// `AttributeName="value"` anywhere in the document (naive but bounded;
 /// values are only compared, never executed).
@@ -1350,12 +1350,12 @@ fn resolve_issuer(state: &AppState, headers: &HeaderMap) -> String {
 }
 
 /// Encrypt a secret at rest with the shared AES-256-GCM envelope
-/// (`v2:` prefix, SEC-) — the same scheme as signing keys and DCR
+/// (`v2:` prefix, SEC-) - the same scheme as signing keys and DCR
 /// secrets. The master key comes from `SENTIN8_AUTH_MASTER_KEY`.
 ///
 /// The column (`client_secret_cipher`) is BYTEA, so the stored form is the
 /// **raw** envelope bytes (`"v2:" || nonce || ct`, [`sentin8::crypto::seal_raw`])
-/// — NOT the base64 TEXT form of [`seal`]. The previous TEXT-as-bytes form was
+/// - NOT the base64 TEXT form of [`seal`]. The previous TEXT-as-bytes form was
 /// not recognized by `decrypt_secret` (envelope check failed → XOR garbage).
 fn encrypt_secret(config: &crate::config::AuthConfig, secret: &[u8]) -> Vec<u8> {
     match (
@@ -1375,7 +1375,7 @@ fn encrypt_secret(config: &crate::config::AuthConfig, secret: &[u8]) -> Vec<u8> 
 
 fn decrypt_secret(config: &crate::config::AuthConfig, cipher: &[u8]) -> Vec<u8> {
     // Envelope path: `open` recognizes BOTH the raw BYTEA form (literal
-    // "v2:" prefix) and the base64 TEXT form ("djI6..." prefix) — legacy
+    // "v2:" prefix) and the base64 TEXT form ("djI6..." prefix) - legacy
     // rows written as TEXT-as-bytes by the pre-`seal_raw` encryptor decrypt
     // correctly too.
     let mk = match crate::jwks::master_key() {
@@ -1394,7 +1394,7 @@ fn decrypt_secret(config: &crate::config::AuthConfig, cipher: &[u8]) -> Vec<u8> 
     // Envelope bytes but no key / decrypt failure → fall through to the
     // legacy XOR path rather than returning empty (fail-loud legacy read).
     } else if let Ok(text) = std::str::from_utf8(cipher) {
-        // Legacy rows stored the TEXT (base64) form into the BYTEA column —
+        // Legacy rows stored the TEXT (base64) form into the BYTEA column -
         // "djI6..." prefix. crypto::open decodes that form natively.
         if sentin8::crypto::is_envelope_str(text) {
             if let Some(mk) = &mk {
@@ -1415,7 +1415,7 @@ fn decrypt_secret(config: &crate::config::AuthConfig, cipher: &[u8]) -> Vec<u8> 
     plain
 }
 
-/// Legacy XOR-with-issuer scheme — kept only to read pre-envelope rows.
+/// Legacy XOR-with-issuer scheme - kept only to read pre-envelope rows.
 fn xor_key(config: &crate::config::AuthConfig, label: &str) -> Vec<u8> {
     use sha2::Digest;
     let mut hasher = sha2::Sha256::new();

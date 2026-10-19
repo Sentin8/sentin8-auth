@@ -3,7 +3,7 @@
 // SPDX-FileCopyrightText: Copyright Contributors to the Sentin8:Auth
 // SPDX-License-Identifier: Apache-2.0
 
-//! JWKS endpoint — dual-algorithm JWT signing (ML-DSA-65 + RS256), multi-key
+//! JWKS endpoint - dual-algorithm JWT signing (ML-DSA-65 + RS256), multi-key
 //! verification sets, ES256 verification, and AES-256-GCM at-rest encryption
 //! of private key material (SEC- / SEC-).
 //!
@@ -12,7 +12,7 @@
 //!
 //! | Mode | Signing algorithm | JWKS `alg` | Use case |
 //! |-------------|-------------------|------------|-----------------------------|
-//! | `exclusive` | ML-DSA-65 | `MLDSA65` | Default — post-quantum |
+//! | `exclusive` | ML-DSA-65 | `MLDSA65` | Default - post-quantum |
 //! | `hybrid` | ML-DSA-65 | `MLDSA65` | PQ-preferred |
 //! | `classical` | RS256 (RSA-2048) | `RS256` | Emergency rollback |
 //!
@@ -20,7 +20,7 @@
 //! not support ML-DSA). RS256 signing uses `jsonwebtoken` as before.
 //!
 //! Verification (SEC-) accepts **ML-DSA-65, RS256, and ES256**
-//! regardless of mode, resolved by `kid` across **all persisted keys** —
+//! regardless of mode, resolved by `kid` across **all persisted keys** -
 //! tokens issued before a rotation or mode switch remain valid until they
 //! expire, and the JWKS publishes every persisted key (rotation overlap).
 //!
@@ -39,22 +39,22 @@ use crate::jwt::AuthClaims;
 /// signing key when the newest one is older than this. The hourly tick
 /// bounds the drift from the gate to at most one tick.
 const ROTATION_STALENESS: chrono::Duration = chrono::Duration::days(30);
-/// Timer tick — hourly; cheap staleness check, bounded drift.
+/// Timer tick - hourly; cheap staleness check, bounded drift.
 const ROTATION_TICK: std::time::Duration = std::time::Duration::from_secs(3600);
 
 /// Spawn the internal JWKS rotation timer (SDD §2.5, root-service rule):
 /// auth links no scheduler client and makes no cross-service calls. Each
 /// tick reads the newest key's creation time; when it passes the 30-day
 /// staleness gate, the key rotates via [`SigningKeys::rotate`]
-/// (insert-overlap — previous keys stay published). A failed check or
-/// rotation logs and retries on the next tick (never fatal — serving
+/// (insert-overlap - previous keys stay published). A failed check or
+/// rotation logs and retries on the next tick (never fatal - serving
 /// continues on the existing keys).
 pub fn spawn_rotation_timer(pool: sqlx::PgPool) {
     tokio::spawn(async move {
         loop {
             tokio::time::sleep(ROTATION_TICK).await;
             if let Err(e) = rotation_tick(&pool).await {
-                tracing::warn!(error = %e, "jwks rotation check failed — retrying next tick");
+                tracing::warn!(error = %e, "jwks rotation check failed - retrying next tick");
             }
         }
     });
@@ -67,10 +67,10 @@ async fn rotation_tick(pool: &sqlx::PgPool) -> anyhow::Result<()> {
             .fetch_optional(pool)
             .await?;
     let Some(newest) = newest else {
-        return Ok(()); // no keys yet — boot seeds the first key
+        return Ok(()); // no keys yet - boot seeds the first key
     };
     if chrono::Utc::now() - newest < ROTATION_STALENESS {
-        return Ok(()); // newest key still fresh — nothing to do
+        return Ok(()); // newest key still fresh - nothing to do
     }
     let (key_id, alg) = SigningKeys::rotate(pool).await?;
     tracing::info!(
@@ -103,7 +103,7 @@ pub fn active_signing_alg() -> &'static str {
 
 /// Load the AES-256-GCM master key for at-rest key encryption.
 ///
-/// Returns `None` when `SENTIN8_AUTH_MASTER_KEY` is unset — callers decide
+/// Returns `None` when `SENTIN8_AUTH_MASTER_KEY` is unset - callers decide
 /// fail-closed behavior (integration-test mode falls back to a deterministic
 /// dev key with a loud warning).
 /// Handle master key.
@@ -123,7 +123,7 @@ fn dev_master_key_enabled() -> bool {
 /// The master key to use, or a deterministic dev key in test mode.
 ///
 /// Fail-closed rule (design ): without `SENTIN8_AUTH_MASTER_KEY` the
-/// service refuses to persist or read real key material — unless
+/// service refuses to persist or read real key material - unless
 /// `SENTIN8_AUTH_DEV_INSECURE_KEY` is set (CI/integration tests only).
 fn require_master_key() -> Result<sentin8::crypto::MasterKey, String> {
     if let Some(k) = master_key() {
@@ -131,7 +131,7 @@ fn require_master_key() -> Result<sentin8::crypto::MasterKey, String> {
     }
     if dev_master_key_enabled() {
         tracing::warn!(
-            "SENTIN8_AUTH_MASTER_KEY is not set — using a DETERMINISTIC DEV KEY. \
+            "SENTIN8_AUTH_MASTER_KEY is not set - using a DETERMINISTIC DEV KEY. \
              Never run production this way (set SENTIN8_AUTH_DEV_INSECURE_KEY only in tests)."
         );
         return Ok(sentin8::crypto::derive_key(
@@ -139,7 +139,7 @@ fn require_master_key() -> Result<sentin8::crypto::MasterKey, String> {
         ));
     }
     Err(
-        "SENTIN8_AUTH_MASTER_KEY is not set (base64, 32 bytes) — refusing to \
+        "SENTIN8_AUTH_MASTER_KEY is not set (base64, 32 bytes) - refusing to \
          handle signing key material. Generate one with: openssl rand -base64 32"
             .to_string(),
     )
@@ -204,11 +204,11 @@ impl StoredKey {
     }
 }
 
-/// Multi-key signing set — the active signing key plus all persisted keys
+/// Multi-key signing set - the active signing key plus all persisted keys
 /// for verification and JWKS publication (SEC- rotation overlap).
 ///
 /// Keys are persisted in `sentin8_auth_signing_keys` (encrypted with
-/// AES-256-GCM) so they survive auth restarts — existing JWTs remain valid
+/// AES-256-GCM) so they survive auth restarts - existing JWTs remain valid
 /// because the same `key_id` and private key are reused. See
 /// `load_or_generate`.
 #[derive(Clone)]
@@ -224,7 +224,7 @@ impl SigningKeys {
     /// Generate a fresh in-memory key set for the active algorithm.
     ///
     /// Used by integration tests (no database persistence, no at-rest
-    /// encryption) — production loads via [`SigningKeys::load_or_generate`].
+    /// encryption) - production loads via [`SigningKeys::load_or_generate`].
     /// Generate for testing.
     pub fn generate_for_testing() -> anyhow::Result<Self> {
         let alg = if is_pq_mode() { "MLDSA65" } else { "RS256" };
@@ -240,7 +240,7 @@ impl SigningKeys {
         let key_id = Uuid::new_v4().to_string();
 
         if alg == "MLDSA65" {
-            // PQ mode — generate ML-DSA-65 keypair.
+            // PQ mode - generate ML-DSA-65 keypair.
             let signing_key = ml_dsa::SigningKey::<ml_dsa::MlDsa65>::generate();
             let verifying_key = signing_key.verifying_key();
             let pk_bytes = verifying_key.encode();
@@ -256,7 +256,7 @@ impl SigningKeys {
                 rsa_pem_b64: None,
             })
         } else {
-            // Classical mode — generate RSA-2048 keypair.
+            // Classical mode - generate RSA-2048 keypair.
             use rsa::pkcs8::EncodePrivateKey;
             use rsa::traits::PublicKeyParts;
             let mut rng = rand::thread_rng();
@@ -290,7 +290,7 @@ impl SigningKeys {
     /// or mode switch remain verifiable (SEC-).
     ///
     /// DBX: `signing_keys` is a platform-global table (no env_id); its RLS
-    /// policies admit only the SYSTEM-env context — set it on the same
+    /// policies admit only the SYSTEM-env context - set it on the same
     /// connection before every statement (the pool is the auth service role,
     /// NOBYPASSRLS; without the context RLS fails closed).
     /// Load or generate.
@@ -299,7 +299,7 @@ impl SigningKeys {
         // DBX: signing_keys' RLS policies admit only the SYSTEM-env context.
         // The context is TRANSACTION-LOCAL (`set_config(..., true)`), so the
         // load and any generate+persist run inside ONE explicit transaction
-        // on a single connection ( rule 2) —
+        // on a single connection ( rule 2) -
         // in autocommit mode the context would evaporate between statements
         // and the INSERT would fail closed under the service role.
         let mut tx = pool
@@ -332,12 +332,12 @@ impl SigningKeys {
             // Decrypt the private key. The `priv_key` column stores the
             // `sentin8-crypto` envelope as standard-base64:
             // base64(`"v2:" || nonce || ciphertext+tag`). A wrong or missing
-            // master key, or a non-envelope value, is a hard error — auth
+            // master key, or a non-envelope value, is a hard error - auth
             // cannot operate without its signing-key material.
             use base64::Engine as _;
             let priv_bytes: Vec<u8> = sentin8::crypto::open_str(&mk, &stored).map_err(|e| {
                 anyhow::anyhow!(
-                    "signing key {key_id} decryption failed — wrong or rotated \
+                    "signing key {key_id} decryption failed - wrong or rotated \
                          SENTIN8_AUTH_MASTER_KEY: {e}"
                 )
             })?;
@@ -392,7 +392,7 @@ impl SigningKeys {
         {
             Some(k) => k.clone(),
             None => {
-                // No persisted key for the active algorithm — generate + persist.
+                // No persisted key for the active algorithm - generate + persist.
                 let key = Self::generate(active_alg)?;
                 Self::persist_one(&mut tx, &mk, &key).await?;
                 tracing::info!(key_id = %key.key_id, alg = %key.alg, "generated and persisted new signing key");
@@ -416,7 +416,7 @@ impl SigningKeys {
     ///
     /// The JWKS reader serves every persisted key, so tokens signed by the
     /// previous key remain verifiable for their remaining lifetime
-    /// (insert-overlap rotation — auth DESIGN §3.13). Runs generate +
+    /// (insert-overlap rotation - auth DESIGN §3.13). Runs generate +
     /// persist inside ONE transaction that carries the SYSTEM-env context
     /// (signing_keys RLS admits only the system env; the context is
     /// transaction-local).
@@ -449,7 +449,7 @@ impl SigningKeys {
     ///
     /// DBX: signing_keys' RLS admits only the SYSTEM-env context; the caller
     /// (load_or_generate, rotation) runs this inside the SAME transaction the
-    /// context was set in — transaction-local GUCs do not survive statement
+    /// context was set in - transaction-local GUCs do not survive statement
     /// boundaries in autocommit mode ( rule 2).
     async fn persist_one(
         tx: &mut sqlx::Transaction<'static, sqlx::Postgres>,
@@ -548,7 +548,7 @@ impl SigningKeys {
     ///
     /// Accepts ML-DSA-65, RS256, and ES256 tokens, resolved by `kid` across
     /// all persisted keys (SEC-). The algorithm allow-list is
-    /// explicit — `"none"`, HS256, and algorithm-confusion variants are
+    /// explicit - `"none"`, HS256, and algorithm-confusion variants are
     /// rejected.
     /// Verify it.
     pub fn verify(&self, token: &str) -> Result<AuthClaims, String> {
@@ -657,9 +657,9 @@ impl SigningKeys {
     /// Verify an arbitrary client-assertion/DPoP/JAR JWT against an **explicit
     /// JWK** (not our own keys). Supports ES256 and RS256 (SEC-/6).
     /// Verify a **raw** (non-JWS) payload + signature pair against a client
-    /// JWK (. — RFC 9421 HTTP signatures). Unlike
+    /// JWK (. - RFC 9421 HTTP signatures). Unlike
     /// `verify_with_jwk`, the payload is the bare signature-base string,
-    /// not a compact JWS — used by the http-signatures module where the
+    /// not a compact JWS - used by the http-signatures module where the
     /// signed artifact is the canonicalized header list, not a JWT.
     /// Verify raw with jwk.
     pub fn verify_raw_with_jwk(
@@ -700,7 +700,7 @@ impl SigningKeys {
                 Ok(())
             }
             ("EC", _) if crv == "P-256" => {
-                // alg absent on the JWK — default ES256 for P-256 keys.
+                // alg absent on the JWK - default ES256 for P-256 keys.
                 let jwk = {
                     let mut m = jwk.clone();
                     if m.get("alg").is_none() {
@@ -991,7 +991,7 @@ mod tests {
 
     #[test]
     fn master_key_env_rules() {
-        // Without env vars, master_key is None (fail-closed) —
+        // Without env vars, master_key is None (fail-closed) -
         // require_master_key errors unless the dev flag is set. Both vars
         // are cleared first so an ambient dev flag (CI test runs) doesn't
         // skew the assertions.

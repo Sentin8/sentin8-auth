@@ -4,13 +4,13 @@
 // SPDX-License-Identifier: Apache-2.0
 
 // ═══════════════════════════════════════════════════════════════════════
-// SEC- — conformance smoke harness (design ) + the
+// SEC- - conformance smoke harness (design ) + the
 // integration tests that were not yet covered (code client binding,
 // revoke+rotation, ID-token issuance, refresh reuse) and the replay
 // negatives (DPoP jti, private_key_jwt jti, TOTP reuse).
 //
 // The harness asserts the discovery document's ADVERTISED capabilities
-// against ACTUAL endpoint behavior — discovery honesty, permanently.
+// against ACTUAL endpoint behavior - discovery honesty, permanently.
 // ═══════════════════════════════════════════════════════════════════════
 
 mod support;
@@ -32,7 +32,7 @@ const SYS_ENV: uuid::Uuid = uuid::uuid!("00000000-0000-0000-0000-000000000002");
 
 /// Spin up an in-process Auth server (same harness as sec_auth2.rs).
 async fn spawn_server() -> Option<(axum::Router, PgPool)> {
-    // Load the repo .env so DATABASE_URL (superuser fixture DSN) applies —
+    // Load the repo .env so DATABASE_URL (superuser fixture DSN) applies -
     // session-token lookups (`Session::find_by_token`) run before any tenant
     // context exists and are denied by sessions RLS under a
     // NOBYPASSRLS service role (see AUTH-RLS-1 in the auth backlog).
@@ -42,7 +42,7 @@ async fn spawn_server() -> Option<(axum::Router, PgPool)> {
         Ok(p) => p,
         Err(e) => {
             eprintln!(
-                "skipping DB-backed auth tests — PostgreSQL unreachable ({}): {e}",
+                "skipping DB-backed auth tests - PostgreSQL unreachable ({}): {e}",
                 config.database_url
             );
             return None;
@@ -50,10 +50,10 @@ async fn spawn_server() -> Option<(axum::Router, PgPool)> {
     };
     // Seed the env-scoped security profile: the platform default is FAPI 2.0
     // (PAR-only, secrets not accepted for confidential clients) but the
-    // conformance suite registers client_secret_post clients — the env-scoped
+    // conformance suite registers client_secret_post clients - the env-scoped
     // 'standard' profile is the most specific match in
     // resolve_security_profile("env") and permits them.
-    // RLS: the table is FORCE-RLS — the INSERT must run under the SYS env
+    // RLS: the table is FORCE-RLS - the INSERT must run under the SYS env
     // context in one transaction , and the error must surface (a
     // silently denied seed left the FAPI profile active and every secret-
     // client test 401'd).
@@ -175,7 +175,7 @@ async fn register_confidential_client(pool: &PgPool) -> (String, String) {
 /// redirect target (the code callback).
 /// Push a PAR (RFC 9126) for the given authorize params; returns the
 /// `request_uri` to use in the authorize call (the security profile mandates
-/// PAR — classic authorize without request_uri is rejected).
+/// PAR - classic authorize without request_uri is rejected).
 async fn par_push(
     app: &axum::Router,
     client_id: &str,
@@ -214,7 +214,7 @@ async fn authorize_continue(
     session_token: &str,
     authorize_uri: &str,
 ) -> (StatusCode, serde_json::Value) {
-    // Step 1: GET /oauth/authorize — renders sign-in (or first-party bypass).
+    // Step 1: GET /oauth/authorize - renders sign-in (or first-party bypass).
     let resp = app
         .clone()
         .oneshot(
@@ -227,7 +227,7 @@ async fn authorize_continue(
         .await
         .unwrap();
     let status = resp.status();
-    // Errors (400 invalid_request etc.) surface as JSON — return them.
+    // Errors (400 invalid_request etc.) surface as JSON - return them.
     if !(status.is_success() || status == StatusCode::FOUND) {
         let bytes = axum::body::to_bytes(resp.into_body(), 1024 * 1024)
             .await
@@ -238,7 +238,7 @@ async fn authorize_continue(
 
     // The authorize handler answers 302 FOUND pointing at the hosted sign-in
     // page with the RESOLVED OAuth params (classic query or PAR-stored) as
-    // query params — parse them from the Location header. Values arrive
+    // query params - parse them from the Location header. Values arrive
     // percent-encoded; query_pairs decodes them.
     let resolved = if status == StatusCode::FOUND {
         resp.headers()
@@ -261,8 +261,8 @@ async fn authorize_continue(
     };
 
     // Resolve the session's user_id. RLS applies: the connection has no
-    // tenant context yet, and `sentin8_bypass_rls` is inert by design —
-    // set the session's tenant context (SYS env — sign_up_user signs up
+    // tenant context yet, and `sentin8_bypass_rls` is inert by design -
+    // set the session's tenant context (SYS env - sign_up_user signs up
     // without an env header, so the session lands in the SYSTEM env) on
     // one transaction and run the lookup there ( rule 2).
     let user_id: Uuid = {
@@ -315,7 +315,7 @@ async fn authorize_continue(
     (status, json)
 }
 
-// ═══════════════════ #5 — Code client binding ═══════════════════
+// ═══════════════════ #5 - Code client binding ═══════════════════
 
 /// Client B must not be able to redeem client A's authorization code
 /// (mix-up defense, design ).
@@ -388,7 +388,7 @@ async fn conf_code_client_binding_client_b_cannot_redeem_client_a_code() {
     );
 }
 
-// ═══════════════════ #6 — PAR single-use ════════════════════════
+// ═══════════════════ #6 - PAR single-use ════════════════════════
 
 /// Replaying the same `request_uri` at authorize must be refused
 /// (GETDEL single-use, design ).
@@ -424,7 +424,7 @@ async fn conf_par_request_uri_is_single_use() {
     let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
     let request_uri = json["request_uri"].as_str().unwrap().to_string();
 
-    // First authorize with the request_uri — must be accepted (any status but
+    // First authorize with the request_uri - must be accepted (any status but
     // invalid_request; the PAR record resolves).
     let resp = app
         .clone()
@@ -445,7 +445,7 @@ async fn conf_par_request_uri_is_single_use() {
         "first authorize with the request_uri must resolve the PAR record"
     );
 
-    // Second authorize with the SAME request_uri — GETDEL already consumed it.
+    // Second authorize with the SAME request_uri - GETDEL already consumed it.
     let resp = app
         .clone()
         .oneshot(
@@ -477,7 +477,7 @@ async fn spawn_pool() -> Option<PgPool> {
     sqlx::PgPool::connect(&config.database_url).await.ok()
 }
 
-// ═══════════════════ #7 — Revoke + rotation ═════════════════════
+// ═══════════════════ #7 - Revoke + rotation ═════════════════════
 
 /// Revoking a refresh token makes introspection report `active: false`
 /// and subsequent refresh grants fail (RFC 7009, design ).
@@ -648,7 +648,7 @@ async fn conf_revoke_refresh_introspect_inactive_and_refresh_fails() {
     );
 }
 
-// ═══════════════════ #9 — ID token issuance ═════════════════════
+// ═══════════════════ #9 - ID token issuance ═════════════════════
 
 /// Code exchange with the `openid` scope returns an ID token carrying the
 /// correct iss/aud/nonce (design ).
@@ -733,7 +733,7 @@ async fn conf_id_token_issued_with_correct_aud_iss_nonce() {
         .as_str()
         .expect("id_token issued for openid");
 
-    // Decode (verified against our own JWKS-equivalent key set — the test
+    // Decode (verified against our own JWKS-equivalent key set - the test
     // server signs with its in-memory keys) and check the OIDC claims.
     let parts: Vec<&str> = id_token.split('.').collect();
     assert_eq!(parts.len(), 3, "compact JWS");
@@ -751,7 +751,7 @@ async fn conf_id_token_issued_with_correct_aud_iss_nonce() {
     assert!(payload["sub"].is_string(), "sub present");
 }
 
-// ═══════════════════ #10 — Refresh reuse after rotation ═════════
+// ═══════════════════ #10 - Refresh reuse after rotation ═════════
 
 /// Using a rotated-out refresh token again → invalid_grant (rotation
 /// denylist, design ).
@@ -874,7 +874,7 @@ async fn conf_rotated_out_refresh_token_reuse_fails() {
         "rotated-out refresh token replay must fail"
     );
     assert_eq!(json["error"], "invalid_grant", "replay error code");
-    let _ = refresh_2; // the live token — not used further here
+    let _ = refresh_2; // the live token - not used further here
 }
 
 // ═══════════════════ Replay negatives ═════════════════════════════════
@@ -890,7 +890,7 @@ async fn conf_dpop_proof_jti_replay_rejected() {
     let proof = mk_dpop_proof("POST", "https://auth.test.sentin8.local/oauth/token", 0);
     let body = format!("grant_type=client_credentials&client_id=dash&dpop={proof}");
 
-    // First use — accepted into the validation path (may fail later on
+    // First use - accepted into the validation path (may fail later on
     // grant policy, but NOT on jti replay).
     let resp1 = app
         .clone()
@@ -912,7 +912,7 @@ async fn conf_dpop_proof_jti_replay_rejected() {
         .unwrap();
     let json1: serde_json::Value = serde_json::from_slice(&bytes1).unwrap_or_default();
 
-    // Second use of the SAME proof (same jti) — must be rejected as a replay.
+    // Second use of the SAME proof (same jti) - must be rejected as a replay.
     let resp2 = app
         .clone()
         .oneshot(
@@ -989,7 +989,7 @@ async fn conf_private_key_jwt_assertion_jti_replay_rejected() {
         )
     };
 
-    // First use — passes client auth (may fail on other grant policy, but
+    // First use - passes client auth (may fail on other grant policy, but
     // NOT with "jti already used").
     let resp1 = app
         .clone()
@@ -1009,7 +1009,7 @@ async fn conf_private_key_jwt_assertion_jti_replay_rejected() {
         .await
         .unwrap();
 
-    // Replay the SAME assertion — jti now consumed.
+    // Replay the SAME assertion - jti now consumed.
     let resp2 = app
         .clone()
         .oneshot(
@@ -1111,7 +1111,7 @@ async fn conf_totp_code_replay_rejected() {
     // Compute the current TOTP code from the base32 secret.
     let code = mk_totp_code(secret_b32);
 
-    // First verification (activate) — must succeed.
+    // First verification (activate) - must succeed.
     let resp = app
         .clone()
         .oneshot(
@@ -1137,7 +1137,7 @@ async fn conf_totp_code_replay_rejected() {
         "first TOTP verify must succeed"
     );
 
-    // Replay the SAME code in the same window — must be rejected.
+    // Replay the SAME code in the same window - must be rejected.
     let resp = app
         .clone()
         .oneshot(
@@ -1165,7 +1165,7 @@ async fn conf_totp_code_replay_rejected() {
     );
 }
 
-// ═══════════════════ — Advertised-vs-behavior harness ══════════
+// ═══════════════════ - Advertised-vs-behavior harness ══════════
 
 /// The conformance harness core: for every capability the discovery
 /// document advertises, the matching endpoint behavior must exist.
@@ -1214,7 +1214,7 @@ async fn conf_discovery_advertisement_matches_behavior() {
         );
     }
 
-    // JARM: response_modes include "jwt" only when require_jarm —
+    // JARM: response_modes include "jwt" only when require_jarm -
     // advertisement must match enforcement (here: not required by default,
     // so plain-query responses must NOT be JWT-signed).
     let modes = doc["response_modes_supported"].as_array().unwrap();
@@ -1227,7 +1227,7 @@ async fn conf_discovery_advertisement_matches_behavior() {
         .unwrap_or(false);
     if iss_supported {
         // The authorize response contract (handled in authorize_continue)
-        // appends iss — the redirect_allowlist test covers the endpoint.
+        // appends iss - the redirect_allowlist test covers the endpoint.
     }
 
     // client_secret_basic advertised → Basic auth must be accepted at token.
@@ -1371,7 +1371,7 @@ fn seeded_auth_engine() -> std::sync::Arc<sentin8_auth_server::policy::Engine> {
     let engine = sentin8_auth_server::policy::Engine::new("sentin8:auth");
     let record = PolicySetRecord {
         id: uuid::Uuid::nil(),
- // The engine evaluates per-request env — seed under the SYSTEM env
+ // The engine evaluates per-request env - seed under the SYSTEM env
  // (the env admin tokens in these tests carry).
         env_id: uuid::Uuid::parse_str("00000000-0000-0000-0000-000000000002")
             .expect("static uuid"),

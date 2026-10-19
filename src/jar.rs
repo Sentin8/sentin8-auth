@@ -3,7 +3,7 @@
 // SPDX-FileCopyrightText: Copyright Contributors to the Sentin8:Auth
 // SPDX-License-Identifier: Apache-2.0
 
-//! JWT-Secured Authorization Request (JAR) — RFC 9101 .
+//! JWT-Secured Authorization Request (JAR) - RFC 9101 .
 //!
 //! JAR allows clients to pass a **signed JWT** as the `request` parameter
 //! (or `request_uri` pointing to a JWT) instead of sending OAuth params
@@ -11,7 +11,7 @@
 //! - Accept the `request` parameter (a signed JWT containing the OAuth params).
 //! - Verify the JWT signature using the client's registered keys (jwks/jwks_uri).
 //! - Extract all OAuth params (response_type, redirect_uri, scope, state,
-//! code_challenge, etc.) from the JWT — except `client_id` which may be inline.
+//! code_challenge, etc.) from the JWT - except `client_id` which may be inline.
 //! - When `request` is used, all other inline params (except `client_id`) MUST
 //! be ignored.
 //!
