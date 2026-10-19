@@ -25,6 +25,7 @@ pub mod ciba;
 pub mod config;
 /// Consent proxy for delegated approval surfaces.
 pub mod consent_proxy;
+pub mod dtos;
 /// OAuth Dynamic Client Registration (RFC 7591) + management.
 pub mod dcr;
 /// Delegation Gateway (delegated tokens, act chain).

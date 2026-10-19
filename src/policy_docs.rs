@@ -32,7 +32,7 @@ use sentin8::shield::admin::{
     get,
     path = "/v1/admin/policy-sets",
     responses(
-        (status = 200, description = "Policy sets of this service", body = Vec<serde_json::Value>),
+        (status = 200, description = "Policy sets of this service", body = Vec<sentin8::shield::admin::PolicySetRow>),
         (status = 403, description = "Caller lacks the admin scope"),
     ),
     security(("sentin8:admin" = [])),
@@ -42,7 +42,7 @@ pub async fn policy_list_sets(
     State(state): State<AppState>,
     headers: HeaderMap,
     Query(q): Query<sentin8::shield::admin::TargetEnv>,
-) -> Result<Json<Vec<serde_json::Value>>, (axum::http::StatusCode, String)> {
+) -> Result<Json<Vec<sentin8::shield::admin::PolicySetRow>>, (axum::http::StatusCode, String)> {
     list_policy_sets(State(state), headers, Query(q)).await
 }
 
@@ -52,7 +52,7 @@ pub async fn policy_list_sets(
     path = "/v1/admin/policy-sets/{name}",
     params(("name" = String, Path, description = "Policy set name")),
     responses(
-        (status = 200, description = "The policy set", body = serde_json::Value),
+        (status = 200, description = "The policy set", body = sentin8::shield::admin::PolicySetDetail),
         (status = 404, description = "Unknown policy set name"),
         (status = 403, description = "Caller lacks the admin scope"),
     ),
@@ -64,7 +64,7 @@ pub async fn policy_get_set(
     headers: HeaderMap,
     Path(name): Path<String>,
     Query(q): Query<sentin8::shield::admin::TargetEnv>,
-) -> Result<Json<serde_json::Value>, (axum::http::StatusCode, String)> {
+) -> Result<Json<sentin8::shield::admin::PolicySetDetail>, (axum::http::StatusCode, String)> {
     get_policy_set(State(state), headers, Path(name), Query(q)).await
 }
 
@@ -75,7 +75,7 @@ pub async fn policy_get_set(
     params(("name" = String, Path, description = "Policy set name")),
     request_body = PutPolicySetBody,
     responses(
-        (status = 200, description = "Policy set stored", body = serde_json::Value),
+        (status = 200, description = "Policy set stored", body = sentin8::shield::admin::PolicySetMutated),
         (status = 400, description = "Invalid policy set definition"),
         (status = 403, description = "Caller lacks the admin scope"),
     ),
@@ -88,7 +88,7 @@ pub async fn policy_put_set(
     Path(name): Path<String>,
     Query(q): Query<sentin8::shield::admin::TargetEnv>,
     body: Json<PutPolicySetBody>,
-) -> Result<(axum::http::StatusCode, Json<serde_json::Value>), (axum::http::StatusCode, String)> {
+) -> Result<(axum::http::StatusCode, Json<sentin8::shield::admin::PolicySetMutated>), (axum::http::StatusCode, String)> {
     put_policy_set(State(state), headers, Path(name), Query(q), body).await
 }
 
@@ -121,7 +121,7 @@ pub async fn policy_delete_set(
     params(("name" = String, Path, description = "Policy set name")),
     request_body = sentin8::shield::admin::TestPolicySetBody,
     responses(
-        (status = 200, description = "Dry-run decision trace", body = serde_json::Value),
+        (status = 200, description = "Dry-run decision trace", body = sentin8::shield::admin::PolicyTestOutcome),
         (status = 403, description = "Caller lacks the admin scope"),
     ),
     security(("sentin8:admin" = [])),
@@ -133,7 +133,7 @@ pub async fn policy_test_set(
     Path(name): Path<String>,
     Query(q): Query<sentin8::shield::admin::TargetEnv>,
     body: Json<sentin8::shield::admin::TestPolicySetBody>,
-) -> Result<Json<serde_json::Value>, (axum::http::StatusCode, String)> {
+) -> Result<Json<sentin8::shield::admin::PolicyTestOutcome>, (axum::http::StatusCode, String)> {
     test_policy_set(State(state), headers, Path(name), Query(q), body).await
 }
 
@@ -155,7 +155,7 @@ pub async fn policy_enforce(
     headers: HeaderMap,
     Query(q): Query<sentin8::shield::admin::TargetEnv>,
     body: Json<sentin8::shield::admin::PolicyModeBody>,
-) -> Result<Json<serde_json::Value>, (axum::http::StatusCode, String)> {
+) -> Result<Json<sentin8::shield::admin::PolicyModeMutated>, (axum::http::StatusCode, String)> {
     admin_enforce_policy_set(State(state), headers, Query(q), body).await
 }
 
@@ -177,7 +177,7 @@ pub async fn policy_shadow(
     headers: HeaderMap,
     Query(q): Query<sentin8::shield::admin::TargetEnv>,
     body: Json<sentin8::shield::admin::PolicyModeBody>,
-) -> Result<Json<serde_json::Value>, (axum::http::StatusCode, String)> {
+) -> Result<Json<sentin8::shield::admin::PolicyModeMutated>, (axum::http::StatusCode, String)> {
     admin_shadow_policy_set(State(state), headers, Query(q), body).await
 }
 
@@ -199,7 +199,7 @@ pub async fn policy_disable(
     headers: HeaderMap,
     Query(q): Query<sentin8::shield::admin::TargetEnv>,
     body: Json<sentin8::shield::admin::PolicyModeBody>,
-) -> Result<Json<serde_json::Value>, (axum::http::StatusCode, String)> {
+) -> Result<Json<sentin8::shield::admin::PolicyModeMutated>, (axum::http::StatusCode, String)> {
     admin_disable_policy_set(State(state), headers, Query(q), body).await
 }
 
@@ -208,7 +208,7 @@ pub async fn policy_disable(
     get,
     path = "/v1/admin/relations",
     responses(
-        (status = 200, description = "ReBAC relations of this service", body = Vec<serde_json::Value>),
+        (status = 200, description = "ReBAC relations of this service", body = Vec<sentin8::shield::admin::PolicySetRow>),
         (status = 403, description = "Caller lacks the admin scope"),
     ),
     security(("sentin8:admin" = [])),
@@ -218,7 +218,7 @@ pub async fn policy_relations(
     State(state): State<AppState>,
     headers: HeaderMap,
     Query(q): Query<sentin8::shield::admin::TargetEnv>,
-) -> Result<Json<Vec<serde_json::Value>>, (axum::http::StatusCode, String)> {
+) -> Result<Json<Vec<sentin8::shield::admin::RelationRecordRow>>, (axum::http::StatusCode, String)> {
     list_relations(State(state), headers, Query(q)).await
 }
 
@@ -228,7 +228,7 @@ pub async fn policy_relations(
     path = "/v1/admin/relations",
     request_body = PutRelationBody,
     responses(
-        (status = 200, description = "Relation stored", body = serde_json::Value),
+        (status = 200, description = "Relation stored", body = sentin8::shield::admin::RelationUpserted),
         (status = 400, description = "Invalid relation definition"),
         (status = 403, description = "Caller lacks the admin scope"),
     ),
@@ -240,7 +240,7 @@ pub async fn policy_put_relation(
     headers: HeaderMap,
     Query(q): Query<sentin8::shield::admin::TargetEnv>,
     body: Json<PutRelationBody>,
-) -> Result<(axum::http::StatusCode, Json<serde_json::Value>), (axum::http::StatusCode, String)> {
+) -> Result<(axum::http::StatusCode, Json<sentin8::shield::admin::RelationUpserted>), (axum::http::StatusCode, String)> {
     put_relation(State(state), headers, Query(q), body).await
 }
 
@@ -274,7 +274,7 @@ pub async fn policy_delete_relation(
         ("object" = String, Query, description = "Object key"),
     ),
     responses(
-        (status = 200, description = "The check verdict", body = serde_json::Value),
+        (status = 200, description = "The check verdict", body = sentin8::shield::admin::RelationCheckResult),
         (status = 403, description = "Caller lacks the admin scope"),
     ),
     security(("sentin8:admin" = [])),
@@ -284,7 +284,7 @@ pub async fn policy_check_relation(
     State(state): State<AppState>,
     headers: HeaderMap,
     Query(q): Query<sentin8::shield::admin::RelationCheckQuery>,
-) -> Result<Json<serde_json::Value>, (axum::http::StatusCode, String)> {
+) -> Result<Json<sentin8::shield::admin::RelationCheckResult>, (axum::http::StatusCode, String)> {
     check_relation(State(state), headers, Query(q)).await
 }
 
@@ -293,7 +293,7 @@ pub async fn policy_check_relation(
     get,
     path = "/v1/admin/attributes",
     responses(
-        (status = 200, description = "Principal attributes of this service", body = Vec<serde_json::Value>),
+        (status = 200, description = "Principal attributes of this service", body = Vec<sentin8::shield::admin::PolicySetRow>),
         (status = 403, description = "Caller lacks the admin scope"),
     ),
     security(("sentin8:admin" = [])),
@@ -303,7 +303,7 @@ pub async fn policy_attributes(
     State(state): State<AppState>,
     headers: HeaderMap,
     Query(q): Query<sentin8::shield::admin::ListAttributesQuery>,
-) -> Result<Json<Vec<serde_json::Value>>, (axum::http::StatusCode, String)> {
+) -> Result<Json<Vec<sentin8::shield::admin::PrincipalAttr>>, (axum::http::StatusCode, String)> {
     list_attributes(State(state), headers, Query(q)).await
 }
 
@@ -313,7 +313,7 @@ pub async fn policy_attributes(
     path = "/v1/admin/attributes",
     request_body = PutAttributeBody,
     responses(
-        (status = 200, description = "Attribute stored", body = serde_json::Value),
+        (status = 200, description = "Attribute stored", body = sentin8::shield::admin::AttributeUpserted),
         (status = 400, description = "Invalid attribute definition"),
         (status = 403, description = "Caller lacks the admin scope"),
     ),
@@ -325,7 +325,7 @@ pub async fn policy_put_attribute(
     headers: HeaderMap,
     Query(q): Query<sentin8::shield::admin::TargetEnv>,
     body: Json<PutAttributeBody>,
-) -> Result<(axum::http::StatusCode, Json<serde_json::Value>), (axum::http::StatusCode, String)> {
+) -> Result<(axum::http::StatusCode, Json<sentin8::shield::admin::AttributeUpserted>), (axum::http::StatusCode, String)> {
     put_attribute(State(state), headers, Query(q), body).await
 }
 

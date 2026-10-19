@@ -29,6 +29,10 @@ use serde::Deserialize;
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
+use crate::dtos::{
+    CredentialIssuedResponse, CredentialOfferResponse, StatusListDocument, VpResponse,
+    WalletAuthorizeResponse, WalletMetadata,
+};
 use crate::handlers::AppState;
 
 // ── EUDI. - eudi_wallet enterprise-connection config ───────────────
@@ -146,7 +150,7 @@ pub struct WalletAuthorizeQuery {
     path = "/oauth/authorize",
     params(WalletAuthorizeQuery),
     responses(
-        (status = 200, description = "OID4VP authorization request (signed request object + openid4vp:// deep link)", body = serde_json::Value),
+        (status = 200, description = "OID4VP authorization request (signed request object + openid4vp:// deep link)", body = crate::dtos::WalletAuthorizeResponse),
         (status = 404, description = "No wallet connection configured for this env"),
     ),
     security(),
@@ -156,7 +160,7 @@ pub async fn wallet_authorize(
     State(state): State<AppState>,
     headers: HeaderMap,
     Query(q): Query<WalletAuthorizeQuery>,
-) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+) -> Result<Json<WalletAuthorizeResponse>, (StatusCode, String)> {
     let env_id = crate::overlays::env_from_headers(&headers);
     let Some(cfg) = load_wallet_connection(&state, env_id).await? else {
         return Err((
@@ -205,13 +209,13 @@ pub async fn wallet_authorize(
         )
         .await;
 
-    Ok(Json(serde_json::json!({
-        "nonce": nonce,
-        "request_uri": format!("{issuer}/oauth/vp/request/{nonce}"),
-        "request_object": request_object,
-        "qr_data": format!("openid4vp://?nonce={nonce}"),
-        "expires_in": VP_PENDING_TTL_SECS,
-    })))
+    Ok(Json(WalletAuthorizeResponse {
+        nonce: nonce.clone(),
+        request_uri: format!("{issuer}/oauth/vp/request/{nonce}"),
+        request_object: serde_json::Value::String(request_object.clone()),
+        qr_data: format!("openid4vp://?nonce={nonce}"),
+        expires_in: VP_PENDING_TTL_SECS as i64,
+    }))
 }
 
 #[derive(Debug, Deserialize, utoipa::ToSchema)]
@@ -234,7 +238,7 @@ pub struct VpResponseRequest {
     path = "/oauth/vp/response",
     request_body = VpResponseRequest,
     responses(
-        (status = 200, description = "Presentation accepted (single-use pending request resolved)", body = serde_json::Value),
+        (status = 200, description = "Presentation accepted (single-use pending request resolved)", body = crate::dtos::VpResponse),
         (status = 400, description = "Unknown or expired presentation request"),
         (status = 401, description = "Presentation verification failed"),
     ),
@@ -245,7 +249,7 @@ pub async fn vp_response(
     State(state): State<AppState>,
     _headers: HeaderMap,
     Json(req): Json<VpResponseRequest>,
-) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+) -> Result<Json<VpResponse>, (StatusCode, String)> {
     // Resolve (single-use) the pending presentation request.
     let client = sentin8::middleware::valkey_client(&state.config.valkey_url, "sentin8:auth")
         .await
@@ -375,15 +379,15 @@ pub async fn vp_response(
         .await;
     let _: Result<(), _> = conn.del(&pending_key).await; // double-use safety
 
-    Ok(Json(serde_json::json!({
-        "status": "verified",
-        "session_token": session_token,
-        "code": code,
-        "redirect_uri": pending.get("redirect_uri"),
-        "acr": acr,
-        "amr": amr,
-        "user_id": user.id,
-    })))
+    Ok(Json(VpResponse {
+        status: "verified".to_string(),
+        session_token,
+        code,
+        redirect_uri: pending.get("redirect_uri").cloned().unwrap_or(serde_json::Value::Null),
+        acr: Some(acr),
+        amr: Some(vec![amr.to_string()]),
+        user_id: user.id,
+    }))
 }
 
 struct WalletUser {
@@ -519,7 +523,7 @@ fn sha_hex(input: &str) -> String {
     get,
     path = "/v1/auth/wallet/metadata",
     responses(
-        (status = 200, description = "Wallet connection metadata (formats, trusted issuers, presentation definition, response endpoint)", body = serde_json::Value),
+        (status = 200, description = "Wallet connection metadata (formats, trusted issuers, presentation definition, response endpoint)", body = crate::dtos::WalletMetadata),
     ),
     security(),
     tag = "wallet",
@@ -527,7 +531,7 @@ fn sha_hex(input: &str) -> String {
 pub async fn wallet_metadata(
     State(state): State<AppState>,
     headers: HeaderMap,
-) -> Json<serde_json::Value> {
+) -> Json<WalletMetadata> {
     let env_id = crate::overlays::env_from_headers(&headers);
     let cfg = load_wallet_connection(&state, env_id).await.ok().flatten();
     let (trusted, definition, loa) = match cfg {
@@ -538,15 +542,15 @@ pub async fn wallet_metadata(
         ),
         None => (vec![], None, None),
     };
-    Json(serde_json::json!({
-        "issuer": state.config.issuer,
-        "vp_formats_supported": { "sd_jwt": { "alg": ["ES256", "MLDSA65"] } },
-        "trusted_issuers": trusted,
-        "presentation_definition": definition,
-        "min_level_of_assurance": loa,
-        "response_mode": "direct_post",
-        "vp_response_endpoint": format!("{}/oauth/vp/response", state.config.issuer),
-    }))
+    Json(WalletMetadata {
+        issuer: state.config.issuer.clone(),
+        vp_formats_supported: serde_json::json!({ "sd_jwt": { "alg": ["ES256", "MLDSA65"] } }),
+        trusted_issuers: serde_json::to_value(&trusted).unwrap_or(serde_json::json!([])),
+        presentation_definition: definition.unwrap_or(serde_json::Value::Null),
+        min_level_of_assurance: loa.map(|l| serde_json::Value::String(l)).unwrap_or(serde_json::Value::Null),
+        response_mode: "direct_post".to_string(),
+        vp_response_endpoint: format!("{}/oauth/vp/response", state.config.issuer),
+    })
 }
 // ── EUDI. - OID4VCI credential issuance ───────────────────
 
@@ -574,7 +578,7 @@ pub struct CredentialOfferRequest {
     path = "/oauth/credentials",
     request_body = CredentialOfferRequest,
     responses(
-        (status = 200, description = "Credential offer created for the signed-in user", body = serde_json::Value),
+        (status = 200, description = "Credential offer created for the signed-in user", body = crate::dtos::CredentialOfferResponse),
         (status = 400, description = "Unknown credential type"),
         (status = 401, description = "Session required"),
     ),
@@ -585,7 +589,7 @@ pub async fn credential_offer(
     State(state): State<AppState>,
     headers: HeaderMap,
     Json(req): Json<CredentialOfferRequest>,
-) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+) -> Result<Json<CredentialOfferResponse>, (StatusCode, String)> {
     let env_id = crate::overlays::env_from_headers(&headers);
     // Session-authenticated: the credential is about the caller.
     let session_token = crate::handlers::extract_session_token(&headers)
@@ -619,12 +623,12 @@ pub async fn credential_offer(
         )
     })?;
 
-    Ok(Json(serde_json::json!({
-        "credential_issuer": state.config.issuer,
-        "credential_configuration_id": req.type_,
-        "credential_id": id,
-        "deferred": true,
-    })))
+    Ok(Json(CredentialOfferResponse {
+        credential_issuer: state.config.issuer.clone(),
+        credential_configuration_id: req.type_,
+        credential_id: id,
+        deferred: true,
+    }))
 }
 
 /// `POST /oauth/credentials/issue` - the wallet presents its authorization
@@ -645,7 +649,7 @@ pub struct CredentialIssueRequest {
     path = "/oauth/credentials/issue",
     request_body = CredentialIssueRequest,
     responses(
-        (status = 200, description = "Credential issued (with Status List 2021 enrollment)", body = serde_json::Value),
+        (status = 200, description = "Credential issued (with Status List 2021 enrollment)", body = crate::dtos::CredentialIssuedResponse),
         (status = 401, description = "Session required"),
         (status = 404, description = "Unknown offer"),
     ),
@@ -656,7 +660,7 @@ pub async fn credential_issue(
     State(state): State<AppState>,
     headers: HeaderMap,
     Json(req): Json<CredentialIssueRequest>,
-) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+) -> Result<Json<CredentialIssuedResponse>, (StatusCode, String)> {
     let env_id = crate::overlays::env_from_headers(&headers);
     let session_token = crate::handlers::extract_session_token(&headers)
         .ok_or_else(|| (StatusCode::UNAUTHORIZED, "session required".into()))?;
@@ -739,10 +743,11 @@ pub async fn credential_issue(
     })?;
 
     let _ = req.credential_id;
-    Ok(Json(serde_json::json!({
-        "format": "sd_jwt",
-        "credential": credential,
-    })))
+    Ok(Json(CredentialIssuedResponse {
+        format: "sd_jwt".to_string(),
+        credential,
+        status_list: serde_json::Value::Null,
+    }))
 }
 
 /// `GET /oauth/credentials/status/{id}` - Status List 2021 endpoint: the
@@ -754,7 +759,7 @@ pub async fn credential_issue(
     path = "/oauth/credentials/status/{id}",
     params(("id" = Uuid, Path, description = "Issuance ordinal (status list id)")),
     responses(
-        (status = 200, description = "Status List 2021 compressed bitstring", body = serde_json::Value),
+        (status = 200, description = "Status List 2021 compressed bitstring", body = crate::dtos::StatusListDocument),
         (status = 404, description = "Unknown status list"),
     ),
     security(),
@@ -763,7 +768,7 @@ pub async fn credential_issue(
 pub async fn credential_status(
     State(state): State<AppState>,
     Path(id): Path<Uuid>,
-) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+) -> Result<Json<StatusListDocument>, (StatusCode, String)> {
     let status: Option<String> = sqlx::query_scalar("SELECT status FROM credentials WHERE id = $1")
         .bind(id)
         .fetch_optional(&state.pool)
@@ -774,9 +779,9 @@ pub async fn credential_status(
     };
     // Single-credential status list: bit 0 = revoked flag.
     let bit: u8 = if status == "revoked" { 1 } else { 0 };
-    Ok(Json(serde_json::json!({
-        "status_list": { "idx": 0, "list": status_list_b64(bit) },
-    })))
+    Ok(Json(StatusListDocument {
+        status_list: serde_json::json!({ "idx": 0, "list": status_list_b64(bit) }),
+    }))
 }
 
 /// `POST /oauth/credentials/revoke/{id}` - revoke (admin).
@@ -786,7 +791,7 @@ pub async fn credential_status(
     path = "/oauth/credentials/revoke/{id}",
     params(("id" = Uuid, Path, description = "Issuance ordinal (status list id)")),
     responses(
-        (status = 200, description = "Credential revoked in its status list", body = serde_json::Value),
+        (status = 200, description = "Credential revoked in its status list", body = crate::dtos::StatusListDocument),
         (status = 403, description = "Admin scope required"),
         (status = 404, description = "Unknown status list"),
     ),
@@ -797,7 +802,7 @@ pub async fn credential_revoke(
     State(state): State<AppState>,
     headers: HeaderMap,
     Path(id): Path<Uuid>,
-) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+) -> Result<Json<StatusListDocument>, (StatusCode, String)> {
     let _auth =
         crate::sentin8or_auth::require_sentin8or_access_write(&state, &headers, None).await?;
     let rows = sqlx::query(
@@ -827,7 +832,9 @@ pub async fn credential_revoke(
         serde_json::json!({ "credential_id": id.to_string(), "user_id": user_id.to_string() }),
     )
     .await;
-    Ok(Json(serde_json::json!({ "status": "revoked" })))
+    Ok(Json(StatusListDocument {
+        status_list: serde_json::json!({ "idx": 0, "list": status_list_b64(1) }),
+    }))
 }
 
 /// Encode a 1-byte status list (MSB-first, entry 0 = bit 7) - EUDI.2.1.
@@ -863,8 +870,8 @@ fn status_list_b64(bit: u8) -> String {
 pub async fn signature_request(
     State(state): State<AppState>,
     headers: HeaderMap,
-    Json(req): Json<serde_json::Value>,
-) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    Json(req): Json<StatusListDocument>,
+) -> Result<Json<StatusListDocument>, (StatusCode, String)> {
     let _ = (&state, &headers, &req);
     Err((
         StatusCode::NOT_IMPLEMENTED,

@@ -698,8 +698,7 @@ async fn route_guard(
 #[utoipa::path(
     post,
     path = "/v1/internal/keys/rotate",
-    request_body = serde_json::Value,
-    responses((status = 200, description = "Signing key rotated")),
+    responses((status = 200, description = "Signing key rotated", body = crate::dtos::RotateKeysResponse)),
     tag = "auth",
 )]
 async fn internal_keys_rotate(

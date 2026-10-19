@@ -174,7 +174,7 @@ async fn require_consent_session(
     path = "/v1/auth/consent/ui",
     params(ConsentProxyQuery),
     responses(
-        (status = 200, description = "The vertical's consent RFW page descriptor", body = serde_json::Value),
+        (status = 200, description = "The vertical's consent RFW page descriptor", body = sentin8::rfw::AdminUiResponse),
         (status = 401, description = "Session validation failed"),
         (status = 404, description = "No consent flow registered for the requested scopes"),
     ),
@@ -184,7 +184,7 @@ async fn require_consent_session(
 pub async fn proxy_consent_ui(
     State(state): State<AppState>,
     Query(q): Query<ConsentProxyQuery>,
-) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+) -> Result<Json<sentin8::rfw::AdminUiResponse>, (StatusCode, String)> {
     // SEC- - validate the session before proxying (read: lenient).
     let _session = require_consent_session(&state, &q, false).await?;
 
@@ -228,7 +228,7 @@ pub async fn proxy_consent_ui(
         ));
     }
 
-    let body: serde_json::Value = resp.json().await.map_err(|e| {
+    let body: sentin8::rfw::AdminUiResponse = resp.json().await.map_err(|e| {
         (
             StatusCode::BAD_GATEWAY,
             format!("consent UI proxy decode: {e}"),
@@ -267,7 +267,7 @@ pub struct ConsentApproveProxyRequest {
     path = "/v1/auth/consent/approve",
     request_body = ConsentApproveProxyRequest,
     responses(
-        (status = 200, description = "Approval recorded by the owning vertical service", body = serde_json::Value),
+        (status = 200, description = "Approval recorded by the owning vertical service", body = sentin8::rfw::AdminUiResponse),
         (status = 401, description = "Session validation failed"),
         (status = 404, description = "No consent flow registered for the requested scopes"),
     ),
@@ -277,7 +277,7 @@ pub struct ConsentApproveProxyRequest {
 pub async fn proxy_consent_approve(
     State(state): State<AppState>,
     Json(req): Json<ConsentApproveProxyRequest>,
-) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+) -> Result<Json<sentin8::rfw::AdminUiResponse>, (StatusCode, String)> {
     // SEC- - validate the session before proxying.
     let q = ConsentProxyQuery {
         consent_flow: req.consent_flow.clone(),
@@ -313,7 +313,7 @@ pub async fn proxy_consent_approve(
         )
     })?;
 
-    let body: serde_json::Value = resp.json().await.map_err(|e| {
+    let body: sentin8::rfw::AdminUiResponse = resp.json().await.map_err(|e| {
         (
             StatusCode::BAD_GATEWAY,
             format!("consent approve proxy decode: {e}"),
@@ -346,7 +346,7 @@ pub struct ConsentDenyProxyRequest {
     path = "/v1/auth/consent/deny",
     request_body = ConsentDenyProxyRequest,
     responses(
-        (status = 200, description = "Denial recorded by the owning vertical service", body = serde_json::Value),
+        (status = 200, description = "Denial recorded by the owning vertical service", body = sentin8::rfw::AdminUiResponse),
         (status = 401, description = "Session validation failed"),
         (status = 404, description = "No consent flow registered for the requested scopes"),
     ),
@@ -356,7 +356,7 @@ pub struct ConsentDenyProxyRequest {
 pub async fn proxy_consent_deny(
     State(state): State<AppState>,
     Json(req): Json<ConsentDenyProxyRequest>,
-) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+) -> Result<Json<sentin8::rfw::AdminUiResponse>, (StatusCode, String)> {
     // SEC- - validate the session before proxying.
     let q = ConsentProxyQuery {
         consent_flow: req.consent_flow.clone(),
@@ -392,7 +392,7 @@ pub async fn proxy_consent_deny(
         .await
         .map_err(|e| (StatusCode::BAD_GATEWAY, format!("consent deny proxy: {e}")))?;
 
-    let body: serde_json::Value = resp.json().await.map_err(|e| {
+    let body: sentin8::rfw::AdminUiResponse = resp.json().await.map_err(|e| {
         (
             StatusCode::BAD_GATEWAY,
             format!("consent deny proxy decode: {e}"),

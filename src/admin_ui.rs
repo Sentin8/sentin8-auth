@@ -27,7 +27,7 @@ use sqlx::Row;
         ("target_env_id" = String, Query, description = "Target env (RLS context)")
     ),
     responses(
-        (status = 200, description = "RFW page definition (rendered by Sentin8:Dash)", body = serde_json::Value),
+        (status = 200, description = "RFW page definition (rendered by Sentin8:Dash)", body = sentin8::rfw::AdminUiResponse),
         (status = 403, description = "Caller lacks the admin scope"),
         (status = 404, description = "Unknown page"),
     ),
@@ -39,7 +39,7 @@ pub async fn get_admin_ui(
     headers: HeaderMap,
     Query(teq): Query<TargetEnvQuery>,
     Path(page): Path<String>,
-) -> Result<Json<serde_json::Value>, (axum::http::StatusCode, String)> {
+) -> Result<Json<AdminUiResponse>, (axum::http::StatusCode, String)> {
     let a = crate::sentin8or_auth::require_sentin8or_access_with_env(
         &state,
         &headers,
@@ -983,9 +983,7 @@ pub async fn get_admin_ui(
             .build(),
         _ => return Err((axum::http::StatusCode::NOT_FOUND, format!("Unknown admin UI page: {page}"))),
     };
-    Ok(Json(
-        serde_json::to_value(AdminUiResponse::page(def)).unwrap(),
-    ))
+    Ok(Json(AdminUiResponse::page(def)))
 }
 
 fn col(key: &str, label: &str) -> WidgetDataTableColumn {

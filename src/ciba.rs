@@ -43,6 +43,7 @@ use glide::AsyncCommands;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+use crate::dtos::{CibaApproveResponse, CibaAssistedComplete, CibaAssistedPage};
 use crate::events::emit_event;
 use crate::handlers::{extract_session_token, AppState};
 use crate::sessions::Session;
@@ -382,7 +383,7 @@ pub async fn bc_authorize(
     path = "/v1/ciba/assisted/{auth_req_id}",
     params(("auth_req_id" = String, Path, description = "CIBA auth request id")),
     responses(
-        (status = 200, description = "Assisted sign-in page details (binding_message, short_code, client, scopes)", body = serde_json::Value),
+        (status = 200, description = "Assisted sign-in page details (binding_message, short_code, client, scopes)", body = crate::dtos::CibaAssistedPage),
         (status = 404, description = "Unknown or expired auth_req_id"),
     ),
     security(),
@@ -391,7 +392,7 @@ pub async fn bc_authorize(
 pub async fn ciba_assisted_page(
     State(state): State<AppState>,
     Path(auth_req_id): Path<String>,
-) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+) -> Result<Json<CibaAssistedPage>, (StatusCode, String)> {
     let key = format!("auth:ciba:{auth_req_id}");
     let client = sentin8::middleware::valkey_client(&state.config.valkey_url, "sentin8:auth")
         .await
@@ -418,14 +419,14 @@ pub async fn ciba_assisted_page(
     let start = code_len.saturating_sub(6);
     let short_code = code[start..].to_string();
 
-    Ok(Json(serde_json::json!({
-        "auth_req_id": auth_req_id,
-        "binding_message": data["binding_message"],
-        "scope": data["scope"],
-        "client_id": data["client_id"],
-        "status": status,
-        "short_code": short_code,
-    })))
+    Ok(Json(CibaAssistedPage {
+        auth_req_id,
+        binding_message: data["binding_message"].clone(),
+        scope: data["scope"].clone(),
+        client_id: data["client_id"].clone(),
+        status: status.to_string(),
+        short_code,
+    }))
 }
 
 /// `POST /v1/ciba/assisted/complete` - bind customer session to CIBA request.
@@ -440,7 +441,7 @@ pub async fn ciba_assisted_page(
     path = "/v1/ciba/assisted/{auth_req_id}/complete",
     params(("auth_req_id" = String, Path, description = "CIBA auth request id")),
     responses(
-        (status = 200, description = "CIBA request bound to the signed-in customer (single-use)", body = serde_json::Value),
+        (status = 200, description = "CIBA request bound to the signed-in customer (single-use)", body = crate::dtos::CibaAssistedComplete),
         (status = 401, description = "No customer session"),
         (status = 404, description = "Unknown auth_req_id"),
         (status = 409, description = "Already completed (status returned, no re-bind)"),
@@ -452,7 +453,7 @@ pub async fn ciba_assisted_complete(
     State(state): State<AppState>,
     headers: axum::http::HeaderMap,
     Path(auth_req_id): Path<String>,
-) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+) -> Result<Json<CibaAssistedComplete>, (StatusCode, String)> {
     // Resolve the customer's session from the __session cookie.
     let token_id = extract_session_token(&headers).ok_or_else(|| {
         (
@@ -497,9 +498,10 @@ pub async fn ciba_assisted_complete(
     // Idempotent: if already approved/denied, return the existing status.
     let current_status = data["status"].as_str().unwrap_or("pending");
     if current_status != "pending" {
-        return Ok(Json(
-            serde_json::json!({ "status": current_status, "already_completed": true }),
-        ));
+        return Ok(Json(CibaAssistedComplete {
+            status: current_status.to_string(),
+            already_completed: Some(true),
+        }));
     }
 
     // Bind the customer's identity and mark approved.
@@ -529,7 +531,10 @@ pub async fn ciba_assisted_complete(
         .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
-    Ok(Json(serde_json::json!({ "status": "approved" })))
+    Ok(Json(CibaAssistedComplete {
+                status: "approved".to_string(),
+                already_completed: None,
+            }))
 }
 
 /// `POST /v1/ciba/approve` - user approves or denies from their device.
@@ -543,7 +548,7 @@ pub async fn ciba_assisted_complete(
     path = "/v1/ciba/approve",
     request_body = CibaApprovalRequest,
     responses(
-        (status = 200, description = "Approval recorded (the approving user is the SESSION's user)", body = serde_json::Value),
+        (status = 200, description = "Approval recorded (the approving user is the SESSION's user)", body = crate::dtos::CibaApproveResponse),
         (status = 400, description = "Unknown auth_req_id"),
         (status = 401, description = "No session - approval requires an authenticated user"),
     ),
@@ -554,7 +559,7 @@ pub async fn ciba_approve(
     State(state): State<AppState>,
     headers: axum::http::HeaderMap,
     Json(req): Json<CibaApprovalRequest>,
-) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+) -> Result<Json<CibaApproveResponse>, (StatusCode, String)> {
     // Resolve the approving user from their session (cookie or Bearer).
     let session_token = crate::handlers::extract_session_token(&headers).ok_or_else(|| {
         (
@@ -627,7 +632,7 @@ pub async fn ciba_approve(
     .await;
 
     let status = if req.approved { "approved" } else { "denied" };
-    Ok(Json(serde_json::json!({ "status": status })))
+    Ok(Json(CibaApproveResponse { status: status.to_string() }))
 }
 
 /// Poll the CIBA auth_req_id. Returns `Ok(Some(user_id, org_id, env_id, scope))`

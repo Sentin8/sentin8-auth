@@ -39,6 +39,7 @@ use sha2::{Digest, Sha256};
 use utoipa::ToSchema;
 use uuid::Uuid;
 
+use crate::dtos::SamlMetadataResponse;
 use crate::admin::{set_tenant_context, TargetEnvQuery};
 use crate::handlers::AppState;
 
@@ -995,7 +996,7 @@ pub async fn sso_callback(
     path = "/v1/saml/metadata/{connection_id}",
     params(("connection_id" = Uuid, Path, description = "Enterprise connection id")),
     responses(
-        (status = 200, description = "SP metadata XML (entity id + ACS URL)", body = serde_json::Value),
+        (status = 200, description = "SP metadata XML (entity id + ACS URL)", body = SamlMetadataResponse),
         (status = 404, description = "Unknown or non-SAML connection"),
     ),
     security(),

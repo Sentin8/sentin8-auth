@@ -27,6 +27,7 @@ use sha2::{Digest, Sha256};
 use sqlx::Row as _;
 use uuid::Uuid;
 
+use crate::dtos::{DeviceVerifyResponse, OidcClaims};
 use crate::config::SYSTEM_ENV_ID;
 use crate::enterprise_connections::decode_jwt_unverified;
 use crate::handlers::AppState;
@@ -4178,7 +4179,7 @@ pub async fn revoke(
     get,
     path = "/oauth/userinfo",
     responses(
-        (status = 200, description = "OIDC Standard Claims for the bearer subject", body = serde_json::Value),
+        (status = 200, description = "OIDC Standard Claims for the bearer subject", body = crate::dtos::OidcClaims),
         (status = 401, description = "Missing/invalid/expired bearer token"),
     ),
     security(),
@@ -4187,7 +4188,7 @@ pub async fn revoke(
 pub async fn userinfo(
     State(state): State<AppState>,
     headers: HeaderMap,
-) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+) -> Result<Json<OidcClaims>, (StatusCode, String)> {
     let token = extract_bearer_token(&headers)
         .ok_or_else(|| (StatusCode::UNAUTHORIZED, "missing bearer token".into()))?;
 
@@ -4288,16 +4289,17 @@ pub async fn userinfo(
         let scopes = crate::handlers::fetch_role_scopes(&state.pool, act_user_id)
             .await
             .unwrap_or_default();
-        return Ok(Json(serde_json::json!({
-            "sub": act_user_id.to_string(),
-            "email": email,
-            "given_name": first_name,
-            "family_name": last_name,
-            "roles": roles,
-            "scopes": scopes,
-            "client_id": claims.sub,
-            "token_tp": claims.token_tp,
-        })));
+        return Ok(Json(OidcClaims {
+            sub: act_user_id.to_string(),
+            email: Some(email),
+            given_name: first_name,
+            family_name: last_name,
+            roles: Some(roles),
+            groups: None,
+            scopes: Some(scopes),
+            client_id: Some(claims.sub),
+            token_tp: Some(claims.token_tp),
+        }));
     }
 
     if claims.token_tp != "access" && claims.token_tp != "m2m" {
@@ -4358,16 +4360,17 @@ pub async fn userinfo(
             let scopes = crate::handlers::fetch_role_scopes(&state.pool, user_id)
                 .await
                 .unwrap_or_default();
-            return Ok(Json(serde_json::json!({
-                "sub": claims.sub,
-                "email": u.email,
-                "given_name": u.first_name,
-                "family_name": u.last_name,
-                "roles": roles,
-                "groups": groups,
-                "scopes": scopes,
-                "client_id": claims.client_id,
-            })));
+            return Ok(Json(OidcClaims {
+                sub: claims.sub,
+                email: Some(u.email),
+                given_name: u.first_name,
+                family_name: u.last_name,
+                roles: Some(roles),
+                groups: Some(groups),
+                scopes: Some(scopes),
+                client_id: claims.client_id,
+                token_tp: None,
+            }));
         }
     }
 
@@ -4397,12 +4400,17 @@ pub async fn userinfo(
     } else {
         (vec![], vec![])
     };
-    Ok(Json(serde_json::json!({
-        "sub": claims.sub,
-        "roles": roles,
-        "scopes": scopes,
-        "client_id": claims.client_id,
-    })))
+    Ok(Json(OidcClaims {
+        sub: claims.sub,
+        email: None,
+        given_name: None,
+        family_name: None,
+        roles: Some(roles),
+        groups: None,
+        scopes: Some(scopes),
+        client_id: claims.client_id,
+        token_tp: Some("m2m".to_string()),
+    }))
 }
 
 // ── Logout ──────────────────────────────────────────────────────────────
@@ -5145,7 +5153,7 @@ async fn handle_ciba_token(
     path = "/device/verify",
     request_body = DeviceVerifyRequest,
     responses(
-        (status = 200, description = "Device sign-in approved (polling grant armed for this user)", body = serde_json::Value),
+        (status = 200, description = "Device sign-in approved (polling grant armed for this user)", body = crate::dtos::DeviceVerifyResponse),
         (status = 400, description = "Unknown user_code"),
         (status = 401, description = "No session - approval requires an authenticated user"),
         (status = 410, description = "user_code expired"),
@@ -5157,7 +5165,7 @@ pub async fn device_verify(
     State(state): State<AppState>,
     headers: HeaderMap,
     Json(req): Json<DeviceVerifyRequest>,
-) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+) -> Result<Json<DeviceVerifyResponse>, (StatusCode, String)> {
     // Resolve the approving user from their session.
     let session_token = crate::handlers::extract_session_token(&headers).ok_or_else(|| {
         (
@@ -5210,7 +5218,9 @@ pub async fn device_verify(
         .set_ex(&dc_key, data.to_string(), 900)
         .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
-    Ok(Json(serde_json::json!({"status": "approved"})))
+    Ok(Json(DeviceVerifyResponse {
+        status: "approved".to_string(),
+    }))
 }
 
 #[derive(Debug, Deserialize, utoipa::ToSchema)]

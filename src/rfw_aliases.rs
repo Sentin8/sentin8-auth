@@ -13,6 +13,7 @@
 //! paths so the drift guard passes and the site API page shows the
 //! renderer's real surface.
 
+use crate::dtos::GroupMembersResponse;
 use crate::handlers::AppState;
 use axum::extract::{Path, Query, State};
 use axum::http::{HeaderMap, StatusCode};
@@ -246,7 +247,7 @@ pub async fn enterprise_connection_delete(
         ("target_env_id" = String, Query, description = "Target env (RLS context)")
     ),
     responses(
-        (status = 200, description = "The group's members (identical handler to GET /v1/admin/groups/{group_id}/members)", body = serde_json::Value),
+        (status = 200, description = "The group's members (identical handler to GET /v1/admin/groups/{group_id}/members)", body = GroupMembersResponse),
         (status = 403, description = "Caller lacks the admin read scope"),
         (status = 404, description = "Unknown group"),
     ),
@@ -258,6 +259,6 @@ pub async fn group_members_alias(
     headers: HeaderMap,
     Query(teq): Query<TargetEnvQuery>,
     Path(id): Path<uuid::Uuid>,
-) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+) -> Result<Json<GroupMembersResponse>, (StatusCode, String)> {
     crate::admin::list_group_members(State(state), headers, Query(teq), Path(id)).await
 }

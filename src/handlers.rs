@@ -916,7 +916,7 @@ pub(crate) async fn auto_add_to_app_groups(pool: &PgPool, user_id: Uuid, env_id:
     get,
     path = "/v1/branding",
     responses(
-        (status = 200, description = "The merged branding payload for the resolved tenant", body = serde_json::Value),
+        (status = 200, description = "The merged branding payload for the resolved tenant", body = crate::dtos::BrandingResponse),
         (status = 401, description = "No valid tenant context could be resolved from the request"),
     ),
     security(),
@@ -925,7 +925,7 @@ pub(crate) async fn auto_add_to_app_groups(pool: &PgPool, user_id: Uuid, env_id:
 pub async fn branding(
     State(state): State<AppState>,
     headers: HeaderMap,
-) -> Json<serde_json::Value> {
+) -> Json<crate::dtos::BrandingResponse> {
     //resolve tenant from TLS headers (fallback to hostname).
     let (org_id, env_id) = resolve_tenant_from_headers(&state.pool, &headers).await;
 
@@ -945,17 +945,17 @@ pub async fn branding(
             .flatten()
             .filter(|s: &String| !s.is_empty());
 
-    Json(serde_json::json!({
-        "organization_name" : org_name,
-        "logo_url" : b.logo_url,
-        "logo_icon_url" : b.logo_icon_url,
-        "primary_color" : b.primary_color,
-        "accent_color" : b.accent_color,
-        "theme_mode" : b.theme_mode.unwrap_or_else(|| "dark".to_string()),
-        "font_family" : b.font_family,
-        "custom_css" : b.custom_css,
-        "sign_in_text" : b.sign_in_text,
-    }))
+    Json(crate::dtos::BrandingResponse {
+        organization_name: org_name,
+        logo_url: b.logo_url,
+        logo_icon_url: b.logo_icon_url,
+        primary_color: b.primary_color,
+        accent_color: b.accent_color,
+        theme_mode: Some(b.theme_mode.unwrap_or_else(|| "dark".to_string())),
+        font_family: b.font_family,
+        custom_css: b.custom_css,
+        sign_in_text: b.sign_in_text,
+    })
 }
 
 /// Merged org→env branding from `sentin8_sys_branding`. Env overrides org per-field
@@ -1033,7 +1033,7 @@ async fn fetch_merged_branding(
     get,
     path = "/v1/health",
     responses(
-        (status = 200, description = "The service is live", body = serde_json::Value),
+        (status = 200, description = "The service is live", body = sentin8::middleware::health::LiveHealth),
     ),
     security(),
     tag = "meta",
@@ -1082,7 +1082,7 @@ pub struct ConsentAccountsQuery {
     path = "/v1/auth/consent/accounts",
     params(ConsentAccountsQuery),
     responses(
-        (status = 200, description = "The consent flow's customer accounts (per scope selection)", body = serde_json::Value),
+        (status = 200, description = "The consent flow's customer accounts (per scope selection)", body = crate::dtos::ConsentAccountsResponse),
         (status = 401, description = "Session invalid or expired"),
     ),
     security(),
@@ -1091,7 +1091,7 @@ pub struct ConsentAccountsQuery {
 pub async fn consent_accounts(
     State(state): State<AppState>,
     axum::extract::Query(q): axum::extract::Query<ConsentAccountsQuery>,
-) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+) -> Result<Json<crate::dtos::ConsentAccountsResponse>, (StatusCode, String)> {
     // Verify the session is valid.
     let session = Session::find_by_token(&state.pool, &q.session_token)
         .await
@@ -1133,7 +1133,6 @@ pub async fn consent_accounts(
     })?;
 
     let mut all_data: Vec<serde_json::Value> = Vec::new();
-    let mut response_key = "accounts".to_string();
 
     for row in &providers {
         let service_type: String = row.get("service_type");
@@ -1141,7 +1140,6 @@ pub async fn consent_accounts(
         let endpoint: String = row.get("endpoint");
         let scope: String = row.get("scope");
         let resp_key: String = row.get("response_key");
-        response_key = resp_key.clone();
 
         // Build the service URL from the platform domain key (e.g.
         // "bank8:ledger" → "https://bank8-ledger.ops.sys.sentin8.local").
@@ -1199,7 +1197,9 @@ pub async fn consent_accounts(
         }
     }
 
-    Ok(Json(serde_json::json!({ &response_key: all_data })))
+    Ok(Json(crate::dtos::ConsentAccountsResponse {
+        accounts: all_data,
+    }))
 }
 
 // ── Helpers ─────────────────────────────────────────────────────────────

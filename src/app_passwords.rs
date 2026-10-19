@@ -78,7 +78,7 @@ pub struct CreateAppPasswordRequest {
     path = "/v1/me/app-passwords",
     request_body = CreateAppPasswordRequest,
     responses(
-        (status = 200, description = "Created - the raw secret is returned ONCE", body = serde_json::Value),
+        (status = 200, description = "Created - the raw secret is returned ONCE", body = crate::dtos::AppPasswordCreated),
         (status = 401, description = "Not the caller's own identity (self-service only)"),
     ),
     security(),
@@ -88,7 +88,7 @@ pub async fn create_app_password(
     State(state): State<crate::handlers::AppState>,
     headers: HeaderMap,
     Json(req): Json<CreateAppPasswordRequest>,
-) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+) -> Result<Json<crate::dtos::AppPasswordCreated>, (StatusCode, String)> {
     let (user_id, env_id) = require_self(&state, &headers).await?;
     if req.label.trim().is_empty() {
         return Err((StatusCode::BAD_REQUEST, "label is required".into()));
@@ -120,13 +120,12 @@ pub async fn create_app_password(
     .fetch_one(&state.pool)
     .await
     .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
-    Ok(Json(serde_json::json!({
-           "id": id,
-           "label": req.label.trim(),
-           "allowed_scopes": scopes,
-    // Shown once - never retrievable again.
-           "secret": raw,
-       })))
+    Ok(Json(crate::dtos::AppPasswordCreated {
+        id,
+        label: req.label.trim().to_string(),
+        allowed_scopes: scopes,
+        secret: raw,
+    }))
 }
 
 /// `GET /v1/me/app-passwords` - list the user's app passwords (no
@@ -136,7 +135,7 @@ pub async fn create_app_password(
     get,
     path = "/v1/me/app-passwords",
     responses(
-        (status = 200, description = "The caller's app passwords (no hashes, no secrets)", body = serde_json::Value),
+        (status = 200, description = "The caller's app passwords (no hashes, no secrets)", body = Vec<crate::dtos::AppPasswordItem>),
         (status = 401, description = "Not the caller's own identity"),
     ),
     security(),
@@ -145,7 +144,7 @@ pub async fn create_app_password(
 pub async fn list_app_passwords(
     State(state): State<crate::handlers::AppState>,
     headers: HeaderMap,
-) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+) -> Result<Json<crate::dtos::AppPasswordList>, (StatusCode, String)> {
     let (user_id, _env) = require_self(&state, &headers).await?;
     let rows = sqlx::query(
         "SELECT id, label, allowed_scopes, status, last_used_at, created_at \
@@ -156,23 +155,24 @@ pub async fn list_app_passwords(
     .await
     .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
     use sqlx::Row;
-    let items: Vec<serde_json::Value> = rows
+    let items: Vec<crate::dtos::AppPasswordItem> = rows
         .iter()
         .map(|r| {
-            serde_json::json!({
-                "id": r.get::<Uuid, _>("id"),
-                "label": r.get::<String, _>("label"),
-                "allowed_scopes": r.get::<String, _>("allowed_scopes")
+            crate::dtos::AppPasswordItem {
+                id: r.get::<Uuid, _>("id"),
+                label: r.get::<String, _>("label"),
+                allowed_scopes: r
+                    .get::<String, _>("allowed_scopes")
                     .split_whitespace()
                     .map(|s| s.to_string())
                     .collect::<Vec<_>>(),
-                "status": r.get::<String, _>("status"),
-                "last_used_at": r.get::<Option<chrono::DateTime<chrono::Utc>>, _>("last_used_at"),
-                "created_at": r.get::<chrono::DateTime<chrono::Utc>, _>("created_at"),
-            })
+                status: r.get::<String, _>("status"),
+                last_used_at: r.get::<Option<chrono::DateTime<chrono::Utc>>, _>("last_used_at"),
+                created_at: r.get::<chrono::DateTime<chrono::Utc>, _>("created_at"),
+            }
         })
         .collect();
-    Ok(Json(serde_json::json!({ "items": items })))
+    Ok(Json(crate::dtos::AppPasswordList { items }))
 }
 
 /// `DELETE /v1/me/app-passwords/{id}` - revoke one app password.
@@ -182,7 +182,7 @@ pub async fn list_app_passwords(
     path = "/v1/me/app-passwords/{id}",
     params(("id" = Uuid, Path, description = "App password id")),
     responses(
-        (status = 200, description = "Revoked", body = serde_json::Value),
+        (status = 200, description = "Revoked", body = crate::dtos::DeletedAck),
         (status = 401, description = "Not the caller's own identity"),
     ),
     security(),
@@ -192,7 +192,7 @@ pub async fn revoke_app_password(
     State(state): State<crate::handlers::AppState>,
     headers: HeaderMap,
     axum::extract::Path(id): axum::extract::Path<Uuid>,
-) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+) -> Result<Json<crate::dtos::DeletedAck>, (StatusCode, String)> {
     let (user_id, _env) = require_self(&state, &headers).await?;
     let res = sqlx::query(
         "UPDATE auth.app_passwords \
@@ -207,7 +207,7 @@ pub async fn revoke_app_password(
     if res.rows_affected() == 0 {
         return Err((StatusCode::NOT_FOUND, "app password not found".into()));
     }
-    Ok(Json(serde_json::json!({ "revoked": true })))
+    Ok(Json(crate::dtos::DeletedAck { status: "deleted".to_string() }))
 }
 
 // ── Sign-in fallback (the downscoped issuance) ───────────────────────────

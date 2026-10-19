@@ -1695,8 +1695,8 @@ pub async fn delete_group(
 
 // ── Group Members (user↔group membership) ───────────────────────────────
 
-#[derive(Serialize, ToSchema)]
-/// Response payload for groupmember.
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+/// Response payload for groupmember (wire-identical; derives complete).
 pub struct GroupMemberResponse {
     /// group identifier.
     pub group_id: Uuid,
@@ -1728,7 +1728,7 @@ pub async fn list_group_members(
     headers: HeaderMap,
     Query(teq): Query<TargetEnvQuery>,
     Path(group_id): Path<Uuid>,
-) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+) -> Result<Json<crate::dtos::GroupMembersResponse>, (StatusCode, String)> {
     let _auth =
         require_sentin8or_access_with_env(&state, &headers, teq.target_env_id.as_deref()).await?;
     // SEC- - begin instead of acquire (see the note above).
@@ -1746,18 +1746,16 @@ pub async fn list_group_members(
     .await
     .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
-    let members: Vec<serde_json::Value> = rows
+    let members: Vec<GroupMemberResponse> = rows
         .into_iter()
-        .map(|r| {
-            serde_json::json!({
-                "group_id": r.group_id,
-                "user_id": r.user_id,
-                "created_at": r.created_at,
-            })
+        .map(|r| GroupMemberResponse {
+            group_id: r.group_id,
+            user_id: r.user_id,
+            created_at: r.created_at,
         })
         .collect();
 
-    Ok(Json(serde_json::json!({"members": members})))
+    Ok(Json(crate::dtos::GroupMembersResponse { members }))
 }
 
 #[derive(Debug, Deserialize, ToSchema)]

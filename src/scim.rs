@@ -660,26 +660,26 @@ pub async fn delete_user(
     get,
     path = "/scim/v2/ServiceProviderConfig",
     responses(
-        (status = 200, description = "SCIM service-provider capabilities", body = serde_json::Value),
+        (status = 200, description = "SCIM service-provider capabilities", body = crate::dtos::ScimServiceProviderConfig),
     ),
     security(("sentin8:auth:scim" = [])),
     tag = "scim",
 )]
-pub async fn service_provider_config() -> Json<serde_json::Value> {
-    Json(serde_json::json!({
-        "schemas": ["urn:ietf:params:scim:schemas:core:2.0:ServiceProviderConfig"],
-        "patch": { "supported": true },
-        "bulk": { "supported": false },
-        "filter": { "supported": true, "maxResults": 200 },
-        "changePassword": { "supported": true },
-        "sort": { "supported": true },
-        "etag": { "supported": false },
-        "authenticationSchemes": [{
+pub async fn service_provider_config() -> Json<crate::dtos::ScimServiceProviderConfig> {
+    Json(crate::dtos::ScimServiceProviderConfig {
+        schemas: vec!["urn:ietf:params:scim:schemas:core:2.0:ServiceProviderConfig".to_string()],
+        patch: serde_json::json!({ "supported": true }),
+        bulk: serde_json::json!({ "supported": false }),
+        filter: serde_json::json!({ "supported": true, "maxResults": 200 }),
+        change_password: serde_json::json!({ "supported": true }),
+        sort: serde_json::json!({ "supported": true }),
+        etag: serde_json::json!({ "supported": false }),
+        authentication_schemes: vec![serde_json::json!({
             "name": "OAuth Bearer Token",
             "description": "Authentication via Bearer token with scim:read or scim:write scope",
             "type": "oauthbearertoken",
-        }]
-    }))
+        })],
+    })
 }
 
 /// `GET /scim/v2/Groups` - list groups (read-only, env-scoped).
@@ -693,7 +693,7 @@ pub async fn service_provider_config() -> Json<serde_json::Value> {
     path = "/scim/v2/Groups",
     params(ScimQuery),
     responses(
-        (status = 200, description = "SCIM ListResponse of group mirrors (read-only directory sync)", body = serde_json::Value),
+        (status = 200, description = "SCIM ListResponse of group mirrors (read-only directory sync)", body = crate::dtos::ScimListResponse),
         (status = 401, description = "Caller authentication failed"),
     ),
     security(("sentin8:auth:scim" = [])),
@@ -702,7 +702,7 @@ pub async fn service_provider_config() -> Json<serde_json::Value> {
 pub async fn list_groups(
     State(state): State<AppState>,
     headers: axum::http::HeaderMap,
-) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+) -> Result<Json<crate::dtos::ScimListResponse>, (StatusCode, String)> {
     let env_id = validate_scim_auth(&state, &headers, "sentin8:scim:read").await?;
 
     let rows = sqlx::query!(
@@ -725,11 +725,11 @@ pub async fn list_groups(
         })
         .collect();
 
-    Ok(Json(serde_json::json!({
-        "schemas": ["urn:ietf:params:scim:api:messages:2.0:ListResponse"],
-        "totalResults": resources.len(),
-        "Resources": resources,
-    })))
+    Ok(Json(crate::dtos::ScimListResponse {
+        schemas: vec!["urn:ietf:params:scim:api:messages:2.0:ListResponse".to_string()],
+        total_results: resources.len(),
+        resources: Some(resources),
+    }))
 }
 
 /// `GET /scim/v2/ResourceTypes` - supported resource types.
@@ -737,24 +737,18 @@ pub async fn list_groups(
     get,
     path = "/scim/v2/ResourceTypes",
     responses(
-        (status = 200, description = "SCIM resource types (Users, Groups)", body = serde_json::Value),
+        (status = 200, description = "SCIM resource types (Users, Groups)", body = Vec<crate::dtos::ScimResourceType>),
     ),
     security(("sentin8:auth:scim" = [])),
     tag = "scim",
 )]
-pub async fn resource_types() -> Json<serde_json::Value> {
-    Json(serde_json::json!({
-        "schemas": ["urn:ietf:params:scim:api:messages:2.0:ListResponse"],
-        "totalResults": 1,
-        "Resources": [{
-            "schemas": ["urn:ietf:params:scim:schemas:core:2.0:ResourceType"],
-            "id": "User",
-            "name": "User",
-            "endpoint": "/Users",
-            "description": "User Account",
-            "schema": "urn:ietf:params:scim:schemas:core:2.0:User",
-        }]
-    }))
+pub async fn resource_types() -> Json<Vec<crate::dtos::ScimResourceType>> {
+    Json(vec![crate::dtos::ScimResourceType {
+        id: "User".to_string(),
+        name: "User".to_string(),
+        endpoint: "/Users".to_string(),
+        schema: "urn:ietf:params:scim:schemas:core:2.0:User".to_string(),
+    }])
 }
 
 // ── Helpers ──────────────────────────────────────────────────────────────
