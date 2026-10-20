@@ -532,9 +532,9 @@ pub async fn ciba_assisted_complete(
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
     Ok(Json(CibaAssistedComplete {
-                status: "approved".to_string(),
-                already_completed: None,
-            }))
+        status: "approved".to_string(),
+        already_completed: None,
+    }))
 }
 
 /// `POST /v1/ciba/approve` - user approves or denies from their device.
@@ -632,7 +632,9 @@ pub async fn ciba_approve(
     .await;
 
     let status = if req.approved { "approved" } else { "denied" };
-    Ok(Json(CibaApproveResponse { status: status.to_string() }))
+    Ok(Json(CibaApproveResponse {
+        status: status.to_string(),
+    }))
 }
 
 /// Poll the CIBA auth_req_id. Returns `Ok(Some(user_id, org_id, env_id, scope))`

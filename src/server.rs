@@ -332,7 +332,10 @@ pub fn build_router(state: AppState) -> Router {
                 .delete(admin::delete_user),
         )
         // POST alias for RFW row_action_post (renderer only supports POST)
-        .route("/v1/admin/users/{id}/delete", post(crate::rfw_aliases::user_delete))
+        .route(
+            "/v1/admin/users/{id}/delete",
+            post(crate::rfw_aliases::user_delete),
+        )
         // Admin API - Roles
         .route(
             "/v1/admin/roles",
@@ -345,7 +348,10 @@ pub fn build_router(state: AppState) -> Router {
                 .delete(admin::delete_role),
         )
         // POST alias for RFW form submission (renderer only supports POST)
-        .route("/v1/admin/roles/{id}/update", post(crate::rfw_aliases::role_update))
+        .route(
+            "/v1/admin/roles/{id}/update",
+            post(crate::rfw_aliases::role_update),
+        )
         .route(
             "/v1/admin/roles/{role_id}/members",
             post(admin::add_role_member),
@@ -355,7 +361,10 @@ pub fn build_router(state: AppState) -> Router {
             delete(admin::remove_role_member),
         )
         // POST alias for RFW row_action_post
-        .route("/v1/admin/roles/{id}/delete", post(crate::rfw_aliases::role_delete))
+        .route(
+            "/v1/admin/roles/{id}/delete",
+            post(crate::rfw_aliases::role_delete),
+        )
         // Admin API - Groups (user-grouping)
         .route(
             "/v1/admin/groups",
@@ -368,7 +377,10 @@ pub fn build_router(state: AppState) -> Router {
                 .delete(crate::rfw_aliases::group_delete),
         )
         // POST alias for RFW form submission (renderer only supports POST)
-        .route("/v1/admin/groups/{id}/update", post(crate::rfw_aliases::group_update))
+        .route(
+            "/v1/admin/groups/{id}/update",
+            post(crate::rfw_aliases::group_update),
+        )
         .route(
             "/v1/admin/groups/{group_id}/members",
             get(admin::list_group_members).post(admin::add_group_member),
@@ -386,7 +398,10 @@ pub fn build_router(state: AppState) -> Router {
             delete(admin::remove_group_role),
         )
         // POST alias for RFW row_action_post
-        .route("/v1/admin/groups/{id}/delete", post(crate::rfw_aliases::group_delete))
+        .route(
+            "/v1/admin/groups/{id}/delete",
+            post(crate::rfw_aliases::group_delete),
+        )
         // Admin API - OAuth Clients
         .route(
             "/v1/admin/oauth-clients",

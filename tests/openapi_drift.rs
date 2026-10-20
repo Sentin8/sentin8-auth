@@ -18,9 +18,7 @@
 //! request, so the guard is DB-independent - no live PostgreSQL required.
 
 use sentin8::openapi::OpenApi;
-use sentin8::shell::drift_guard::{
-    assert_openapi_covers_router, served_routes, spec_pairs,
-};
+use sentin8::shell::drift_guard::{assert_openapi_covers_router, served_routes, spec_pairs};
 use sentin8_auth_server::openapi::AuthOpenApi;
 use sentin8_auth_server::{build_router, AppState, SigningKeys, TestConfig};
 
@@ -63,9 +61,8 @@ async fn spawn_router() -> Option<axum::Router> {
         .max_connections(2)
         .connect_lazy(&config.database_url)
         .expect("lazy pool handle");
-    let keys = std::sync::Arc::new(
-        SigningKeys::generate_for_testing().expect("failed to generate keys"),
-    );
+    let keys =
+        std::sync::Arc::new(SigningKeys::generate_for_testing().expect("failed to generate keys"));
     let state = AppState {
         config: std::sync::Arc::new(config),
         keys,

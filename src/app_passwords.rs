@@ -157,19 +157,17 @@ pub async fn list_app_passwords(
     use sqlx::Row;
     let items: Vec<crate::dtos::AppPasswordItem> = rows
         .iter()
-        .map(|r| {
-            crate::dtos::AppPasswordItem {
-                id: r.get::<Uuid, _>("id"),
-                label: r.get::<String, _>("label"),
-                allowed_scopes: r
-                    .get::<String, _>("allowed_scopes")
-                    .split_whitespace()
-                    .map(|s| s.to_string())
-                    .collect::<Vec<_>>(),
-                status: r.get::<String, _>("status"),
-                last_used_at: r.get::<Option<chrono::DateTime<chrono::Utc>>, _>("last_used_at"),
-                created_at: r.get::<chrono::DateTime<chrono::Utc>, _>("created_at"),
-            }
+        .map(|r| crate::dtos::AppPasswordItem {
+            id: r.get::<Uuid, _>("id"),
+            label: r.get::<String, _>("label"),
+            allowed_scopes: r
+                .get::<String, _>("allowed_scopes")
+                .split_whitespace()
+                .map(|s| s.to_string())
+                .collect::<Vec<_>>(),
+            status: r.get::<String, _>("status"),
+            last_used_at: r.get::<Option<chrono::DateTime<chrono::Utc>>, _>("last_used_at"),
+            created_at: r.get::<chrono::DateTime<chrono::Utc>, _>("created_at"),
         })
         .collect();
     Ok(Json(crate::dtos::AppPasswordList { items }))
@@ -207,7 +205,9 @@ pub async fn revoke_app_password(
     if res.rows_affected() == 0 {
         return Err((StatusCode::NOT_FOUND, "app password not found".into()));
     }
-    Ok(Json(crate::dtos::DeletedAck { status: "deleted".to_string() }))
+    Ok(Json(crate::dtos::DeletedAck {
+        status: "deleted".to_string(),
+    }))
 }
 
 // ── Sign-in fallback (the downscoped issuance) ───────────────────────────

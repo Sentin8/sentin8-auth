@@ -27,8 +27,8 @@ use sha2::{Digest, Sha256};
 use sqlx::Row as _;
 use uuid::Uuid;
 
-use crate::dtos::{DeviceVerifyResponse, OidcClaims};
 use crate::config::SYSTEM_ENV_ID;
+use crate::dtos::{DeviceVerifyResponse, OidcClaims};
 use crate::enterprise_connections::decode_jwt_unverified;
 use crate::handlers::AppState;
 use crate::jwt::AuthClaims;

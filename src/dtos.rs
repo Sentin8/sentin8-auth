@@ -134,8 +134,6 @@ pub struct DeviceVerifyResponse {
     pub status: String,
 }
 
-
-
 /// SAML 2.0 SP metadata descriptor.
 #[derive(Debug, Clone, Serialize, Deserialize, utoipa::ToSchema)]
 pub struct SamlMetadataResponse {

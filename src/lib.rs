@@ -25,13 +25,13 @@ pub mod ciba;
 pub mod config;
 /// Consent proxy for delegated approval surfaces.
 pub mod consent_proxy;
-pub mod dtos;
 /// OAuth Dynamic Client Registration (RFC 7591) + management.
 pub mod dcr;
 /// Delegation Gateway (delegated tokens, act chain).
 pub mod delegation;
 /// DPoP sender-constrained tokens (RFC 9449).
 pub mod dpop;
+pub mod dtos;
 /// Enterprise (federated) identity connections.
 pub mod enterprise_connections;
 /// Domain event emission (outbox) for auth lifecycle changes.
@@ -70,14 +70,14 @@ pub mod oauth;
 pub mod overlays;
 /// Passkey (WebAuthn) enrollment and verification.
 pub mod passkey;
-pub mod policy_docs;
-pub mod rfw_aliases;
 /// Shield (Sentin8:Policy) integration - shared bridge re-exports.
 pub mod policy;
+pub mod policy_docs;
 /// Membership provisioning API (used by peers; no table access).
 pub mod provision;
 /// Resource indicators (RFC 8707).
 pub mod resource_indicators;
+pub mod rfw_aliases;
 /// Relying-party metadata surfaces.
 pub mod rp_metadata;
 /// SCIM 2.0 user/group provisioning.

@@ -20,10 +20,9 @@ use axum::http::HeaderMap;
 use axum::Json;
 
 use sentin8::shield::admin::{
-    check_relation, delete_attribute, delete_policy_set, delete_relation,
-    get_policy_set, list_attributes, list_policy_sets, list_relations,
-    put_attribute, put_policy_set, put_relation, admin_enforce_policy_set,
-    admin_shadow_policy_set, admin_disable_policy_set, test_policy_set,
+    admin_disable_policy_set, admin_enforce_policy_set, admin_shadow_policy_set, check_relation,
+    delete_attribute, delete_policy_set, delete_relation, get_policy_set, list_attributes,
+    list_policy_sets, list_relations, put_attribute, put_policy_set, put_relation, test_policy_set,
     PutAttributeBody, PutPolicySetBody, PutRelationBody,
 };
 
@@ -88,7 +87,13 @@ pub async fn policy_put_set(
     Path(name): Path<String>,
     Query(q): Query<sentin8::shield::admin::TargetEnv>,
     body: Json<PutPolicySetBody>,
-) -> Result<(axum::http::StatusCode, Json<sentin8::shield::admin::PolicySetMutated>), (axum::http::StatusCode, String)> {
+) -> Result<
+    (
+        axum::http::StatusCode,
+        Json<sentin8::shield::admin::PolicySetMutated>,
+    ),
+    (axum::http::StatusCode, String),
+> {
     put_policy_set(State(state), headers, Path(name), Query(q), body).await
 }
 
@@ -218,7 +223,8 @@ pub async fn policy_relations(
     State(state): State<AppState>,
     headers: HeaderMap,
     Query(q): Query<sentin8::shield::admin::TargetEnv>,
-) -> Result<Json<Vec<sentin8::shield::admin::RelationRecordRow>>, (axum::http::StatusCode, String)> {
+) -> Result<Json<Vec<sentin8::shield::admin::RelationRecordRow>>, (axum::http::StatusCode, String)>
+{
     list_relations(State(state), headers, Query(q)).await
 }
 
@@ -240,7 +246,13 @@ pub async fn policy_put_relation(
     headers: HeaderMap,
     Query(q): Query<sentin8::shield::admin::TargetEnv>,
     body: Json<PutRelationBody>,
-) -> Result<(axum::http::StatusCode, Json<sentin8::shield::admin::RelationUpserted>), (axum::http::StatusCode, String)> {
+) -> Result<
+    (
+        axum::http::StatusCode,
+        Json<sentin8::shield::admin::RelationUpserted>,
+    ),
+    (axum::http::StatusCode, String),
+> {
     put_relation(State(state), headers, Query(q), body).await
 }
 
@@ -325,7 +337,13 @@ pub async fn policy_put_attribute(
     headers: HeaderMap,
     Query(q): Query<sentin8::shield::admin::TargetEnv>,
     body: Json<PutAttributeBody>,
-) -> Result<(axum::http::StatusCode, Json<sentin8::shield::admin::AttributeUpserted>), (axum::http::StatusCode, String)> {
+) -> Result<
+    (
+        axum::http::StatusCode,
+        Json<sentin8::shield::admin::AttributeUpserted>,
+    ),
+    (axum::http::StatusCode, String),
+> {
     put_attribute(State(state), headers, Query(q), body).await
 }
 

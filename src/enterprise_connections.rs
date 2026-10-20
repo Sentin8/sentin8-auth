@@ -39,8 +39,8 @@ use sha2::{Digest, Sha256};
 use utoipa::ToSchema;
 use uuid::Uuid;
 
-use crate::dtos::SamlMetadataResponse;
 use crate::admin::{set_tenant_context, TargetEnvQuery};
+use crate::dtos::SamlMetadataResponse;
 use crate::handlers::AppState;
 
 /// SSO session TTL (10 minutes - enough for an IdP round trip).

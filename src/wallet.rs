@@ -383,7 +383,10 @@ pub async fn vp_response(
         status: "verified".to_string(),
         session_token,
         code,
-        redirect_uri: pending.get("redirect_uri").cloned().unwrap_or(serde_json::Value::Null),
+        redirect_uri: pending
+            .get("redirect_uri")
+            .cloned()
+            .unwrap_or(serde_json::Value::Null),
         acr: Some(acr),
         amr: Some(vec![amr.to_string()]),
         user_id: user.id,
@@ -547,7 +550,9 @@ pub async fn wallet_metadata(
         vp_formats_supported: serde_json::json!({ "sd_jwt": { "alg": ["ES256", "MLDSA65"] } }),
         trusted_issuers: serde_json::to_value(&trusted).unwrap_or(serde_json::json!([])),
         presentation_definition: definition.unwrap_or(serde_json::Value::Null),
-        min_level_of_assurance: loa.map(|l| serde_json::Value::String(l)).unwrap_or(serde_json::Value::Null),
+        min_level_of_assurance: loa
+            .map(|l| serde_json::Value::String(l))
+            .unwrap_or(serde_json::Value::Null),
         response_mode: "direct_post".to_string(),
         vp_response_endpoint: format!("{}/oauth/vp/response", state.config.issuer),
     })
