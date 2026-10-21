@@ -121,23 +121,23 @@ impl AuthConfig {
             .unwrap_or_else(|_| sentin8::config::Sentin8Config::default_database_url().to_string());
         Self {
             port: 0,
-            issuer: "https://auth.test.sentin8.local".to_string(),
-            jwks_url: "https://auth.test.sentin8.local/.well-known/jwks.json".to_string(),
+            issuer: "https://auth.test.local.sentin8.dev".to_string(),
+            jwks_url: "https://auth.test.local.sentin8.dev/.well-known/jwks.json".to_string(),
             database_url,
             // VALKEYDERIVE-1: override → else the plane-derived URL.
             valkey_url: env::var("SENTIN8_AUTH_VALKEY_URL")
                 .ok()
                 .filter(|s| !s.trim().is_empty())
                 .unwrap_or_else(sentin8::config::service_valkey_url),
-            sentin8_domain: "test.sentin8.local".to_string(),
+            sentin8_domain: "test.local.sentin8.dev".to_string(),
             session_ttl_secs: 3600,
             access_token_ttl_secs: 900,
             m2m_token_ttl_secs: 3600,
             refresh_token_ttl_secs: 2592000,
             sentin8_stat_property_id: uuid::Uuid::parse_str("a0000000-0000-0000-0000-000000000001")
                 .unwrap(),
-            sentin8_stat_url: "https://stat.test.sentin8.local".into(),
-            sentin8_bus_url: "https://bus.test.sentin8.local".into(),
+            sentin8_stat_url: "https://stat.test.local.sentin8.dev".into(),
+            sentin8_bus_url: "https://bus.test.local.sentin8.dev".into(),
             stream_family: "auth".into(),
         }
     }

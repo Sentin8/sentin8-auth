@@ -185,7 +185,7 @@ async fn sec_auth2_forged_tokens_rejected() {
     let header = base64::engine::general_purpose::URL_SAFE_NO_PAD
         .encode(br#"{"alg":"MLDSA65","typ":"JWT","kid":"forged"}"#);
     let payload = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(
-        br#"{"sub":"00000000-0000-0000-0000-000000000002","iss":"https://auth.test.sentin8.local","exp":4102444800,"token_tp":"refresh","jti":"forged-1","scope":"openid"}"#,
+        br#"{"sub":"00000000-0000-0000-0000-000000000002","iss":"https://auth.test.local.sentin8.dev","exp":4102444800,"token_tp":"refresh","jti":"forged-1","scope":"openid"}"#,
     );
     let forged = format!("{header}.{payload}.Zm9yZ2Vk");
     let resp = app
@@ -366,7 +366,7 @@ async fn sec_auth2_authorize_redirect_allowlist_and_pkce() {
             Request::builder()
                 .uri(format!(
                     "/oauth/authorize?response_type=code&client_id=nonexistent-client&redirect_uri={}&scope=openid&state=s1&code_challenge={}&code_challenge_method=S256",
-                    urlencode("https://bff.dash.ops.sys.sentin8.local/auth/callback"),
+                    urlencode("https://bff.dash.ops.sys.local.sentin8.dev/auth/callback"),
                     urlencode(challenge),
                 ))
                 .body(Body::empty())
@@ -387,7 +387,7 @@ async fn sec_auth2_authorize_redirect_allowlist_and_pkce() {
             Request::builder()
                 .uri(format!(
                     "/oauth/authorize?response_type=code&client_id=dash&redirect_uri={}&scope=openid&state=s1",
-                    urlencode("https://bff.dash.ops.sys.sentin8.local/auth/callback"),
+                    urlencode("https://bff.dash.ops.sys.local.sentin8.dev/auth/callback"),
                 ))
                 .body(Body::empty())
                 .unwrap(),
@@ -444,7 +444,7 @@ async fn sec_auth2_par_requires_known_client() {
         return;
     };
     let challenge = "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM";
-    let redirect = urlencode("https://bff.dash.ops.sys.sentin8.local/auth/callback");
+    let redirect = urlencode("https://bff.dash.ops.sys.local.sentin8.dev/auth/callback");
 
     let resp = app
         .clone()
@@ -478,7 +478,7 @@ async fn sec_auth2_scim_forged_token_rejected() {
     let header = base64::engine::general_purpose::URL_SAFE_NO_PAD
         .encode(br#"{"alg":"MLDSA65","typ":"JWT"}"#);
     let payload = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(
-        br#"{"sub":"x","iss":"https://auth.test.sentin8.local","exp":4102444800,"token_tp":"m2m","scope":"sentin8:scim:write","env_id":"00000000-0000-0000-0000-000000000002"}"#,
+        br#"{"sub":"x","iss":"https://auth.test.local.sentin8.dev","exp":4102444800,"token_tp":"m2m","scope":"sentin8:scim:write","env_id":"00000000-0000-0000-0000-000000000002"}"#,
     );
     let forged = format!("{header}.{payload}.forged");
 
@@ -548,6 +548,44 @@ async fn sec_auth2_conformance_discovery_shape() {
     assert!(has_g("authorization_code"));
     assert!(has_g("refresh_token"));
     assert!(has_g("client_credentials"));
+    // CIBA grant advertised (DESIGN §9a.4).
+    assert!(has_g("urn:openid:params:grant-type:ciba"));
+
+    // Certification discovery fields (DESIGN §9a.4).
+    assert!(
+        doc["token_endpoint_auth_signing_alg_values_supported"]
+            .as_array()
+            .expect("private_key_jwt signing algs advertised")
+            .iter()
+            .any(|v| v.as_str() == Some("ES256")),
+        "ES256 advertised for private_key_jwt assertions"
+    );
+    assert_eq!(doc["claims_parameter_supported"], true);
+    assert!(
+        doc["claims_supported"].as_array().expect("claims_supported list").len() >= 10,
+        "claims_supported lists the mintable claim set"
+    );
+    assert_eq!(doc["backchannel_logout_supported"], true);
+    assert_eq!(doc["backchannel_logout_session_supported"], true);
+    // Revocation/introspection auth methods mirror the token endpoint's.
+    assert!(!doc["revocation_endpoint_auth_methods_supported"]
+        .as_array()
+        .expect("revocation auth methods")
+        .is_empty());
+    assert!(!doc["introspection_endpoint_auth_methods_supported"]
+        .as_array()
+        .expect("introspection auth methods")
+        .is_empty());
+    // CIBA block (DESIGN §9a.4).
+    assert!(doc["backchannel_authentication_endpoint"]
+        .as_str()
+        .expect("bc-authorize endpoint advertised")
+        .ends_with("/oauth/bc-authorize"));
+    let modes_ciba = doc["backchannel_token_delivery_modes_supported"]
+        .as_array()
+        .expect("CIBA delivery modes advertised");
+    assert!(modes_ciba.iter().any(|v| v.as_str() == Some("poll")));
+    assert!(modes_ciba.iter().any(|v| v.as_str() == Some("ping")));
 
     // Response types / modes.
     assert_eq!(doc["response_types_supported"][0], "code");
@@ -589,6 +627,189 @@ async fn sec_auth2_conformance_discovery_shape() {
         keys[0].get("kid").is_some(),
         "keys are kid-indexed (rotation overlap)"
     );
+}
+
+/// WebFinger (DESIGN §9a.3, Dynamic OP): a valid resource yields the
+/// issuer JRD; a missing resource is a 400; an unknown rel is a 404.
+#[tokio::test]
+async fn sec_auth2_webfinger_shape() {
+    let Some((app, _pool)) = spawn_server().await else {
+        return;
+    };
+
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/.well-known/webfinger?resource=acct:alice@example.com")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = axum::body::to_bytes(resp.into_body(), 1024 * 1024)
+        .await
+        .unwrap();
+    let jrd: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(jrd["subject"], "acct:alice@example.com");
+    let link = &jrd["links"][0];
+    assert_eq!(
+        link["rel"],
+        "http://openid.net/specs/connect/1.0/issuer"
+    );
+    assert!(link["href"].as_str().is_some_and(|h| !h.is_empty()));
+
+    // Missing resource → 400.
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/.well-known/webfinger")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+
+    // Unknown rel → 404.
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri(
+                    "/.well-known/webfinger?resource=acct:alice@example.com&rel=http://example.net/other",
+                )
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+}
+
+/// OID4VCI issuer metadata (DESIGN §9a.7): the standard well-known
+/// document advertises the credential configurations and endpoint
+/// addresses; the credential endpoint requires a bearer + proof.
+#[tokio::test]
+async fn sec_auth2_oid4vci_issuer_metadata_and_gate() {
+    let Some((app, _pool)) = spawn_server().await else {
+        return;
+    };
+
+    // Metadata document shape.
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/.well-known/openid-credential-issuer")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = axum::body::to_bytes(resp.into_body(), 1024 * 1024)
+        .await
+        .unwrap();
+    let doc: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert!(
+        doc["credential_issuer"].as_str().is_some_and(|v| !v.is_empty()),
+        "credential_issuer advertised"
+    );
+    assert!(
+        doc["credential_endpoint"]
+            .as_str()
+            .is_some_and(|v| v.ends_with("/oauth/credential")),
+        "credential_endpoint advertised"
+    );
+    assert!(
+        doc["deferred_credential_endpoint"]
+            .as_str()
+            .is_some_and(|v| v.ends_with("/oauth/deferred_credential")),
+        "deferred_credential_endpoint advertised"
+    );
+    let configs = doc["credential_configurations_supported"]
+        .as_object()
+        .expect("credential_configurations_supported object");
+    assert!(
+        configs.contains_key("VerifiedPersonCredential"),
+        "the person credential configuration is advertised"
+    );
+
+    // OID4VP verifier metadata.
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/.well-known/openid-credential-verifier")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    // Issuance requires a bearer token (401 without).
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/oauth/credential")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::to_vec(&serde_json::json!({
+                        "credential_configuration_id": "VerifiedPersonCredential"
+                    }))
+                    .unwrap(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        resp.status(),
+        StatusCode::UNAUTHORIZED,
+        "credential issuance requires an access token"
+    );
+}
+
+/// CIBA bc-authorize accepts the standard form-encoded wire body
+/// (DESIGN §9a.7): the conformance suite posts
+/// application/x-www-form-urlencoded, not JSON.
+#[tokio::test]
+async fn sec_auth2_ciba_form_encoded_body() {
+    let Some((app, _pool)) = spawn_server().await else {
+        return;
+    };
+
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/oauth/bc-authorize")
+                .header("content-type", "application/x-www-form-urlencoded")
+                .body(Body::from(
+                    "login_hint=alice%40example.com&scope=openid&request_mode=poll",
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    // The request itself will fail auth/validation downstream, but it
+    // must be a 4xx from the FLOW - a 415/400 "invalid form body" would
+    // mean the form body was never parsed.
+    assert!(
+        resp.status() == StatusCode::UNAUTHORIZED
+            || resp.status() == StatusCode::BAD_REQUEST,
+        "form body parsed (downstream validation answered): {}",
+        resp.status()
+    );
+    // Never a 500.
+    assert_ne!(resp.status(), StatusCode::INTERNAL_SERVER_ERROR);
 }
 
 /// Seed the test engine with the same enforced scope-mirror set the enroll

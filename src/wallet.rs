@@ -559,6 +559,34 @@ pub async fn wallet_metadata(
 }
 // ── EUDI. - OID4VCI credential issuance ───────────────────
 
+/// `GET /.well-known/openid-credential-verifier` - OID4VP verifier
+/// metadata (DESIGN §9a.7): the client id, the response endpoints, and
+/// the vp formats this verifier accepts. Mirrors the wallet_metadata
+/// connection config (the same presentation definition the platform
+/// requires) in the standard OID4VP metadata shape.
+#[utoipa::path(
+    get,
+    path = "/.well-known/openid-credential-verifier",
+    responses(
+        (status = 200, description = "OID4VP verifier metadata", body = serde_json::Value),
+    ),
+    security(),
+    tag = "wallet",
+)]
+pub async fn credential_verifier_metadata(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> Json<serde_json::Value> {
+    let issuer = crate::oauth::resolve_issuer(&state.config, &headers);
+    Json(serde_json::json!({
+        "client_id": format!("{issuer}/oauth/vp/response"),
+        "response_uris_supported": [format!("{issuer}/oauth/vp/response")],
+        "presentation_definition_uri_supported": true,
+        "vp_formats_supported": { "sd_jwt": { "sd-jwt_alg_values": ["ES256", "MLDSA65"], "kb-jwt_alg_values": ["ES256", "RS256"] } },
+        "client_id_schemes_supported": ["redirect_uri", "x509_san_dns"],
+    }))
+}
+
 /// `POST /oauth/credentials` - credential offer: records the issuance
 /// intent and returns the offer the wallet presents at its issuer.
 /// Authenticated via the user's session (the credential is about THEM).

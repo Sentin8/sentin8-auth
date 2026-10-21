@@ -519,7 +519,7 @@ mod tests {
     fn actor_claim_serializes_with_reason() {
         let act = ActorClaim {
             sub: "actor-uuid".into(),
-            email: Some("support@sentin8.local".into()),
+            email: Some("support@local.sentin8.dev".into()),
             reason: "customer support ticket #123".into(),
         };
         let json = serde_json::to_string(&act).unwrap();

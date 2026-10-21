@@ -124,6 +124,18 @@ pub struct CibaRequest {
     #[serde(default)]
     /// The act email.
     pub act_email: Option<String>,
+    /// CIBA §7.1 signed request object (DESIGN §9a.7) - a JWT signed
+    /// by the client's registered keys carrying the CIBA parameters.
+    /// When present (or fetched via `request_uri`), its parameters
+    /// REPLACE the unsigned form parameters.
+    #[serde(default)]
+    /// The request.
+    pub request: Option<String>,
+    /// CIBA §7.1 - https URI hosting the signed request object (same
+    /// fetch mechanics as JAR `request_uri`).
+    #[serde(default)]
+    /// The request URI.
+    pub request_uri: Option<String>,
 }
 
 /// CIBA authorization response.
@@ -192,8 +204,93 @@ const DEFAULT_EXPIRY: u64 = 600;
 pub async fn bc_authorize(
     State(state): State<AppState>,
     headers: axum::http::HeaderMap,
-    Json(req): Json<CibaRequest>,
+    payload: axum::extract::Request,
 ) -> Result<Json<CibaResponse>, (StatusCode, String)> {
+    // CIBA §7.2 - the endpoint accepts application/x-www-form-urlencoded
+    // (the wire format the conformance suite and every standard CIBA
+    // client uses). JSON stays supported for platform-internal callers
+    // (BFF); both bodies deserialize into the same CibaRequest shape.
+    let content_type = headers
+        .get(axum::http::header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    let req: CibaRequest = if content_type.contains("application/x-www-form-urlencoded") {
+        let bytes = axum::body::to_bytes(payload.into_body(), 1024 * 1024)
+            .await
+            .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?;
+        serde_urlencoded::from_bytes(&bytes)
+            .map_err(|e| (StatusCode::BAD_REQUEST, format!("invalid form body: {e}")))?
+    } else {
+        // Default: JSON (the platform-internal BFF contract).
+        let bytes = axum::body::to_bytes(payload.into_body(), 1024 * 1024)
+            .await
+            .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?;
+        serde_json::from_slice(&bytes)
+            .map_err(|e| (StatusCode::BAD_REQUEST, format!("invalid JSON body: {e}")))?
+    };
+
+    // CIBA §7.1 signed request object (DESIGN §9a.7): verify the JWT
+    // against the client's registered keys and let its parameters
+    // REPLACE the unsigned ones (signed wins). `request` and
+    // `request_uri` are mutually exclusive per spec.
+    let mut req = req;
+    let signed = match (req.request.as_deref(), req.request_uri.as_deref()) {
+        (Some(_), Some(_)) => {
+            return Err((
+                StatusCode::BAD_REQUEST,
+                "request and request_uri are mutually exclusive".into(),
+            ));
+        }
+        (Some(jwt), None) => Some(jwt.to_string()),
+        (None, Some(uri)) => Some(
+            crate::oauth::fetch_request_object(uri)
+                .await
+                .map_err(|e| (StatusCode::BAD_REQUEST, format!("request_uri: {e}")))?,
+        ),
+        (None, None) => None,
+    };
+    if let Some(jwt) = signed {
+        let claims = sentin8::auth::jwt::decode_payload(&jwt)
+            .map_err(|e| (StatusCode::BAD_REQUEST, format!("signed request decode: {e}")))?;
+        crate::oauth::verify_client_signed_jwt(&state, &req.client_id, &jwt)
+            .await
+            .map_err(|e| (StatusCode::UNAUTHORIZED, e))?;
+        // Signed parameters REPLACE the unsigned ones (CIBA §7.1). Only
+        // CIBA parameters are overlaid - client identity comes from the
+        // authenticated client, never from the JWT alone.
+        let overlay = |field: &str, target: &mut Option<String>| {
+            if let Some(v) = claims.get(field).and_then(|v| v.as_str()) {
+                *target = Some(v.to_string());
+            }
+        };
+        overlay("scope", &mut req.scope);
+        overlay("user_code", &mut req.user_code);
+        overlay("binding_message", &mut req.binding_message);
+        overlay("client_notification_token", &mut req.client_notification_token);
+        overlay("login_hint", &mut req.login_hint);
+        overlay("login_hint_token", &mut req.login_hint_token);
+        overlay("id_token_hint", &mut req.id_token_hint);
+        if let Some(v) = claims.get("sub").and_then(|v| v.as_str()) {
+            req.sub = Some(v.to_string());
+        }
+        if let Some(v) = claims.get("requested_expiry").and_then(|v| v.as_i64()) {
+            req.requested_expiry = Some(v.unsigned_abs() as u64);
+        }
+        if let Some(v) = claims.get("request_mode").and_then(|v| v.as_str()) {
+            req.request_mode = Some(v.to_string());
+        }
+        // The request_mode may live inside the CIBA `params` object
+        // (spec placement) - honor both shapes.
+        if let Some(v) = claims
+            .get("params")
+            .and_then(|p| p.get("request_mode"))
+            .and_then(|v| v.as_str())
+        {
+            req.request_mode = Some(v.to_string());
+        }
+    }
+
     // Client auth on the backchannel authorize
     // endpoint: confidential clients MUST authenticate; public clients are
     // resolved by client_id (bound to the polling client).
@@ -262,6 +359,43 @@ pub async fn bc_authorize(
             )
         })?;
 
+    // (OIDC CIBA §4.4, DESIGN §9a.3) - ping-mode delivery: the client
+    // must supply a client_notification_token, and its registration must
+    // carry a backchannel_client_notification_endpoint. The token is
+    // stored with the request; the endpoint is resolved at approval time
+    // (registration is server-side truth - a request-body URL would be
+    // an SSRF surface).
+    let request_mode = req.request_mode.as_deref().unwrap_or("poll").to_string();
+    if request_mode == "ping" {
+        if req.client_notification_token.as_deref().unwrap_or("").is_empty() {
+            return Err((
+                StatusCode::BAD_REQUEST,
+                "client_notification_token is required for ping mode".into(),
+            ));
+        }
+        let has_endpoint = sqlx::query_scalar::<_, Option<String>>(
+            r#"SELECT backchannel_client_notification_endpoint
+                 FROM oauth_clients WHERE client_id = $1"#,
+        )
+        .bind(&req.client_id)
+        .fetch_optional(&state.pool)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+        .flatten()
+        .is_some();
+        if !has_endpoint {
+            return Err((
+                StatusCode::BAD_REQUEST,
+                "client has no backchannel_client_notification_endpoint registered - ping mode is unavailable, use poll".into(),
+            ));
+        }
+    } else if request_mode != "poll" {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            format!("unsupported request_mode: {request_mode}"),
+        ));
+    }
+
     let auth_req_id = Uuid::new_v4().to_string();
     let expires_in = req
         .requested_expiry
@@ -285,6 +419,9 @@ pub async fn bc_authorize(
         "env_id": null,
         "act_sub": req.act_sub,
         "act_email": req.act_email,
+        // DESIGN §9a.3 - ping-mode delivery state.
+        "request_mode": request_mode,
+        "client_notification_token": req.client_notification_token,
     });
 
     let client = sentin8::middleware::valkey_client(&state.config.valkey_url, "sentin8:auth")
@@ -631,6 +768,69 @@ pub async fn ciba_approve(
     )
     .await;
 
+    // (OIDC CIBA §4.5, DESIGN §9a.3) - ping-mode notification: when
+    // the request chose ping delivery, POST the notification to the
+    // client's registered backchannel_client_notification_endpoint with
+    // the client_notification_token as a bearer. Best-effort: a ping
+    // failure never fails the approval (the client still polls); it is
+    // logged for operators.
+    if data["request_mode"].as_str() == Some("ping") {
+        let client_id = data["client_id"].as_str().unwrap_or_default().to_string();
+        let notification_token = data["client_notification_token"]
+            .as_str()
+            .unwrap_or_default()
+            .to_string();
+        if let Ok(Some(endpoint)) = sqlx::query_scalar::<_, Option<String>>(
+            r#"SELECT backchannel_client_notification_endpoint
+                 FROM oauth_clients WHERE client_id = $1"#,
+        )
+        .bind(&client_id)
+        .fetch_optional(&state.pool)
+        .await
+        {
+            if let Some(url) = endpoint.filter(|u| !u.is_empty()) {
+                tokio::spawn(async move {
+                    let payload = serde_json::json!({
+                        "auth_req_id": req.auth_req_id,
+                    });
+                    let client = reqwest::Client::new();
+                    match client
+                        .post(&url)
+                        .bearer_auth(&notification_token)
+                        .json(&payload)
+                        .timeout(std::time::Duration::from_secs(10))
+                        .send()
+                        .await
+                    {
+                        Ok(resp) if resp.status().is_success() => {
+                            tracing::info!(
+                                auth_req_id = %req.auth_req_id,
+                                url = %url,
+                                "ciba: ping notification delivered"
+                            );
+                        }
+                        Ok(resp) => {
+                            tracing::warn!(
+                                auth_req_id = %req.auth_req_id,
+                                url = %url,
+                                status = %resp.status(),
+                                "ciba: ping notification endpoint answered non-2xx"
+                            );
+                        }
+                        Err(e) => {
+                            tracing::warn!(
+                                auth_req_id = %req.auth_req_id,
+                                url = %url,
+                                error = %e,
+                                "ciba: ping notification delivery failed"
+                            );
+                        }
+                    }
+                });
+            }
+        }
+    }
+
     let status = if req.approved { "approved" } else { "denied" };
     Ok(Json(CibaApproveResponse {
         status: status.to_string(),
@@ -747,6 +947,8 @@ mod tests {
             act_sub: None,
             act_email: None,
             verification_uri_base: None,
+            request: None,
+            request_uri: None,
         };
         assert!(req.login_hint.is_none());
         assert_eq!(req.delivery.as_deref(), None);
@@ -772,6 +974,8 @@ mod tests {
             act_sub: None,
             act_email: None,
             verification_uri_base: None,
+            request: None,
+            request_uri: None,
         };
         assert_eq!(req.login_hint.as_deref(), Some("user@example.com"));
         assert_eq!(req.binding_message.as_deref(), Some("Approve login?"));

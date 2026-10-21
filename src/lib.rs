@@ -98,6 +98,12 @@ pub mod telemetry;
 pub mod tokens;
 /// Verifiable-credential wallet surfaces.
 pub mod wallet;
+/// OID4VCI standard issuer surface (DESIGN §9a.7).
+pub mod oid4vci;
+/// Server-rendered HTML login page for automated clients (DESIGN §9a.8).
+pub mod login_page;
+/// OIDC WebFinger (RFC 7033) - Dynamic OP discovery.
+pub mod webfinger;
 /// Webhook registration and delivery.
 pub mod webhooks;
 

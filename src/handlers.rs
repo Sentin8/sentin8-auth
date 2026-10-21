@@ -13,7 +13,8 @@ use axum::{
     response::{IntoResponse, Response},
     Json,
 };
-use bcrypt::{hash as bcrypt_hash, verify as bcrypt_verify, DEFAULT_COST};
+use bcrypt::{hash as bcrypt_hash, DEFAULT_COST};
+pub use bcrypt::verify as bcrypt_verify;
 use chrono::Duration;
 use serde::{Deserialize, Serialize};
 use sqlx::{PgPool, Row};
@@ -1142,7 +1143,7 @@ pub async fn consent_accounts(
         let resp_key: String = row.get("response_key");
 
         // Build the service URL from the platform domain key (e.g.
-        // "bank8:ledger" → "https://bank8-ledger.ops.sys.sentin8.local").
+        // "bank8:ledger" → "https://bank8-ledger.ops.sys.local.sentin8.dev").
         let base_url = format!("https://{}", cfg.platform_domain(&platform_domain_key));
 
         // Mint a short-lived JWT (60s) with the registered scope.

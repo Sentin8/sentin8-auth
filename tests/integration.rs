@@ -115,7 +115,7 @@ fn admin_token(state: &AppState) -> String {
         uuid::Uuid::new_v4(),
         "sentin8:dash:admin",
         uuid::Uuid::parse_str("00000000-0000-0000-0000-000000000002").unwrap(),
-        Some("admin@test.sentin8.local"),
+        Some("admin@test.local.sentin8.dev"),
         chrono::Duration::seconds(900),
     );
     state.keys.sign(&claims).expect("sign admin token")
@@ -148,7 +148,7 @@ async fn users_sign_up_then_sign_in_returns_tokens() {
     };
 
     // Sign up a new user.
-    let email = format!("test_{}@test.sentin8.local", uuid::Uuid::new_v4().simple());
+    let email = format!("test_{}@test.local.sentin8.dev", uuid::Uuid::new_v4().simple());
     let signup_body = serde_json::json!({
         "email": email,
         "password": "test_password_123",
@@ -210,7 +210,7 @@ async fn users_sign_up_duplicate_email_conflicts() {
     };
 
     let email = format!(
-        "duptest_{}@test.sentin8.local",
+        "duptest_{}@test.local.sentin8.dev",
         uuid::Uuid::new_v4().simple()
     );
     let body = serde_json::json!({
@@ -286,7 +286,7 @@ async fn seed_tenant_fixture(
     .bind(org_id)
     .bind(format!("test-{}", org_id.simple()))
     .bind(format!("Test Org {}", org_id.simple()))
-    .bind(format!("{}-org.sentin8.local", org_id.simple()))
+    .bind(format!("{}-org.local.sentin8.dev", org_id.simple()))
     .execute(&mut *tx)
     .await?;
     sqlx::query(
@@ -328,7 +328,7 @@ async fn users_sign_up_same_email_across_tenants_isolated() {
     }
 
     let email = format!(
-        "multitenant_{}@test.sentin8.local",
+        "multitenant_{}@test.local.sentin8.dev",
         uuid::Uuid::new_v4().simple()
     );
     let body = serde_json::json!({
@@ -346,7 +346,7 @@ async fn users_sign_up_same_email_across_tenants_isolated() {
                 .header("content-type", "application/json")
                 .header("x-forwarded-for", unique_ip())
                 .header("x-sentin8-env-id", tenant_a.1.to_string())
-                .header("host", "test-a.sentin8.local")
+                .header("host", "test-a.local.sentin8.dev")
                 .body(Body::from(serde_json::to_vec(&body).unwrap()))
                 .unwrap(),
         )
@@ -369,7 +369,7 @@ async fn users_sign_up_same_email_across_tenants_isolated() {
                 .header("content-type", "application/json")
                 .header("x-forwarded-for", unique_ip())
                 .header("x-sentin8-env-id", tenant_b.1.to_string())
-                .header("host", "test-b.sentin8.local")
+                .header("host", "test-b.local.sentin8.dev")
                 .body(Body::from(serde_json::to_vec(&body).unwrap()))
                 .unwrap(),
         )
@@ -440,7 +440,7 @@ async fn users_sign_in_wrong_password_rejected() {
 
     // First sign up.
     let email = format!(
-        "wrongpw_{}@test.sentin8.local",
+        "wrongpw_{}@test.local.sentin8.dev",
         uuid::Uuid::new_v4().simple()
     );
     let signup = serde_json::json!({
@@ -490,7 +490,7 @@ async fn users_sign_in_unknown_account_rejected() {
     };
 
     let signin = serde_json::json!({
-        "email": "nonexistent@test.sentin8.local",
+        "email": "nonexistent@test.local.sentin8.dev",
         "password": "any_password",
     });
 
@@ -518,7 +518,7 @@ async fn users_sign_up_short_password_rejected() {
     };
 
     let body = serde_json::json!({
-        "email": format!("shortpw_{}@test.sentin8.local", uuid::Uuid::new_v4().simple()),
+        "email": format!("shortpw_{}@test.local.sentin8.dev", uuid::Uuid::new_v4().simple()),
         "password": "short",
     });
 
@@ -652,7 +652,7 @@ async fn admin_users_create_then_list_roundtrip() {
     const ADMIN_Q: &str = "?target_env_id=00000000-0000-0000-0000-000000000002";
 
     let email = format!(
-        "admin_test_{}@test.sentin8.local",
+        "admin_test_{}@test.local.sentin8.dev",
         uuid::Uuid::new_v4().simple()
     );
     let create_body = serde_json::json!({

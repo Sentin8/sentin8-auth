@@ -105,6 +105,12 @@ pub struct RegisterRequest {
     #[serde(default = "default_true")]
     /// The consent required.
     pub consent_required: bool,
+    // ── CIBA (OIDC CIBA §4 registration parameter, DESIGN §9a.7) ──
+    /// The client's ping-mode notification callback. Absent = the
+    /// client uses poll delivery only.
+    #[serde(default)]
+    /// The backchannel client notification endpoint.
+    pub backchannel_client_notification_endpoint: Option<String>,
 }
 
 /// Client metadata returned after registration (RFC 7591 ).
@@ -581,11 +587,11 @@ pub async fn register(
                 jwks_uri, jwks, sector_identifier_uri, application_type,
                 registration_access_token_hash, dcr_protected,
                 tls_client_auth_subject_dn, self_signed_tls_client_auth_thumbprint,
-                consent_required)
+                consent_required, backchannel_client_notification_endpoint)
            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9,
                    $10, $11, $12, $13, $14, $15, $16, $17, $18,
                    $19, $20, $21, $22, $23, true,
-                   $24, $25, $26)
+                   $24, $25, $26, $27)
            RETURNING
                client_id, client_id_issued_at, client_secret_expires_at,
                client_name, redirect_uris, grant_types, response_types,
@@ -623,6 +629,9 @@ pub async fn register(
         req.tls_client_auth_subject_dn.as_deref(),
         req.self_signed_tls_client_auth_thumbprint.as_deref(),
         req.consent_required,
+        // CIBA (DESIGN §9a.7) - the ping-mode notification callback,
+        // registered through DCR exactly like the suite does.
+        req.backchannel_client_notification_endpoint.as_deref(),
     )
     .fetch_one(&mut *tx)
     .await

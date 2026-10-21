@@ -77,7 +77,7 @@ fn publisher_access_claims(sub: &str, scope: &str, exp: i64) -> AuthClaims {
     AuthClaims {
         sub: sub.into(),
         // Must match TestConfig::for_testing's issuer.
-        iss: "https://auth.test.sentin8.local".into(),
+        iss: "https://auth.test.local.sentin8.dev".into(),
         aud: None,
         jti: uuid::Uuid::new_v4().to_string(),
         iat: chrono::Utc::now().timestamp(),

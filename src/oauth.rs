@@ -301,6 +301,44 @@ async fn fetch_external_jwks(state: &AppState, jwks_uri: &str) -> Option<Vec<ser
     Some(keys)
 }
 
+/// Fetch a JAR/CIBA request-object JWT from a client-supplied
+/// `request_uri` (RFC 9101 §5.2.1, DESIGN §9a.7). `https` scheme only,
+/// 10s timeout, 64 KiB response cap - the fetch is a request-object
+/// transport, not an open proxy. Returns the JWT text.
+pub async fn fetch_request_object(request_uri: &str) -> Result<String, String> {
+    let parsed = url::Url::parse(request_uri).map_err(|e| format!("request_uri parse: {e}"))?;
+    if parsed.scheme() != "https" {
+        return Err("request_uri must be https".into());
+    }
+    let http = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(10))
+        .build()
+        .map_err(|e| format!("http client: {e}"))?;
+    let resp = http
+        .get(request_uri)
+        .send()
+        .await
+        .map_err(|e| format!("request_uri fetch failed: {e}"))?;
+    if !resp.status().is_success() {
+        return Err(format!("request_uri fetch answered {}", resp.status()));
+    }
+    let body = resp
+        .bytes()
+        .await
+        .map_err(|e| format!("request_uri read: {e}"))?;
+    if body.len() > 64 * 1024 {
+        return Err("request_uri response exceeds 64 KiB".into());
+    }
+    let text = String::from_utf8_lossy(&body).trim().to_string();
+    // Shape check: a request object is a compact JWS (three dot-separated
+    // base64url segments).
+    let parts = text.split('.').count();
+    if parts != 3 {
+        return Err("request_uri did not return a compact JWS".into());
+    }
+    Ok(text)
+}
+
 /// Hex-encode bytes (lowercase, no separators).
 fn hex_encode(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
@@ -799,6 +837,49 @@ pub struct DiscoveryDocument {
     /// for OBIE/Brazil clients).
     /// The software statement supported.
     pub software_statement_supported: bool,
+    /// Signing algorithms the token endpoint accepts for
+    /// `private_key_jwt` client assertions (required-when-advertised by
+    /// OIDC Discovery §3; DESIGN §9a.4).
+    /// The token endpoint auth signing alg values supported.
+    pub token_endpoint_auth_signing_alg_values_supported: Vec<String>,
+    /// OIDC Core §5.5 `claims` request parameter support (eKYC-IDA
+    /// surface, DESIGN §9a.3).
+    /// The claims parameter supported.
+    pub claims_parameter_supported: bool,
+    /// The claim names the ID token / userinfo can carry (OIDC
+    /// Discovery §3 recommended list; DESIGN §9a.4).
+    /// The claims supported.
+    pub claims_supported: Vec<String>,
+    /// OIDC Back-Channel Logout 1.0 §4 advertisement (DESIGN §9a.4).
+    /// The backchannel logout supported.
+    pub backchannel_logout_supported: bool,
+    /// Whether back-channel logout tokens carry `sid` (sessions are
+    /// first-class in auth - logout tokens include the session id).
+    /// The backchannel logout session supported.
+    pub backchannel_logout_session_supported: bool,
+    /// Client-auth methods the revocation endpoint accepts (RFC 7009 §2;
+    /// DESIGN §9a.4) - same method set as the token endpoint.
+    /// The revocation endpoint auth methods supported.
+    pub revocation_endpoint_auth_methods_supported: Vec<String>,
+    /// Client-auth methods the introspection endpoint accepts (RFC 7662;
+    /// DESIGN §9a.4) - same method set as the token endpoint.
+    /// The introspection endpoint auth methods supported.
+    pub introspection_endpoint_auth_methods_supported: Vec<String>,
+    /// CIBA (OIDC CIBA §4) - the backchannel authentication endpoint.
+    /// Present when the caller's profile enables CIBA (DESIGN §9a.4).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    /// The backchannel authentication endpoint.
+    pub backchannel_authentication_endpoint: Option<String>,
+    /// CIBA token delivery modes the AS serves (poll + ping, DESIGN
+    /// §9a.4). Present when CIBA is enabled.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    /// The backchannel token delivery modes supported.
+    pub backchannel_token_delivery_modes_supported: Option<Vec<String>>,
+    /// Signing algorithms accepted for signed CIBA request objects
+    /// (CIBA §7.1; DESIGN §9a.4). Present when CIBA is enabled.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    /// The backchannel authentication request signing alg values supported.
+    pub backchannel_authentication_request_signing_alg_values_supported: Option<Vec<String>>,
 }
 
 /// mTLS endpoint aliases per RFC 8705.
@@ -835,6 +916,28 @@ pub async fn discovery(
     // determine which fields to include. FAPI 2.0 is the default.
     let profile = resolve_security_profile(&state.pool, &headers, "env").await;
 
+    // DESIGN §9a.4 - the token-endpoint client-auth method set,
+    // computed once and advertised for the token, revocation, and
+    // introspection endpoints alike (they share the authenticator).
+    let token_endpoint_auth_methods: Vec<String> = if profile.require_mtls {
+        vec![
+            "client_secret_post".into(),
+            "client_secret_basic".into(),
+            "private_key_jwt".into(),
+            "none".into(),
+            "tls_client_auth".into(),
+            "self_signed_tls_client_auth".into(),
+        ]
+    } else {
+        vec![
+            "client_secret_post".into(),
+            "client_secret_basic".into(),
+            "private_key_jwt".into(),
+            "none".into(),
+            "self_signed_tls_client_auth".into(),
+        ]
+    };
+
     Json(DiscoveryDocument {
         issuer: issuer.clone(),
         authorization_endpoint: format!("{issuer}/oauth/authorize"),
@@ -857,26 +960,12 @@ pub async fn discovery(
             "client_credentials".into(),
             "urn:ietf:params:oauth:grant-type:device_code".into(),
             "urn:ietf:params:oauth:grant-type:token-exchange".into(),
+            // DESIGN §9a.4 - the CIBA poll grant served at the
+            // token endpoint (bc-authorize issues auth_req_id first).
+            "urn:openid:params:grant-type:ciba".into(),
         ],
         code_challenge_methods_supported: vec!["S256".into()],
-        token_endpoint_auth_methods_supported: if profile.require_mtls {
-            vec![
-                "client_secret_post".into(),
-                "client_secret_basic".into(),
-                "private_key_jwt".into(),
-                "none".into(),
-                "tls_client_auth".into(),
-                "self_signed_tls_client_auth".into(),
-            ]
-        } else {
-            vec![
-                "client_secret_post".into(),
-                "client_secret_basic".into(),
-                "private_key_jwt".into(),
-                "none".into(),
-                "self_signed_tls_client_auth".into(),
-            ]
-        },
+        token_endpoint_auth_methods_supported: token_endpoint_auth_methods.clone(),
         scopes_supported: vec![
             "openid".into(),
             "profile".into(),
@@ -884,7 +973,16 @@ pub async fn discovery(
             "offline_access".into(),
         ],
         subject_types_supported: vec!["public".into()],
-        id_token_signing_alg_values_supported: vec![crate::jwks::active_signing_alg().into()],
+        // DESIGN §9a.9 - the ID-token signing family the CALLER'S env
+        // will actually mint (per-tenant signing_alg). Both families
+        // remain verifiable via JWKS (kid-routed), so clients may see a
+        // token from the other family only across tenants - this
+        // document describes this issuer-host's tenant.
+        id_token_signing_alg_values_supported: if profile.signing_alg.is_empty() {
+            vec![crate::jwks::active_signing_alg().into()]
+        } else {
+            vec![profile.signing_alg.clone()]
+        },
         // DPoP signing algs - only advertised when DPoP is required or supported.
         dpop_signing_alg_values_supported: if profile.require_dpop {
             vec![crate::jwks::active_signing_alg().into()]
@@ -916,6 +1014,56 @@ pub async fn discovery(
         authorization_details_types_supported: fetch_rar_types(&state.pool).await,
         grant_management_endpoint: Some(format!("{issuer}/oauth/grants")),
         software_statement_supported: true,
+        // DESIGN §9a.4 - required-when-advertised signing algs for
+        // private_key_jwt client assertions. The same algorithm set the
+        // client-assertion verifier accepts.
+        token_endpoint_auth_signing_alg_values_supported: vec![
+            crate::jwks::active_signing_alg().into(),
+            "ES256".into(),
+        ],
+        // DESIGN §9a.3 - the claims request parameter is
+        // accepted at authorize; claims_supported lists what ID tokens
+        // and userinfo can carry (the standard OIDC set auth mints).
+        claims_parameter_supported: true,
+        claims_supported: vec![
+            "sub".into(),
+            "iss".into(),
+            "aud".into(),
+            "exp".into(),
+            "iat".into(),
+            "auth_time".into(),
+            "nonce".into(),
+            "at_hash".into(),
+            "c_hash".into(),
+            "name".into(),
+            "given_name".into(),
+            "family_name".into(),
+            "email".into(),
+            "email_verified".into(),
+            // eKYC-IDA (DESIGN §9a.7) - present when the claims request
+            // selects it and an active verified credential exists.
+            "verified_claims".into(),
+        ],
+        // DESIGN §9a.4 - back-channel logout is the only logout
+        // signaling mechanism (front-channel is a design exclusion);
+        // logout tokens carry `sid` (backchannel_logout.rs).
+        backchannel_logout_supported: true,
+        backchannel_logout_session_supported: true,
+        // DESIGN §9a.4 - the revocation and introspection
+        // endpoints authenticate clients with the same method set as
+        // the token endpoint (RFC 8705 aliases included when mTLS is
+        // advertised above).
+        revocation_endpoint_auth_methods_supported: token_endpoint_auth_methods.clone(),
+        introspection_endpoint_auth_methods_supported: token_endpoint_auth_methods,
+        // DESIGN §9a.4 - CIBA block: the bc-authorize endpoint
+        // exists on every env; delivery modes and signed request-object
+        // algorithms are advertised alongside.
+        backchannel_authentication_endpoint: Some(format!("{issuer}/oauth/bc-authorize")),
+        backchannel_token_delivery_modes_supported: Some(vec!["poll".into(), "ping".into()]),
+        backchannel_authentication_request_signing_alg_values_supported: Some(vec![
+            crate::jwks::active_signing_alg().into(),
+            "ES256".into(),
+        ]),
     })
 }
 
@@ -967,6 +1115,11 @@ pub struct SecurityProfile {
     /// until the profile table grows a dedicated column.
     /// The require pkce.
     pub require_pkce: bool,
+    /// Per-tenant JWT signing family (`MLDSA65` | `RS256`) - DESIGN §9a.9.
+    /// Controls which persisted key family signs this tenant's tokens;
+    /// verification stays family-agnostic (kid-routed).
+    /// The signing alg.
+    pub signing_alg: String,
 }
 
 impl Default for SecurityProfile {
@@ -984,6 +1137,7 @@ impl Default for SecurityProfile {
             require_iss: true,
             require_pkce: true,
             profile: String::new(),
+            signing_alg: String::new(),
         }
     }
 }
@@ -1015,6 +1169,29 @@ pub async fn resolve_security_profile(
         .and_then(|v| v.to_str().ok())
         .filter(|s| !s.is_empty())
         .and_then(|s| Uuid::parse_str(s).ok());
+
+    resolve_security_profile_inner(pool, env_id, scope).await
+}
+
+/// Resolve the security profile for a KNOWN env id (DESIGN §9a.9) - used
+/// by mint paths that carry their tenant on the token (refresh grants,
+/// CIBA polling) rather than on the request headers. Resolution order
+/// and RLS handling match [`resolve_security_profile`].
+pub async fn resolve_security_profile_for_env(
+    pool: &sqlx::PgPool,
+    env_id: Uuid,
+    scope: &str,
+) -> SecurityProfile {
+    resolve_security_profile_inner(pool, Some(env_id), scope).await
+}
+
+/// Shared resolution body: tenant context on one connection, env → org
+/// lookup, then env → org → platform row fallback.
+async fn resolve_security_profile_inner(
+    pool: &sqlx::PgPool,
+    env_id: Option<Uuid>,
+    scope: &str,
+) -> SecurityProfile {
 
     // Single transaction: tenant context + org lookup + profile lookups.
     // Context must be set on the SAME connection the queries run on
@@ -1103,7 +1280,7 @@ async fn fetch_profile_row(
 ) -> Option<SecurityProfile> {
     let row = sqlx::query!(
         r#"SELECT profile, require_par, require_mtls, require_jarm, require_dpop,
-                  require_http_signatures, require_jwt_introspection, require_iss
+                  require_http_signatures, require_jwt_introspection, require_iss, signing_alg
            FROM auth.security_profiles
            WHERE scope = $1
              AND (org_id IS NOT DISTINCT FROM $2)
@@ -1126,6 +1303,7 @@ async fn fetch_profile_row(
         require_http_signatures: r.require_http_signatures,
         require_jwt_introspection: r.require_jwt_introspection,
         require_iss: r.require_iss,
+        signing_alg: r.signing_alg,
         // PKCE rides on the PAR flag (FAPI 2.0 mandates both).
         require_pkce: r.require_par,
     })
@@ -1165,6 +1343,8 @@ pub struct SecurityProfileResponse {
     pub max_token_lifetime: i32,
     /// The refresh rotation.
     pub refresh_rotation: bool,
+    /// Per-tenant JWT signing family (`MLDSA65` | `RS256`) - DESIGN §9a.9.
+    pub signing_alg: String,
 }
 
 /// Query params for `GET /v1/security-profile`.
@@ -1221,6 +1401,9 @@ pub struct UpdateSecurityProfileRequest {
     #[serde(default)]
     /// The refresh rotation.
     pub refresh_rotation: Option<bool>,
+    #[serde(default)]
+    /// Per-tenant JWT signing family (`MLDSA65` | `RS256`) - DESIGN §9a.9.
+    pub signing_alg: Option<String>,
 }
 
 /// `GET /v1/security-profile` - return the effective security profile for
@@ -1264,7 +1447,7 @@ pub async fn get_security_profile_api(
         r#"SELECT scope, org_id, env_id, profile,
                   require_par, require_mtls, require_jarm, require_dpop,
                   require_http_signatures, require_jwt_introspection, require_iss,
-                  max_token_lifetime, refresh_rotation
+                  max_token_lifetime, refresh_rotation, signing_alg
            FROM security_profiles
            WHERE scope = $1
              AND (org_id IS NOT DISTINCT FROM $2)
@@ -1294,6 +1477,7 @@ pub async fn get_security_profile_api(
         require_iss: row.require_iss,
         max_token_lifetime: row.max_token_lifetime,
         refresh_rotation: row.refresh_rotation,
+        signing_alg: row.signing_alg,
     }))
 }
 
@@ -1344,6 +1528,17 @@ pub async fn put_security_profile_api(
         }
     }
 
+    // Validate signing_alg (DESIGN §9a.9) - unknown families are
+    // rejected at the API boundary, not at mint time.
+    if let Some(alg) = &req.signing_alg {
+        if !matches!(alg.as_str(), "MLDSA65" | "RS256") {
+            return Err((
+                StatusCode::BAD_REQUEST,
+                "signing_alg must be MLDSA65 or RS256".into(),
+            ));
+        }
+    }
+
     // Validate scope.
     if !matches!(req.scope.as_str(), "platform" | "org" | "env") {
         return Err((
@@ -1365,11 +1560,30 @@ pub async fn put_security_profile_api(
         ));
     }
 
+    // SEC- / RLS-FNSCHEMA-1 - the security_profiles table is
+    // FORCE-RLS'd: env/org rows are only writable with the caller's env
+    // in `app.env_id`. Run the read-merge + upsert inside ONE
+    // transaction with `sentin8_set_tenant_context` applied first -
+    // context must be set on the SAME connection as the write (a
+    // bare pool write sees no rows and violates the insert policy).
+    let target_env = req.env_id.or(Some(auth.env_id));
+    let mut tx = state
+        .pool
+        .begin()
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    if let Some(eid) = target_env {
+        let _ = sqlx::query("SELECT sentin8_set_tenant_context($1)")
+            .bind(eid)
+            .execute(&mut *tx)
+            .await;
+    }
+
     // Fetch existing values to merge (upsert).
     let existing = sqlx::query!(
         r#"SELECT require_par, require_mtls, require_jarm, require_dpop,
                   require_http_signatures, require_jwt_introspection, require_iss,
-                  max_token_lifetime, refresh_rotation, profile
+                  max_token_lifetime, refresh_rotation, profile, signing_alg
            FROM security_profiles
            WHERE scope = $1
              AND (org_id IS NOT DISTINCT FROM $2)
@@ -1378,12 +1592,12 @@ pub async fn put_security_profile_api(
         req.org_id,
         req.env_id,
     )
-    .fetch_optional(&state.pool)
+    .fetch_optional(&mut *tx)
     .await
     .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
-    let (e_par, e_mtls, e_jarm, e_dpop, e_hsigs, e_ji, e_iss, e_max, e_rot, e_profile) = existing
-        .map(|r| {
+    let (e_par, e_mtls, e_jarm, e_dpop, e_hsigs, e_ji, e_iss, e_max, e_rot, e_profile, e_alg) =
+        existing.map(|r| {
             (
                 r.require_par,
                 r.require_mtls,
@@ -1395,6 +1609,7 @@ pub async fn put_security_profile_api(
                 r.max_token_lifetime,
                 r.refresh_rotation,
                 r.profile,
+                r.signing_alg,
             )
         })
         .unwrap_or((
@@ -1408,6 +1623,7 @@ pub async fn put_security_profile_api(
             3600,
             true,
             "fapi_2".to_string(),
+            "MLDSA65".to_string(),
         ));
 
     let row = sqlx::query!(
@@ -1415,8 +1631,8 @@ pub async fn put_security_profile_api(
                (scope, org_id, env_id, profile,
                 require_par, require_mtls, require_jarm, require_dpop,
                 require_http_signatures, require_jwt_introspection, require_iss,
-                max_token_lifetime, refresh_rotation)
-           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+                max_token_lifetime, refresh_rotation, signing_alg)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
            ON CONFLICT (scope, org_id, env_id)
            DO UPDATE SET
                profile = EXCLUDED.profile,
@@ -1429,12 +1645,13 @@ pub async fn put_security_profile_api(
                require_iss = EXCLUDED.require_iss,
                max_token_lifetime = EXCLUDED.max_token_lifetime,
                refresh_rotation = EXCLUDED.refresh_rotation,
+               signing_alg = EXCLUDED.signing_alg,
                updated_at = now()
            RETURNING
                scope, org_id, env_id, profile,
                require_par, require_mtls, require_jarm, require_dpop,
                require_http_signatures, require_jwt_introspection, require_iss,
-               max_token_lifetime, refresh_rotation"#,
+               max_token_lifetime, refresh_rotation, signing_alg"#,
         req.scope,
         req.org_id,
         req.env_id,
@@ -1448,10 +1665,17 @@ pub async fn put_security_profile_api(
         req.require_iss.unwrap_or(e_iss),
         req.max_token_lifetime.unwrap_or(e_max),
         req.refresh_rotation.unwrap_or(e_rot),
+        req.signing_alg.clone().unwrap_or(e_alg),
     )
-    .fetch_one(&state.pool)
+    .fetch_one(&mut *tx)
     .await
     .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    // Commit the profile write on the SAME transaction the tenant
+    // context lives in (RLS) - a rollback would silently drop the
+    // profile change.
+    tx.commit()
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
     // SEC- - the catalog's `sentin8:auth:securityprofile:updated`
     // event (previously never emitted).
@@ -1477,12 +1701,14 @@ pub async fn put_security_profile_api(
         require_iss: row.require_iss,
         max_token_lifetime: row.max_token_lifetime,
         refresh_rotation: row.refresh_rotation,
+        signing_alg: row.signing_alg,
     }))
 }
 
 ///resolve the issuer URL from the request Host or X-Sentin8-Hostname header.
+/// Resolve the issuer URL from the TLS-injected hostname context.
 /// Falls back to config.issuer when no Host header is present.
-fn resolve_issuer(config: &crate::config::AuthConfig, headers: &HeaderMap) -> String {
+pub fn resolve_issuer(config: &crate::config::AuthConfig, headers: &HeaderMap) -> String {
     // Check X-Sentin8-Hostname header first (set by TLS).
     if let Some(h) = headers
         .get("x-sentin8-hostname")
@@ -1567,6 +1793,30 @@ pub struct AuthorizeQuery {
     #[serde(default)]
     /// The authorization details.
     pub authorization_details: Option<serde_json::Value>,
+    /// OIDC Core §3.1.2.1 `prompt` - space-delimited values. `none`
+    /// requires silent authentication (error=login_required without a
+    /// valid session); `login` forces re-authentication even when a
+    /// session exists. `consent` is accepted and treated as the default
+    /// (the consent screen is shown when the client requires consent).
+    /// DESIGN §9a.3.
+    #[serde(default)]
+    /// The prompt.
+    pub prompt: Option<String>,
+    /// OIDC Core §3.1.2.1 `max_age` - maximum allowable elapsed time
+    /// since the user last authenticated. When the existing session is
+    /// older, the user must re-authenticate before the code is issued.
+    /// DESIGN §9a.3.
+    #[serde(default)]
+    /// The max age.
+    pub max_age: Option<i64>,
+    /// OIDC Core §5.5 `claims` - JSON object with `id_token` and/or
+    /// `userinfo` sub-objects selecting claims the client needs. The
+    /// selection NARROWS scope-granted claims; it can never widen them
+    /// (an essential claim the user never consented to is still refused
+    /// by the scope gate). DESIGN §9a.3.
+    #[serde(default)]
+    /// The claims.
+    pub claims: Option<String>,
 }
 
 /// Validate an `authorization_details` request (RFC 9396):
@@ -1801,6 +2051,10 @@ struct AuthorizeParams {
     /// RFC 9396 authorization_details - validated against
     /// the client's registered types.
     authorization_details: Option<serde_json::Value>,
+    /// OIDC Core §5.5 claims request - parsed + shape-validated (DESIGN
+    /// §9a.3). The object rides the code record; the token exchange
+    /// applies it as a claim SELECTION (never a widening).
+    claims: Option<serde_json::Value>,
 }
 
 /// The authorize endpoint validates the request and redirects to the Auth hosted UI
@@ -1843,6 +2097,26 @@ pub async fn authorize(
         resource: q.resource.clone(),
         response_mode: q.response_mode.clone(),
         authorization_details: None,
+        // OIDC Core §5.5 claims request (DESIGN §9a.3): parse + validate
+        // the JSON shape up front - malformed JSON or a non-object rejects
+        // the request per spec. Unknown top-level keys are ignored (the
+        // spec allows OPs to ignore claims they do not support).
+        claims: match q.claims.as_deref() {
+            Some(raw) if !raw.is_empty() => match serde_json::from_str::<serde_json::Value>(raw) {
+                Ok(v) if v.is_object() => Some(v),
+                _ => {
+                    return (
+                        StatusCode::BAD_REQUEST,
+                        Json(serde_json::json!({
+                            "error": "invalid_request",
+                            "error_description": "claims parameter must be a JSON object"
+                        })),
+                    )
+                        .into_response();
+                }
+            },
+            _ => None,
+        },
     };
 
     //enforce the caller's env-resolved profile
@@ -1859,7 +2133,15 @@ pub async fn authorize(
             .into_response();
     }
 
-    if let Some(ref request_uri) = q.request_uri {
+    // PAR urns resolve from Valkey (single-use). Anything else is a JAR
+    // request-object reference (RFC 9101 §5.2.1, DESIGN §9a.7) and falls
+    // through to the signed-request-object fetch below.
+    let is_par_uri = q
+        .request_uri
+        .as_deref()
+        .map(|u| u.starts_with("urn:ietf:params:oauth:request_uri:"))
+        .unwrap_or(false);
+    if let (Some(ref request_uri), true) = (q.request_uri.as_deref(), is_par_uri) {
         match resolve_par_request(&state, request_uri).await {
             Some(stored) => {
                 // SEC- - the PAR record is client-bound: the query
@@ -1932,8 +2214,36 @@ pub async fn authorize(
     // When a `request` JWT parameter is present, verify its signature
     // against the client's registered keys (inline `jwks` or `jwks_uri`)
     // and overlay its params over the inline ones (JAR wins).
-    if let Some(ref request_jwt) = q.request {
-        match verify_jar_request(&state, &params.client_id, request_jwt, &state.config.issuer).await
+    //
+    // A `request_uri` that is NOT a PAR urn is a JAR request-object
+    // reference (RFC 9101 §5.2.1, DESIGN §9a.7): fetch the JWT over
+    // https and treat it as the `request` parameter (same verifier).
+    // A PAR urn was RESOLVED (single-use GETDEL) and overlaid above -
+    // `q.request_uri` still holds it, so it must be EXCLUDED here or
+    // every PAR request would also (incorrectly) run the JAR https
+    // fetch on the urn and fail with "request_uri must be https"
+    // (breaking the whole PAR flow - BFF/dash sign-in included).
+    let jar_jwt: Option<String> = if let Some(ref request_jwt) = q.request {
+        Some(request_jwt.clone())
+    } else if let Some(uri) = q.request_uri.as_deref().filter(|_| !is_par_uri) {
+        match fetch_request_object(uri).await {
+            Ok(jwt) => Some(jwt),
+            Err(e) => {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(serde_json::json!({
+                        "error": "invalid_request",
+                        "error_description": format!("request_uri: {e}")
+                    })),
+                )
+                    .into_response();
+            }
+        }
+    } else {
+        None
+    };
+    if let Some(request_jwt) = jar_jwt {
+        match verify_jar_request(&state, &params.client_id, &request_jwt, &state.config.issuer).await
         {
             Ok(jar) => {
                 if !jar.redirect_uri.is_empty() {
@@ -2000,6 +2310,24 @@ pub async fn authorize(
             Json(serde_json::json!({
                 "error": "invalid_request",
                 "error_description": "PKCE code_challenge is required by the active security profile"
+            })),
+        )
+            .into_response();
+    }
+
+    // (FAPI 1.0 Advanced §5.2.3.2, DESIGN §9a.3) - the `resource`
+    // authorization-request parameter is outside FAPI 1.0 (RFC 8707
+    // resource indicators postdate the profile; the conformance suite
+    // requires the OP to reject it under fapi_1_advanced). FAPI 2.0
+    // permits it (and mints aud-bound tokens from it, SEC-).
+    if !params.resource.as_deref().unwrap_or("").is_empty()
+        && profile.profile == "fapi_1_advanced"
+    {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({
+                "error": "invalid_request",
+                "error_description": "the resource parameter is not permitted under the fapi_1_advanced security profile"
             })),
         )
             .into_response();
@@ -2095,27 +2423,224 @@ pub async fn authorize(
         None
     };
 
+    // (OIDC Core §3.1.2.1, DESIGN §9a.3) - prompt + max_age semantics.
+    // `prompt=none` requires silent authentication: a valid session
+    // issues the code directly; anything else redirects back with
+    // error=login_required (never an interstitial - the RP must not
+    // render a UI). `prompt=login` forces re-authentication: ignore any
+    // existing session and always show the sign-in page.
+    // `max_age=N` demands the session be younger than N seconds.
+    let prompt_values: Vec<&str> = q
+        .prompt
+        .as_deref()
+        .unwrap_or("")
+        .split_whitespace()
+        .collect();
+    let force_login = prompt_values.iter().any(|p| *p == "login");
+    let silent_only = prompt_values.iter().any(|p| *p == "none");
+    // Unknown prompt values are an error per OIDC Core §3.1.2.1 (the
+    // OP MUST NOT ignore a prompt value it does not understand).
+    if let Some(bad) = prompt_values
+        .iter()
+        .find(|p| !matches!(**p, "none" | "login" | "consent"))
+    {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({
+                "error": "invalid_request",
+                "error_description": format!("unsupported prompt value: {bad}")
+            })),
+        )
+            .into_response();
+    }
+
+    // Session state for the silent/max_age decision (cookie or bearer).
+    let existing_session = crate::handlers::extract_session_token(&headers)
+        .and_then(|tok| {
+            // Synchronous lookup is not possible here; mark presence and
+            // let the async check below validate it.
+            Some(tok)
+        });
+    let mut session_is_fresh_enough = false;
+    let mut session_user: Option<Uuid> = None;
+    if let Some(tok) = existing_session.clone() {
+        if let Ok(Some(sess)) = crate::sessions::Session::find_by_token(&state.pool, &tok).await {
+            if sess.is_valid() {
+                let age_secs = chrono::Utc::now()
+                    .signed_duration_since(sess.created_at)
+                    .num_seconds();
+                let max_age_ok = q
+                    .max_age
+                    .map(|m| age_secs <= m)
+                    .unwrap_or(true);
+                if max_age_ok {
+                    session_is_fresh_enough = true;
+                    session_user = Some(sess.user_id);
+                }
+            }
+        }
+    }
+
+    // prompt=none: silent issuance or the prescribed error redirect
+    // (OIDC Core §3.1.2.1 - error goes back to redirect_uri, code never
+    // reaches the client).
+    if silent_only {
+        let error_redirect = |err: &str, desc: &str, mode: Option<&str>| -> Response {
+            let mut url = format!(
+                "{}?error={}&error_description={}",
+                params.redirect_uri,
+                urlencode(err),
+                urlencode(desc)
+            );
+            if !params.state.is_empty() {
+                url.push_str(&format!("&state={}", urlencode(&params.state)));
+            }
+            if profile.require_iss {
+                url.push_str(&format!("&iss={}", urlencode(&state.config.issuer)));
+            }
+            // JARM wraps authorization errors too (response_mode=jwt).
+            if profile.require_jarm && mode == Some("jwt") {
+                let jarm_claims = crate::jarm::build_jarm_error(
+                    &state.config.issuer,
+                    &params.client_id,
+                    err,
+                    Some(desc),
+                    if params.state.is_empty() {
+                        None
+                    } else {
+                        Some(&params.state)
+                    },
+                );
+                if let Ok(jwt) = crate::jarm::sign_jarm_jwt(&state.keys, &jarm_claims) {
+                    let url = crate::jarm::build_jarm_redirect_url(&params.redirect_uri, &jwt);
+                    return (StatusCode::FOUND, [("location", url)]).into_response();
+                }
+            }
+            (StatusCode::FOUND, [("location", url)]).into_response()
+        };
+        if !session_is_fresh_enough || session_user.is_none() {
+            // OIDC Core §3.1.2.1 - both the absent-session case and the
+            // stale-session case (max_age exceeded) answer with
+            // `login_required` back at the redirect_uri; the description
+            // distinguishes them for operators reading the logs.
+            let desc = if q.max_age.is_some() && existing_session.is_some() {
+                "max_age exceeded - re-authentication required"
+            } else {
+                "no active session"
+            };
+            return error_redirect("login_required", desc, params.response_mode.as_deref());
+        }
+        // Fresh session present - issue the code silently (no UI).
+        let user_id = session_user.expect("checked above");
+        let env_id = crate::overlays::env_from_headers(&headers);
+        let code = Uuid::new_v4().to_string();
+        let code_key = format!("auth:authcode:{code}");
+        let code_data = serde_json::json!({
+            "client_id": params.client_id,
+            "redirect_uri": params.redirect_uri,
+            "scope": params.scope,
+            "user_id": user_id.to_string(),
+            "env_id": env_id.to_string(),
+            "code_challenge": params.code_challenge,
+            "nonce": params.nonce,
+            "resource": params.resource,
+            "state": params.state,
+            "auth_time": chrono::Utc::now().timestamp(),
+            "authorization_details": params.authorization_details,
+            "claims": params.claims,
+        });
+        let valkey_conn =
+            match sentin8::middleware::valkey_client(&state.config.valkey_url, "sentin8:auth").await
+            {
+                Ok(c) => c,
+                Err(e) => {
+                    return (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        Json(serde_json::json!({
+                            "error": "server_error",
+                            "error_description": format!("valkey unavailable: {e}")
+                        })),
+                    )
+                        .into_response();
+                }
+            };
+        let set_result: Result<(), _> = valkey_conn
+            .set_ex(&code_key, code_data.to_string(), 600)
+            .await;
+        if let Err(e) = set_result {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({
+                    "error": "server_error",
+                    "error_description": format!("code store failed: {e}")
+                })),
+            )
+                .into_response();
+        }
+        let mut url = format!(
+            "{}?code={}&state={}",
+            params.redirect_uri,
+            urlencode(&code),
+            urlencode(&params.state)
+        );
+        if profile.require_iss {
+            url.push_str(&format!("&iss={}", urlencode(&state.config.issuer)));
+        }
+        if profile.require_jarm && params.response_mode.as_deref() == Some("jwt") {
+            let jarm_claims = crate::jarm::build_jarm_success(
+                &state.config.issuer,
+                &params.client_id,
+                &code,
+                if params.state.is_empty() { None } else { Some(&params.state) },
+            );
+            if let Ok(jwt) = crate::jarm::sign_jarm_jwt(&state.keys, &jarm_claims) {
+                let url = crate::jarm::build_jarm_redirect_url(&params.redirect_uri, &jwt);
+                return (StatusCode::FOUND, [("location", url)]).into_response();
+            }
+        }
+        return (StatusCode::FOUND, [("location", url)]).into_response();
+    }
+    // prompt=login (or a stale max_age session): drop the silent path and
+    // force the sign-in page; the session freshness check below still
+    // guards max_age when the user arrives at /sign-in.
+    let _ = force_login;
+
     // Redirect to the hosted sign-in page with OAuth params preserved.
-    // The auth serves a minimal HTML sign-in form at /sign-in that
-    // collects email/password, POSTs to /v1/sign-in, and on success POSTs
-    // to /oauth/authorize/continue to issue the authorization code.
-    // `screen_hint=signup` routes the user to the registration page first;
-    // otherwise the sign-in page is shown.
+    // Route the interactive step (DESIGN §9a.8):
+    // - signup hint → the Flutter registration page (SPA).
+    // - consent-gated clients → the Flutter sign-in (the consent screen
+    //   flow needs the SPA's RFW rendering).
+    // - first-party / automated clients (consent_required=false) → the
+    //   server-rendered HTML login form at /oauth/login: one DOM-
+    //   drivable step, then the code issues directly (the OIDF suite's
+    //   browser automation and every Selenium-class client ride this).
     let is_signup = q
         .screen_hint
         .as_deref()
         .map(|s| s.eq_ignore_ascii_case("signup"))
         .unwrap_or(false);
-    let ui_page = if is_signup { "/sign-up" } else { "/sign-in" };
+    let ui_page = if is_signup {
+        "/sign-up"
+    } else if consent_required {
+        "/sign-in"
+    } else {
+        "/oauth/login"
+    };
     let mut ui_url = format!(
-        "{}?response_type=code&client_id={}&redirect_uri={}&scope={}&state={}&code_challenge={}&code_challenge_method=S256&consent_required={}",
+        "{}?response_type=code&client_id={}&redirect_uri={}&scope={}&state={}&code_challenge={}&code_challenge_method=S256{}",
         ui_page,
         urlencode(&params.client_id),
         urlencode(&params.redirect_uri),
         urlencode(&params.scope),
         urlencode(&params.state),
         urlencode(params.code_challenge.as_deref().unwrap_or("")),
-        consent_required,
+        // The SPA pages read consent_required; the HTML form does not
+        // need it (its clients are consent-bypass by definition here).
+        if consent_required {
+            format!("&consent_required={consent_required}")
+        } else {
+            String::new()
+        },
     );
     // Forward the nonce so authorize/continue can bind it into the ID token
     // (SEC-) and the resource indicator (SEC-).
@@ -2184,6 +2709,11 @@ pub struct AuthorizeContinueRequest {
     #[serde(default)]
     /// The authorization details.
     pub authorization_details: Option<serde_json::Value>,
+    /// OIDC Core §5.5 claims request - carried from the authorize step
+    /// and applied at ID-token mint as a claim selection (DESIGN §9a.3).
+    #[serde(default)]
+    /// The claims.
+    pub claims: Option<serde_json::Value>,
 }
 
 /// Authorize continue.
@@ -2263,12 +2793,19 @@ pub async fn authorize_continue(
            "code_challenge": req.code_challenge,
            "nonce": req.nonce,
            "resource": req.resource,
+    // DESIGN §9a.3 - the client's `state` rides the code record
+    // so the token exchange can mint `s_hash` (FAPI 1 §5.2.2.1) and
+    // bind the issued tokens to this exact authorize interaction.
+           "state": req.state,
     // auth_time for the ID token (OIDC Core ) - the session's issue time.
            "auth_time": session.created_at.timestamp(),
            "selected_account_ids": req.selected_account_ids,
     // RFC 9396 authorization_details - echoed into the ID
     // token via `_claim_names` at exchange time.
            "authorization_details": req.authorization_details,
+    // OIDC Core §5.5 claims request - rides the code record so the
+    // exchange applies the client's claim selection (DESIGN §9a.3).
+           "claims": req.claims,
        });
 
     let conn = state
@@ -2539,7 +3076,7 @@ pub async fn token(
     if let Some(proof) = crate::dpop::extract_dpop_header(&headers) {
         // htu - the token endpoint URI from the client's perspective. Use the
         // request-host-resolved issuer (same logic as discovery): clients on
-        // tenant auth domains (auth.staff.{org}.sentin8.local) claim that
+        // tenant auth domains (auth.staff.{org}.local.sentin8.dev) claim that
         // host, while platform calls claim config.issuer.
         let htu = format!("{}/oauth/token", resolve_issuer(&state.config, &headers));
         let jkt = crate::dpop::validate_and_verify_dpop(&state, &proof, "POST", &htu)
@@ -2654,6 +3191,11 @@ async fn handle_code_exchange(
     let redirect_uri = req.redirect_uri.as_deref().unwrap_or("");
     let code_verifier = req.code_verifier.as_deref();
 
+    // Env-resolved security profile (DESIGN §9a.9): drives PKCE
+    // enforcement AND the per-tenant signing family for every token
+    // minted in this exchange. Resolved ONCE for the handler.
+    let profile = resolve_security_profile(&state.pool, headers, "env").await;
+
     // Fetch the auth code data from Valkey.
     let code_key = format!("auth:authcode:{code}");
     let valkey_conn = sentin8::middleware::valkey_client(&state.config.valkey_url, "sentin8:auth")
@@ -2721,7 +3263,6 @@ async fn handle_code_exchange(
     } else {
         // No challenge stored - only permissible when the caller's env-resolved
         // profile does not mandate PKCE (SEC-).
-        let profile = resolve_security_profile(&state.pool, headers, "env").await;
         if profile.require_pkce {
             return Err(TokenError::OAuth(OAuthTokenError::with_desc(
                 StatusCode::BAD_REQUEST,
@@ -2730,6 +3271,11 @@ async fn handle_code_exchange(
             )));
         }
     }
+
+    // Per-tenant signing family (DESIGN §9a.9) - the caller's env-resolved
+    // profile picks which persisted key family signs this exchange's
+    // tokens. Empty = process default (SENTIN8_TLS_PQ_MODE).
+    let signing_alg = profile.signing_alg.clone();
 
     let user_id: Uuid = code_data["user_id"]
         .as_str()
@@ -2748,13 +3294,19 @@ async fn handle_code_exchange(
         .as_str()
         .unwrap_or("openid profile email");
     let nonce = code_data["nonce"].as_str().map(|s| s.to_string());
+    let state_value = code_data["state"].as_str().map(|s| s.to_string());
     let auth_time = code_data["auth_time"]
         .as_i64()
         .unwrap_or_else(|| chrono::Utc::now().timestamp());
-    // RFC 9396 authorization_details - validated at authorize
-    // time; echoed into the ID token per RFC 9396
+    // RFC 9396 authorization_details - echoed into the ID token per RFC 9396
     let authorization_details = code_data
         .get("authorization_details")
+        .filter(|d| !d.is_null())
+        .cloned();
+    // OIDC Core §5.5 claims request (DESIGN §9a.3) - carried from
+    // authorize; the ID-token mint applies it below.
+    let claims_request = code_data
+        .get("claims")
         .filter(|d| !d.is_null())
         .cloned();
 
@@ -2871,10 +3423,13 @@ async fn handle_code_exchange(
     };
     let access_token = state
         .keys
-        .sign(&access_claims)
+        .sign_value_alg(
+            &serde_json::to_value(&access_claims).map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("serialize claims: {e}")))?,
+            &signing_alg,
+        )
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
     let id_token = if scope.split_whitespace().any(|s| s == "openid") {
-        let id_claims = AuthClaims::id_token_with_details(
+        let mut id_claims = AuthClaims::id_token_with_details(
             &state.config.issuer,
             user_id,
             &client.client_id,
@@ -2888,9 +3443,77 @@ async fn handle_code_exchange(
             Duration::seconds(state.config.access_token_ttl_secs as i64),
             authorization_details.as_ref(),
         );
+        // (OIDC Core §3.1.3.6) - c_hash binds the ID token to the
+        // authorization code being exchanged; (FAPI 1 §5.2.2.1) -
+        // s_hash binds it to the client's state when one was sent.
+        id_claims["c_hash"] = serde_json::json!(crate::jwt::c_hash(&code));
+        if let Some(st) = state_value.as_deref().filter(|s| !s.is_empty()) {
+            id_claims["s_hash"] = serde_json::json!(crate::jwt::s_hash(st));
+        }
+        // OIDC Core §5.5 claims request (DESIGN §9a.3) - apply the
+        // client's `id_token` claim SELECTION. This only narrows: the
+        // mint above already gated email/name on the consented scope,
+        // so removing a claim here cannot leak beyond the grant. A claim
+        // the client asks for but the scope never granted stays absent
+        // (the selection intersects with scope-consented claims).
+        if let Some(selection) = claims_request
+            .as_ref()
+            .and_then(|c| c.get("id_token"))
+            .and_then(|v| v.as_object())
+        {
+            let wants_email = selection.get("email").is_some();
+            let wants_name = selection.get("name").is_some();
+            if !wants_email && !selection.is_empty() {
+                id_claims
+                    .as_object_mut()
+                    .map(|o| o.remove("email"))
+                    .and(id_claims
+                        .as_object_mut()
+                        .map(|o| o.remove("email_verified")));
+            }
+            if !wants_name && !selection.is_empty() {
+                id_claims
+                    .as_object_mut()
+                    .map(|o| o.remove("name"));
+            }
+        }
+        // eKYC-IDA `verified_claims` (OIDC eKYC-IDA §5, DESIGN §9a.7) -
+        // included when the claims request selected it (essential or
+        // voluntary) AND the user holds an active verified credential.
+        // The inclusion never widens: the credential's own claims are
+        // the verified subset, read from the credential store.
+        let wants_verified = claims_request
+            .as_ref()
+            .and_then(|c| c.get("id_token"))
+            .and_then(|v| v.as_object())
+            .map(|o| o.contains_key("verified_claims"))
+            .unwrap_or(false);
+        if wants_verified {
+            let row: Option<(String, serde_json::Value, i64)> = sqlx::query_as(
+                r#"SELECT type, credential_data,
+                          EXTRACT(EPOCH FROM issued_at)::bigint AS issued_epoch
+                     FROM credentials
+                    WHERE user_id = $1 AND env_id = $2 AND status = 'active'
+                    ORDER BY issued_at DESC LIMIT 1"#,
+            )
+            .bind(user_id)
+            .bind(env_id)
+            .fetch_optional(&state.pool)
+            .await
+            .ok()
+            .flatten();
+            if let Some((cred_type, data, issued_epoch)) = row {
+                id_claims["verified_claims"] = crate::jwt::build_verified_claims(
+                    "sentin8",
+                    &cred_type,
+                    &data,
+                    issued_epoch,
+                );
+            }
+        }
         state
             .keys
-            .sign_value(&id_claims)
+            .sign_value_alg(&id_claims, &signing_alg)
             .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
             .into()
     } else {
@@ -2910,7 +3533,10 @@ async fn handle_code_exchange(
         );
         state
             .keys
-            .sign(&refresh_claims)
+            .sign_value_alg(
+                &serde_json::to_value(&refresh_claims).map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("serialize claims: {e}")))?,
+                &signing_alg,
+            )
             .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
             .into()
     } else {
@@ -3016,6 +3642,12 @@ async fn handle_refresh(
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
     let merged_scope = crate::handlers::merge_scopes(&scope, &role_scopes);
 
+    // Per-tenant signing family (DESIGN §9a.9) - resolved from the
+    // refresh token's own env context (the request headers belong to
+    // the token endpoint's caller, the token carries its env).
+    let profile = resolve_security_profile_for_env(&state.pool, env_id, "env").await;
+    let signing_alg = profile.signing_alg.clone();
+
     // Issue a new access token.
     let mut access_claims = AuthClaims::access_with_client(
         &state.config.issuer,
@@ -3043,7 +3675,10 @@ async fn handle_refresh(
     }
     let access_token = state
         .keys
-        .sign(&access_claims)
+        .sign_value_alg(
+            &serde_json::to_value(&access_claims).map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("serialize claims: {e}")))?,
+            &signing_alg,
+        )
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
     // SEC- - rotation. When enabled (default), mint a NEW refresh
@@ -3065,7 +3700,10 @@ async fn handle_refresh(
         Some(
             state
                 .keys
-                .sign(&new_refresh_claims)
+                .sign_value_alg(
+                    &serde_json::to_value(&new_refresh_claims).map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("serialize claims: {e}")))?,
+                    &signing_alg,
+                )
                 .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?,
         )
     } else {
@@ -3206,9 +3844,16 @@ async fn handle_client_credentials(
     }
     let _ = headers; // (identity already extracted in authenticate_client)
 
+    // Per-tenant signing family (DESIGN §9a.9) - the M2M client's env
+    // picks the signing family.
+    let profile = resolve_security_profile_for_env(&state.pool, client.env_id, "env").await;
+    let signing_alg = profile.signing_alg.clone();
     let token = state
         .keys
-        .sign(&claims)
+        .sign_value_alg(
+            &serde_json::to_value(&claims).map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("serialize claims: {e}")))?,
+            &signing_alg,
+        )
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
     Ok(Json(TokenResponse {
@@ -3347,9 +3992,15 @@ async fn handle_federated_token_exchange(
         Duration::seconds(state.config.m2m_token_ttl_secs as i64),
         &act,
     );
+    // Per-tenant signing family (DESIGN §9a.9).
+    let profile = resolve_security_profile_for_env(&state.pool, client.env_id, "env").await;
+    let signing_alg = profile.signing_alg.clone();
     let token = state
         .keys
-        .sign(&claims)
+        .sign_value_alg(
+            &serde_json::to_value(&claims).map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("serialize claims: {e}")))?,
+            &signing_alg,
+        )
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
     Ok(Json(TokenResponse {
@@ -3760,9 +4411,16 @@ async fn handle_publisher_token_exchange(
         cnf,
         exp,
     );
+    // Per-tenant signing family (DESIGN §9a.9) - the delegated token
+    // inherits the PUBLISHER's env family (the token's tenant context).
+    let profile = resolve_security_profile_for_env(&state.pool, publisher_env, "env").await;
+    let signing_alg = profile.signing_alg.clone();
     let token = state
         .keys
-        .sign(&claims)
+        .sign_value_alg(
+            &serde_json::to_value(&claims).map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("serialize claims: {e}")))?,
+            &signing_alg,
+        )
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
     // 7. Audit log the exchange . `actor_events` carries
@@ -4475,7 +5133,19 @@ pub async fn logout(
                 Some((_client_id, post_logout_uris))
                     if post_logout_uris.iter().any(|u| u == uri) =>
                 {
-                    uri.to_string()
+                    // (OIDC RP-Initiated Logout §2.1) - echo the
+                    // client's `state` on the redirect so the RP can
+                    // correlate the logout with its request (and bind
+                    // CSRF protection). Only appended when a state was
+                    // sent; a plain registered URI redirect stays
+                    // untouched.
+                    match q.state.as_deref().filter(|s| !s.is_empty()) {
+                        Some(st) => {
+                            let sep = if uri.contains('?') { '&' } else { '?' };
+                            format!("{uri}{sep}state={}", urlencode(st))
+                        }
+                        None => uri.to_string(),
+                    }
                 }
                 _ => {
                     tracing::warn!(
@@ -4514,6 +5184,12 @@ pub struct LogoutQuery {
     #[serde(default)]
     /// client identifier.
     pub client_id: Option<String>,
+    /// DESIGN §9a.3 - the RP's opaque state, echoed on the
+    /// post_logout_redirect_uri redirect (OIDC RP-Initiated Logout
+    /// §2.1).
+    #[serde(default)]
+    /// The state.
+    pub state: Option<String>,
 }
 
 // ── Helpers ─────────────────────────────────────────────────────────────
@@ -4580,7 +5256,6 @@ async fn verify_jar_request(
     request_jwt: &str,
     issuer: &str,
 ) -> Result<crate::jar::JarClaims, String> {
-    use sqlx::Row;
     // Unverified decode first - to read routing claims and find the key.
     let claims = crate::jar::decode_jar_unverified(request_jwt)?;
     crate::jar::validate_jar_claims(&claims, issuer)?;
@@ -4597,7 +5272,20 @@ async fn verify_jar_request(
         return Err("JAR request object exp out of range (±10min)".into());
     }
 
-    // Resolve the client's registered keys.
+    verify_client_signed_jwt(state, client_id, request_jwt).await?;
+    Ok(claims)
+}
+
+/// Verify a client-signed JWT (JAR / CIBA request object, DESIGN §9a.7)
+/// against the client's registered keys (inline `jwks` or `jwks_uri`).
+/// Shared by the authorize (JAR) and bc-authorize (CIBA §7.1) verifiers.
+/// Returns nothing on success - the caller owns the claim-shape rules.
+pub async fn verify_client_signed_jwt(
+    state: &AppState,
+    client_id: &str,
+    request_jwt: &str,
+) -> Result<(), String> {
+    use sqlx::Row;    // Resolve the client's registered keys.
     let row = sqlx::query(r#"SELECT jwks, jwks_uri FROM oauth_clients WHERE client_id = $1"#)
         .bind(client_id)
         .fetch_optional(&state.pool)
@@ -4626,9 +5314,9 @@ async fn verify_jar_request(
         }
     }
     if !verified {
-        return Err("JAR request object signature verification failed".into());
+        return Err("request object signature verification failed".into());
     }
-    Ok(claims)
+    Ok(())
 }
 
 /// Extract a Bearer token from the Authorization header.
@@ -4862,6 +5550,11 @@ async fn handle_device_code(
         .map_err(|e| TokenError::Internal(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
     let merged_scope = crate::handlers::merge_scopes(scope, &role_scopes);
 
+    // Per-tenant signing family (DESIGN §9a.9) - tenant context rides
+    // the device-flow record (the polling client may run on any host).
+    let profile = resolve_security_profile_for_env(&state.pool, env_id, "env").await;
+    let signing_alg = profile.signing_alg.clone();
+
     let access_claims = AuthClaims::access(
         &state.config.issuer,
         user_id,
@@ -4878,7 +5571,10 @@ async fn handle_device_code(
     }
     let access_token = state
         .keys
-        .sign(&access_claims)
+        .sign_value_alg(
+            &serde_json::to_value(&access_claims).map_err(|e| TokenError::Internal(StatusCode::INTERNAL_SERVER_ERROR, format!("serialize claims: {e}")))?,
+            &signing_alg,
+        )
         .map_err(|e| TokenError::Internal(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
     let refresh_token = {
@@ -4891,7 +5587,10 @@ async fn handle_device_code(
         );
         state
             .keys
-            .sign(&refresh_claims)
+            .sign_value_alg(
+                &serde_json::to_value(&refresh_claims).map_err(|e| TokenError::Internal(StatusCode::INTERNAL_SERVER_ERROR, format!("serialize claims: {e}")))?,
+                &signing_alg,
+            )
             .map_err(|e| TokenError::Internal(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
     };
 
@@ -5020,6 +5719,11 @@ async fn handle_ciba_token(
         .map_err(|e| TokenError::Internal(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
     let merged_scope = crate::handlers::merge_scopes(scope, &role_scopes);
 
+    // Per-tenant signing family (DESIGN §9a.9) - tenant context rides
+    // the CIBA request record.
+    let profile = resolve_security_profile_for_env(&state.pool, env_id, "env").await;
+    let signing_alg = profile.signing_alg.clone();
+
     // (Option A): if the CIBA request was initiated by a staff member
     // (BFF Delegation Gateway passed act_sub/act_email), the token is a
     // customer-consented DELEGATED token: `sub` = customer, `act` = staff
@@ -5059,7 +5763,10 @@ async fn handle_ciba_token(
     };
     let access_token = state
         .keys
-        .sign(&access_claims)
+        .sign_value_alg(
+            &serde_json::to_value(&access_claims).map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("serialize claims: {e}")))?,
+            &signing_alg,
+        )
         .map_err(|e| TokenError::Internal(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
     // : delegated (staff-initiated) CIBA tokens are NOT refreshable -
@@ -5076,7 +5783,10 @@ async fn handle_ciba_token(
                 env_id,
                 Duration::seconds(state.config.refresh_token_ttl_secs as i64),
             );
-            Some(state.keys.sign(&refresh_claims).map_err(|e| {
+            Some(state.keys.sign_value_alg(
+                &serde_json::to_value(&refresh_claims).map_err(|e| TokenError::Internal(StatusCode::INTERNAL_SERVER_ERROR, format!("serialize claims: {e}")))?,
+                &signing_alg,
+            ).map_err(|e| {
                 TokenError::Internal(StatusCode::INTERNAL_SERVER_ERROR, e.to_string())
             })?)
         };
@@ -5111,7 +5821,7 @@ async fn handle_ciba_token(
                 Duration::seconds(effective_ttl as i64),
                 None,
             );
-            Some(state.keys.sign_value(&id_claims).map_err(|e| {
+            Some(state.keys.sign_value_alg(&id_claims, &signing_alg).map_err(|e| {
                 TokenError::Internal(StatusCode::INTERNAL_SERVER_ERROR, e.to_string())
             })?)
         } else {

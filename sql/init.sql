@@ -406,6 +406,12 @@ CREATE TABLE IF NOT EXISTS auth.oauth_clients (
     -- OIDC Back-Channel Logout 1.0 (Story 1.1.37).
     backchannel_logout_uri                  TEXT,
     backchannel_logout_session_required     BOOLEAN NOT NULL DEFAULT false,
+    -- OIDC CIBA 1.0 §4 (DESIGN §9a.3) - the client's ping-mode
+    -- notification callback. When a CIBA request registered with
+    -- request_mode=ping is approved/denied, auth POSTs the notification
+    -- (auth_req_id) here, authorized by the client_notification_token
+    -- as a bearer. Null = poll mode only.
+    backchannel_client_notification_endpoint TEXT,
     -- mSentin8:TLS Client Authentication (RFC 8705, Story 1.1.40).
     tls_client_auth_subject_dn      TEXT,
     tls_client_auth_san_dns         TEXT,
@@ -1189,6 +1195,14 @@ CREATE TABLE IF NOT EXISTS auth.security_profiles (
     require_iss     BOOLEAN NOT NULL DEFAULT true,          -- Require issuer identifier in authorize
     max_token_lifetime INTEGER NOT NULL DEFAULT 3600,  -- seconds
     refresh_rotation BOOLEAN NOT NULL DEFAULT true,    -- Rotate refresh tokens on use
+    -- JWT signing algorithm family for tokens minted under this profile
+    -- (DESIGN §9a.9). MLDSA65 is the platform default (PQ signatures);
+    -- RS256 serves suite-compatible tenants (the OIDF conformance
+    -- rig's Java client cannot verify ML-DSA JOSE). Resolved
+    -- platform → org → env alongside the flags; the TLS transport mode
+    -- (SENTIN8_TLS_PQ_MODE) stays process-level by physical necessity.
+    signing_alg     TEXT NOT NULL DEFAULT 'MLDSA65'
+                     CHECK (signing_alg IN ('MLDSA65', 'RS256')),
     created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at      TIMESTAMPTZ NOT NULL DEFAULT now()
 );
@@ -1200,9 +1214,9 @@ CREATE TABLE IF NOT EXISTS auth.security_profiles (
 CREATE UNIQUE INDEX IF NOT EXISTS idx_auth_security_profiles_unique
     ON auth.security_profiles (scope, org_id, env_id) NULLS NOT DISTINCT;
 
--- Seed platform default: FAPI 2.0
-INSERT INTO auth.security_profiles (scope, profile, require_par, require_mtls, require_jarm, require_dpop, require_iss, max_token_lifetime, refresh_rotation)
-VALUES ('platform', 'fapi_2', true, false, true, true, true, 900, true)
+-- Seed platform default: FAPI 2.0 (PQ signatures - the default family)
+INSERT INTO auth.security_profiles (scope, profile, require_par, require_mtls, require_jarm, require_dpop, require_iss, max_token_lifetime, refresh_rotation, signing_alg)
+VALUES ('platform', 'fapi_2', true, false, true, true, true, 900, true, 'MLDSA65')
 ON CONFLICT (scope, org_id, env_id) DO NOTHING;
 
 -- fapi_ciba / fapi_2_message_signing are opt-in per env (SEC.PROF.6): when an

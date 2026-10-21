@@ -22,7 +22,7 @@ use p256::ecdsa::{Signature, SigningKey};
 use sha1::Sha1;
 
 /// The test issuer configured by `AuthConfig::for_testing()`.
-pub const TEST_ISSUER: &str = "https://auth.test.sentin8.local";
+pub const TEST_ISSUER: &str = "https://auth.test.local.sentin8.dev";
 
 fn b64url(data: &[u8]) -> String {
     base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(data)
@@ -239,13 +239,13 @@ mod tests {
 
     #[test]
     fn dpop_proof_parses_and_validates() {
-        let token = mk_dpop_proof("POST", "https://auth.test.sentin8.local/oauth/token", 0);
+        let token = mk_dpop_proof("POST", "https://auth.test.local.sentin8.dev/oauth/token", 0);
         let decoded =
             sentin8_auth_server::dpop::decode_dpop_proof_unverified(&token).expect("proof parses");
         sentin8_auth_server::dpop::validate_dpop_proof(
             &decoded,
             "POST",
-            "https://auth.test.sentin8.local/oauth/token",
+            "https://auth.test.local.sentin8.dev/oauth/token",
             chrono::Utc::now().timestamp(),
         )
         .expect("proof validates");

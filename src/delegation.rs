@@ -49,7 +49,7 @@ pub struct DelegateAccessTokenRequest {
     /// Requested scopes (space-separated, will be downscoped).
     /// The scope.
     pub scope: String,
-    /// Target audience (RFC 8707 resource indicator, e.g. `https://ledger.sentin8.local`).
+    /// Target audience (RFC 8707 resource indicator, e.g. `https://ledger.local.sentin8.dev`).
     /// The audience.
     pub audience: String,
 }

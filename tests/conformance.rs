@@ -110,7 +110,7 @@ fn unique_ip() -> String {
 
 /// Sign up a fresh user; returns (email, password, session_token).
 async fn sign_up_user(app: &axum::Router) -> (String, String, String) {
-    let email = format!("conf_{}@test.sentin8.local", uuid::Uuid::new_v4().simple());
+    let email = format!("conf_{}@test.local.sentin8.dev", uuid::Uuid::new_v4().simple());
     let password = "conf_password_123";
     let body = serde_json::json!({
         "email": email,
@@ -169,6 +169,128 @@ async fn register_confidential_client(pool: &PgPool) -> (String, String) {
     .unwrap();
     tx.commit().await.unwrap();
     (client_id, secret.to_string())
+}
+
+/// Silent authentication (OIDC Core §3.1.2.1 `prompt=none`, DESIGN §9a.3):
+/// without a session the authorize endpoint answers `error=login_required`
+/// at the redirect_uri (never an interstitial); with a fresh session it
+/// issues the code directly (302 with code + state, no UI round-trip).
+#[tokio::test]
+async fn conf_prompt_none_silent_authentication() {
+    let Some((app, pool)) = spawn_server().await else {
+        return;
+    };
+    let (client_id, _secret) = register_confidential_client(&pool).await;
+    let redirect_uri = urlencode("https://app.example.com/callback");
+
+    // No session → error=login_required at the redirect_uri (302, no UI).
+    let uri = format!(
+        "/oauth/authorize?response_type=code&client_id={client_id}&redirect_uri={redirect_uri}&scope=openid&state=st-none&code_challenge=x&code_challenge_method=S256&prompt=none"
+    );
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri(&uri)
+                .header("x-sentin8-env-id", SYS_ENV.to_string())
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        resp.status(),
+        StatusCode::FOUND,
+        "prompt=none without a session must redirect, not render a UI"
+    );
+    let location = resp
+        .headers()
+        .get("location")
+        .and_then(|v| v.to_str().ok())
+        .expect("error redirect location")
+        .to_string();
+    assert!(
+        location.starts_with("https://app.example.com/callback"),
+        "error redirect goes to the client's redirect_uri: {location}"
+    );
+    assert!(
+        location.contains("error=login_required"),
+        "the prescribed OIDC error, not an interstitial: {location}"
+    );
+    assert!(
+        location.contains("state=st-none"),
+        "the client's state rides the error redirect: {location}"
+    );
+
+    // With a fresh session → silent issuance (code + state, no UI).
+    let (_email, _pw, session_token) = sign_up_user(&app).await;
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri(&uri)
+                .header("x-sentin8-env-id", SYS_ENV.to_string())
+                .header("cookie", format!("__session={session_token}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        resp.status(),
+        StatusCode::FOUND,
+        "prompt=none with a fresh session issues the code directly"
+    );
+    let location = resp
+        .headers()
+        .get("location")
+        .and_then(|v| v.to_str().ok())
+        .expect("silent issuance location")
+        .to_string();
+    assert!(
+        location.starts_with("https://app.example.com/callback?code="),
+        "code lands on the redirect_uri: {location}"
+    );
+    assert!(
+        location.contains("state=st-none"),
+        "state echoes back: {location}"
+    );
+
+    // max_age=0 with the (now aged-enough? no - just-issued) session:
+    // a session created NOW satisfies max_age=1; the request above already
+    // consumed it. A SECOND silent request with max_age=1 still succeeds
+    // within a second - instead exercise the force-login path:
+    // prompt=login must IGNORE the session and render the sign-in UI.
+    let uri_login = format!(
+        "/oauth/authorize?response_type=code&client_id={client_id}&redirect_uri={redirect_uri}&scope=openid&state=st-login&code_challenge=x&code_challenge_method=S256&prompt=login"
+    );
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri(&uri_login)
+                .header("x-sentin8-env-id", SYS_ENV.to_string())
+                .header("cookie", format!("__session={session_token}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        resp.status(),
+        StatusCode::FOUND,
+        "prompt=login redirects to the hosted sign-in page"
+    );
+    let location = resp
+        .headers()
+        .get("location")
+        .and_then(|v| v.to_str().ok())
+        .expect("sign-in redirect")
+        .to_string();
+    assert!(
+        location.contains("/sign-in"),
+        "prompt=login forces the sign-in UI even with a session: {location}"
+    );
 }
 
 /// Complete the hosted sign-in step of the authorize flow and return the
@@ -740,7 +862,7 @@ async fn conf_id_token_issued_with_correct_aud_iss_nonce() {
     let payload = sentin8_auth_server::decode_jwt_payload(id_token).expect("decode id_token");
     assert_eq!(payload["aud"], client_id, "aud = client_id");
     assert_eq!(
-        payload["iss"], "https://auth.test.sentin8.local",
+        payload["iss"], "https://auth.test.local.sentin8.dev",
         "iss = configured issuer"
     );
     assert_eq!(payload["nonce"], nonce, "nonce flows authorize → id_token");
@@ -887,7 +1009,7 @@ async fn conf_dpop_proof_jti_replay_rejected() {
         return;
     };
     // Build a signed DPoP proof (ES256, self-contained jwk header).
-    let proof = mk_dpop_proof("POST", "https://auth.test.sentin8.local/oauth/token", 0);
+    let proof = mk_dpop_proof("POST", "https://auth.test.local.sentin8.dev/oauth/token", 0);
     let body = format!("grant_type=client_credentials&client_id=dash&dpop={proof}");
 
     // First use - accepted into the validation path (may fail later on
@@ -1050,7 +1172,7 @@ async fn conf_totp_code_replay_rejected() {
         return;
     };
     // Enroll a TOTP factor directly (pending state), then verify once.
-    let email = format!("totp_{}@test.sentin8.local", uuid::Uuid::new_v4().simple());
+    let email = format!("totp_{}@test.local.sentin8.dev", uuid::Uuid::new_v4().simple());
     let (_e, _p, session_token) = {
         let body = serde_json::json!({
             "email": email,

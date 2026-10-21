@@ -196,8 +196,8 @@ impl Session {
     /// Build the Set-Cookie header value for this session.
     ///
     /// `cookie_domain` should be the registrable domain of the request host
-    /// (e.g. `ibank.local` for `auth.ibank.local`, `sentin8.local` for
-    /// `sentin8-auth.ops.sys.sentin8.local`) so the cookie is shared across the tenant's
+    /// (e.g. `ibank.local` for `auth.ibank.local`, `local.sentin8.dev` for
+    /// `sentin8-auth.ops.sys.local.sentin8.dev`) so the cookie is shared across the tenant's
     /// subdomains. Use [crate::sessions::cookie_domain_for_host] to derive it
     /// from the request's `Host` header.
     /// Handle cookie.
@@ -265,8 +265,8 @@ pub async fn user_env(
 ///
 /// For a tenant custom auth domain like `auth.ibank.local`, returns
 /// `ibank.local` so the `__session` cookie is visible on all `*.ibank.local`
-/// subdomains. For the platform auth domain `auth.ops.sys.sentin8.local`, returns
-/// `sentin8.local`. Falls back to `fallback` (the config `sentin8_domain`) when
+/// subdomains. For the platform auth domain `auth.ops.sys.local.sentin8.dev`, returns
+/// `local.sentin8.dev`. Falls back to `fallback` (the config `sentin8_domain`) when
 /// the host is empty or has fewer than three labels.
 /// Handle cookie domain for host.
 pub fn cookie_domain_for_host(host: &str, fallback: &str) -> String {

@@ -246,9 +246,34 @@ pub fn build_router(state: AppState) -> Router {
         // OIDC discovery + JWKS
         .route("/.well-known/openid-configuration", get(oauth::discovery))
         .route("/.well-known/jwks.json", get(jwks_endpoint))
+        // WebFinger (OIDC Discovery §2.1 / RFC 7033) - Dynamic OP profile.
+        .route("/.well-known/webfinger", get(crate::webfinger::webfinger))
+        // OID4VCI standard issuer surface (DESIGN §9a.7) - over the
+        // same credentials store / SD-JWT core as the platform-native
+        // /oauth/credentials endpoints below.
+        .route(
+            "/.well-known/openid-credential-issuer",
+            get(crate::oid4vci::credential_issuer_metadata),
+        )
+        .route("/oauth/credential", post(crate::oid4vci::credential))
+        .route(
+            "/oauth/deferred_credential",
+            post(crate::oid4vci::deferred_credential),
+        )
+        .route("/oauth/notifications", post(crate::oid4vci::notifications))
+        // OID4VP verifier metadata (DESIGN §9a.7).
+        .route(
+            "/.well-known/openid-credential-verifier",
+            get(crate::wallet::credential_verifier_metadata),
+        )
         // OAuth endpoints
         .route("/oauth/authorize", get(oauth::authorize))
         .route("/oauth/authorize/continue", post(oauth::authorize_continue))
+        // HTML login page - the automated-client surface (DESIGN §9a.8).
+        .route(
+            "/oauth/login",
+            get(crate::login_page::login_page).post(crate::login_page::login_submit),
+        )
         // PAR endpoint (RFC 9126)
         .route("/oauth/par", post(oauth::pushed_authorization_request))
         // Dynamic Client Registration (RFC 7591 + 7592)/

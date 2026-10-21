@@ -244,7 +244,7 @@ async fn secprof_grant_revocation_cascade() {
         )
         .bind(env)
         .bind(format!(
-            "grant-cascade-{}@test.sentin8.local",
+            "grant-cascade-{}@test.local.sentin8.dev",
             uuid::Uuid::new_v4().simple()
         ))
         .fetch_one(&mut *tx)

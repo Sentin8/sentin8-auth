@@ -400,6 +400,20 @@ impl SigningKeys {
             }
         };
 
+        // Per-tenant signing (DESIGN §9a.9): BOTH families must have
+        // signing material - a tenant may resolve `signing_alg = RS256`
+        // while the process default is MLDSA65 (and vice versa). Generate
+        // + persist the missing family so the per-tenant lookup at mint
+        // time always succeeds.
+        for family in ["MLDSA65", "RS256"] {
+            if !all.iter().any(|k| k.alg == family && k.can_sign()) {
+                let key = Self::generate(family)?;
+                Self::persist_one(&mut tx, &mk, &key).await?;
+                tracing::info!(key_id = %key.key_id, alg = %key.alg, "generated and persisted signing key for per-tenant family");
+                all.push(key);
+            }
+        }
+
         // Commit the transaction (persisted key rows + the load snapshot).
         tx.commit()
             .await
@@ -509,6 +523,75 @@ impl SigningKeys {
         self.sign_value(
             &serde_json::to_value(claims).map_err(|e| format!("serialize claims: {e}"))?,
         )
+    }
+
+    /// Sign a JWT from an arbitrary `serde_json::Value` claims payload,
+    /// choosing the signing family (DESIGN §9a.9).
+    ///
+    /// `alg` is the tenant-resolved `signing_alg` (`MLDSA65` | `RS256`).
+    /// The newest persisted key of THAT family signs the token - both
+    /// families are loaded at boot (verification needs both for rotation
+    /// overlap anyway), so the per-tenant choice is a lookup, not a key
+    /// generation.
+    ///
+    /// # Errors
+    /// - Unknown family, or no signing material for it (the store was
+    ///   tampered with - both families are generated at boot).
+    pub fn sign_value_alg(
+        &self,
+        claims: &serde_json::Value,
+        alg: &str,
+    ) -> Result<String, String> {
+        let key = self
+            .signing_key_for(alg)
+            .ok_or_else(|| format!("no {alg} signing key available"))?;
+        if let Some(sk) = &key.ml_dsa_key {
+            // ML-DSA-65 signing (manual JWT construction).
+            let header = serde_json::json!({
+                "alg": "MLDSA65",
+                "typ": "JWT",
+                "kid": key.key_id,
+            });
+            let header_b64 = base64::engine::general_purpose::URL_SAFE_NO_PAD
+                .encode(serde_json::to_vec(&header).map_err(|e| format!("serialize header: {e}"))?);
+            let payload_b64 = base64::engine::general_purpose::URL_SAFE_NO_PAD
+                .encode(serde_json::to_vec(claims).map_err(|e| format!("serialize claims: {e}"))?);
+            let signing_input = format!("{header_b64}.{payload_b64}");
+            let signature = sk.sign(signing_input.as_bytes());
+            let sig_b64 =
+                base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(signature.encode());
+            Ok(format!("{signing_input}.{sig_b64}"))
+        } else if let Some(ek) = &key.rsa_encoding_key {
+            // RS256 signing (jsonwebtoken crate).
+            let header = jsonwebtoken::Header {
+                alg: jsonwebtoken::Algorithm::RS256,
+                typ: Some("JWT".to_string()),
+                kid: Some(key.key_id.clone()),
+                ..Default::default()
+            };
+            jsonwebtoken::encode(&header, claims, ek).map_err(|e| format!("RS256 sign error: {e}"))
+        } else {
+            Err(format!("no usable {alg} signing key"))
+        }
+    }
+
+    /// The newest persisted signing key for the requested family
+    /// (DESIGN §9a.9). Both families are loaded at boot; this selects
+    /// which one signs.
+    fn signing_key_for(&self, alg: &str) -> Option<&StoredKey> {
+        match alg {
+            "RS256" => self
+                .all
+                .iter()
+                .rev()
+                .find(|k| k.alg == "RS256" && k.can_sign()),
+            "MLDSA65" | "" => self
+                .all
+                .iter()
+                .rev()
+                .find(|k| k.alg == "MLDSA65" && k.can_sign()),
+            _ => None,
+        }
     }
 
     /// Sign a JWT from an arbitrary `serde_json::Value` claims payload.
@@ -871,7 +954,7 @@ mod tests {
     fn mk_claims() -> serde_json::Value {
         serde_json::json!({
             "sub": "user-123",
-            "iss": "https://auth.test.sentin8.local",
+            "iss": "https://auth.test.local.sentin8.dev",
             "jti": "jti-1",
             "iat": 1700000000i64,
             "exp": 4_102_444_800i64,
@@ -911,6 +994,61 @@ mod tests {
         let token = keys.sign_value(&mk_claims()).unwrap();
         let claims = keys.verify_raw(&token).unwrap();
         assert_eq!(claims["sub"], "user-123");
+    }
+
+    // DESIGN §9a.9 - per-tenant signing family selection.
+    #[test]
+    fn sign_value_alg_picks_the_requested_family() {
+        // A keyset carrying BOTH families (the production boot shape
+        // since load_or_generate provisions both).
+        let pq = SigningKeys::generate("MLDSA65").unwrap();
+        let rsa = SigningKeys::generate("RS256").unwrap();
+        let keys = SigningKeys {
+            active: pq.clone(),
+            all: vec![pq, rsa],
+        };
+
+        // RS256 request → RS256 token (jsonwebtoken header).
+        let token = keys.sign_value_alg(&mk_claims(), "RS256").unwrap();
+        let header_b64 = token.split('.').next().unwrap();
+        let header: serde_json::Value = serde_json::from_slice(
+            &base64::engine::general_purpose::URL_SAFE_NO_PAD
+                .decode(header_b64)
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(header["alg"], "RS256");
+        // And it verifies (kid-routed across the set).
+        let claims = keys.verify_raw(&token).unwrap();
+        assert_eq!(claims["sub"], "user-123");
+
+        // MLDSA65 request → MLDSA65 token.
+        let token = keys.sign_value_alg(&mk_claims(), "MLDSA65").unwrap();
+        let header_b64 = token.split('.').next().unwrap();
+        let header: serde_json::Value = serde_json::from_slice(
+            &base64::engine::general_purpose::URL_SAFE_NO_PAD
+                .decode(header_b64)
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(header["alg"], "MLDSA65");
+        let claims = keys.verify_raw(&token).unwrap();
+        assert_eq!(claims["sub"], "user-123");
+
+        // Empty family = process default (active key's family).
+        let token = keys.sign_value_alg(&mk_claims(), "").unwrap();
+        let claims = keys.verify_raw(&token).unwrap();
+        assert_eq!(claims["sub"], "user-123");
+
+        // Unknown family is rejected, never silently defaulted.
+        assert!(keys.sign_value_alg(&mk_claims(), "HS256").is_err());
+    }
+
+    #[test]
+    fn sign_value_alg_fails_closed_when_family_missing() {
+        // A PQ-only keyset asked for RS256: no fallback to MLDSA.
+        let keys = make_pq_keyset();
+        assert!(keys.sign_value_alg(&mk_claims(), "RS256").is_err());
     }
 
     #[test]

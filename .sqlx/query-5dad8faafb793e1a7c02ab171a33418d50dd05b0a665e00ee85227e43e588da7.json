@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT scope, org_id, env_id, profile,\n                  require_par, require_mtls, require_jarm, require_dpop,\n                  require_http_signatures, require_jwt_introspection, require_iss,\n                  max_token_lifetime, refresh_rotation\n           FROM security_profiles\n           WHERE scope = $1\n             AND (org_id IS NOT DISTINCT FROM $2)\n             AND (env_id IS NOT DISTINCT FROM $3)\n           LIMIT 1",
+  "query": "SELECT scope, org_id, env_id, profile,\n                  require_par, require_mtls, require_jarm, require_dpop,\n                  require_http_signatures, require_jwt_introspection, require_iss,\n                  max_token_lifetime, refresh_rotation, signing_alg\n           FROM security_profiles\n           WHERE scope = $1\n             AND (org_id IS NOT DISTINCT FROM $2)\n             AND (env_id IS NOT DISTINCT FROM $3)\n           LIMIT 1",
   "describe": {
     "columns": [
       {
@@ -67,6 +67,11 @@
         "ordinal": 12,
         "name": "refresh_rotation",
         "type_info": "Bool"
+      },
+      {
+        "ordinal": 13,
+        "name": "signing_alg",
+        "type_info": "Text"
       }
     ],
     "parameters": {
@@ -89,8 +94,9 @@
       false,
       false,
       false,
+      false,
       false
     ]
   },
-  "hash": "4847487a3400c65d98adf5c7fe7e42ca38c212244d84b4fec04abde719b093f0"
+  "hash": "5dad8faafb793e1a7c02ab171a33418d50dd05b0a665e00ee85227e43e588da7"
 }

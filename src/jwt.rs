@@ -387,6 +387,61 @@ pub fn at_hash(access_token: &str) -> String {
     base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(&digest[..16])
 }
 
+/// Compute the OIDC `c_hash` claim (OIDC Core §3.1.3.6): base64url of
+/// the left half of SHA-256 of the authorization code's ASCII bytes -
+/// lets the client confirm the code it received is the one the OP
+/// issued, binding the ID token to the code flow that produced it.
+/// Same construction as [`at_hash`] (DESIGN §9a.3).
+pub fn c_hash(code: &str) -> String {
+    at_hash(code)
+}
+
+/// Compute the FAPI 1.0 Advanced `s_hash` claim: base64url of the left
+/// half of SHA-256 of the `state` value's ASCII bytes (FAPI 1 §5.2.2.1 -
+/// the ID token MUST contain an s_hash when state is present). Shares
+/// the at_hash construction (DESIGN §9a.3).
+pub fn s_hash(state: &str) -> String {
+    at_hash(state)
+}
+
+/// Build the eKYC-IDA `verified_claims` object (OIDC eKYC-IDA §5,
+/// DESIGN §9a.7) from a stored credential's data. The shape is the
+/// spec's two-part structure:
+/// - `verification` - the trust framework, evidence, and time
+/// - `claims` - the verified subset the credential attests
+/// The caller (ID-token / userinfo mint) includes it ONLY when the
+/// claims request selected it (or the credential scope was consented)
+/// AND an active credential of the matching type exists.
+pub fn build_verified_claims(
+    trust_framework: &str,
+    credential_type: &str,
+    credential_data: &serde_json::Value,
+    verified_at: i64,
+) -> serde_json::Value {
+    // The verified subset: the credential's non-selective claims, minus
+    // the wallet-key binding (cnf is transport, not subject data).
+    let mut claims = credential_data
+        .as_object()
+        .cloned()
+        .unwrap_or_default();
+    claims.remove("cnf");
+    claims.remove("requested_claims");
+    claims.remove("notifications");
+    serde_json::json!({
+        "verification": {
+            "trust_framework": trust_framework,
+            "time": verified_at,
+            "evidence": [
+                {
+                    "type": credential_type,
+                    "time": verified_at,
+                }
+            ],
+        },
+        "claims": claims,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -403,9 +458,25 @@ mod tests {
     }
 
     #[test]
+    fn c_hash_matches_at_hash_construction() {
+        // OIDC Core §3.1.3.6: c_hash is the same left-half SHA-256
+        // construction applied to the authorization code.
+        assert_eq!(c_hash("some-code"), at_hash("some-code"));
+        assert_eq!(c_hash("").len(), 22);
+    }
+
+    #[test]
+    fn s_hash_matches_at_hash_construction() {
+        // FAPI 1.0 §5.2.2.1: s_hash applies the same construction to
+        // the state value.
+        assert_eq!(s_hash("some-state"), at_hash("some-state"));
+        assert_eq!(s_hash("").len(), 22);
+    }
+
+    #[test]
     fn id_token_claims_shape() {
         let claims = AuthClaims::id_token(
-            "https://auth.test.sentin8.local",
+            "https://auth.test.local.sentin8.dev",
             uuid::Uuid::nil(),
             "client_123",
             Some("nonce-abc"),
@@ -428,7 +499,7 @@ mod tests {
     #[test]
     fn id_token_omits_ungranted_claims() {
         let claims = AuthClaims::id_token(
-            "https://auth.test.sentin8.local",
+            "https://auth.test.local.sentin8.dev",
             uuid::Uuid::nil(),
             "client_123",
             None,

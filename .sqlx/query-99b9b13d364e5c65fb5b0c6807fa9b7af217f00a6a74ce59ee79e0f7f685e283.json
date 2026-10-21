@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "INSERT INTO security_profiles\n               (scope, org_id, env_id, profile,\n                require_par, require_mtls, require_jarm, require_dpop,\n                require_http_signatures, require_jwt_introspection, require_iss,\n                max_token_lifetime, refresh_rotation)\n           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)\n           ON CONFLICT (scope, org_id, env_id)\n           DO UPDATE SET\n               profile = EXCLUDED.profile,\n               require_par = EXCLUDED.require_par,\n               require_mtls = EXCLUDED.require_mtls,\n               require_jarm = EXCLUDED.require_jarm,\n               require_dpop = EXCLUDED.require_dpop,\n               require_http_signatures = EXCLUDED.require_http_signatures,\n               require_jwt_introspection = EXCLUDED.require_jwt_introspection,\n               require_iss = EXCLUDED.require_iss,\n               max_token_lifetime = EXCLUDED.max_token_lifetime,\n               refresh_rotation = EXCLUDED.refresh_rotation,\n               updated_at = now()\n           RETURNING\n               scope, org_id, env_id, profile,\n               require_par, require_mtls, require_jarm, require_dpop,\n               require_http_signatures, require_jwt_introspection, require_iss,\n               max_token_lifetime, refresh_rotation",
+  "query": "INSERT INTO security_profiles\n               (scope, org_id, env_id, profile,\n                require_par, require_mtls, require_jarm, require_dpop,\n                require_http_signatures, require_jwt_introspection, require_iss,\n                max_token_lifetime, refresh_rotation, signing_alg)\n           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)\n           ON CONFLICT (scope, org_id, env_id)\n           DO UPDATE SET\n               profile = EXCLUDED.profile,\n               require_par = EXCLUDED.require_par,\n               require_mtls = EXCLUDED.require_mtls,\n               require_jarm = EXCLUDED.require_jarm,\n               require_dpop = EXCLUDED.require_dpop,\n               require_http_signatures = EXCLUDED.require_http_signatures,\n               require_jwt_introspection = EXCLUDED.require_jwt_introspection,\n               require_iss = EXCLUDED.require_iss,\n               max_token_lifetime = EXCLUDED.max_token_lifetime,\n               refresh_rotation = EXCLUDED.refresh_rotation,\n               signing_alg = EXCLUDED.signing_alg,\n               updated_at = now()\n           RETURNING\n               scope, org_id, env_id, profile,\n               require_par, require_mtls, require_jarm, require_dpop,\n               require_http_signatures, require_jwt_introspection, require_iss,\n               max_token_lifetime, refresh_rotation, signing_alg",
   "describe": {
     "columns": [
       {
@@ -67,6 +67,11 @@
         "ordinal": 12,
         "name": "refresh_rotation",
         "type_info": "Bool"
+      },
+      {
+        "ordinal": 13,
+        "name": "signing_alg",
+        "type_info": "Text"
       }
     ],
     "parameters": {
@@ -83,7 +88,8 @@
         "Bool",
         "Bool",
         "Int4",
-        "Bool"
+        "Bool",
+        "Text"
       ]
     },
     "nullable": [
@@ -99,8 +105,9 @@
       false,
       false,
       false,
+      false,
       false
     ]
   },
-  "hash": "7c161a42fcd8a75a2e6b80cf47f2a263727578bb16d568173208f3cd66b2c01d"
+  "hash": "99b9b13d364e5c65fb5b0c6807fa9b7af217f00a6a74ce59ee79e0f7f685e283"
 }

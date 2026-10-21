@@ -67,6 +67,7 @@ graph TD
         OAUTH["oauth.rs - authorize/par/token/mtls/<br/>device/ciba/introspect/grants/revoke/userinfo"]
         DCR["dcr.rs - register/manage clients"]
         ID["identity handlers - sign-in/up, sessions,<br/>MFA, passkeys, recovery, app-passwords"]
+        LOGIN["login_page.rs - HTML login form<br/>(automated clients, §9a.8)"]
         ADM["admin.rs - users/roles/groups/clients/<br/>sessions/api-keys/memberships/audit + RFW"]
         PROV["provision.rs - /v1/admin/provision/*"]
         SCIMR["scim.rs - SCIM 2.0"]
@@ -244,7 +245,7 @@ stateDiagram-v2
 
 | Audience | Group | Gate |
 |----------|-------|------|
-| public | `/.well-known/*`, `/oauth/authorize(+continue)`, `/oauth/par`, `/oauth/token`, `/oauth/device`+`/device/verify`, `/oauth/userinfo`, `/oauth/logout`, `/v1/sign-in\|up\|out`, `/v1/branding`, `/v1/health` | session/cookie or client auth per flow; bot protection + lockout on sign-in |
+| public | `/.well-known/*`, `/oauth/authorize(+continue)`, `/oauth/par`, `/oauth/token`, `/oauth/device`+`/device/verify`, `/oauth/userinfo`, `/oauth/logout`, `/oauth/login` (HTML form, §9a.8), `/v1/sign-in\|up\|out`, `/v1/branding`, `/v1/health` | session/cookie or client auth per flow; bot protection + lockout on sign-in |
 | mTLS | `/mtls/oauth/token`, `/mtls/oauth/revoke` | cert-presence guard; client auth per DCR method - retained for out-of-band/tenant clients only; **platform workloads never fetch tokens (§4.3f)** |
 | workload | `POST /oauth/register` (DCR) | interactive clients open; **client_credentials-only requires mTLS cert** + CN ∈ `m2m_scope_grants` + scopes ⊆ grant - retained for out-of-band tenant clients; platform workloads never DCR (§4.3f) |
 | delegated | `POST /delegate/access-token` | verified M2M bearer + `sentin8:delegate:read` + cnf match |
@@ -617,17 +618,411 @@ graph TD
     OG["openapi_drift.rs (2)<br/>router ↔ spec drift guard<br/>(OAPEC §3, both directions)"]
     I2["conformance.rs (11)<br/>PAR single-use, rotation replay,<br/>DPoP/PKCE replay, CSRF"]
     I3["conformance_profiles + sec_auth2 +<br/>publisher_exchange (17)<br/>profile overrides, forged tokens,<br/>act chains"]
+    C["OIDF conformance rig (§9a)<br/>Basic+Config+Dynamic+Logout OP ·<br/>FAPI2+FAPI1+CIBA · OID4VCI/VP · IDA<br/>(local OIDF suite, classical mode)"]
     E["E2E - browser auth flows via BFF"]
     U --> I1 & I2 & I3
     OG -.fails CI on any unannotated route.-> I1
     I1 --> E
+    E --> C
+    C -.gate before any certification submission.-> SUB["OIDF submission<br/>(open-source fee waiver)"]
 ```
 
-- Deliberately not covered in-service: OpenID certification live flows
-  (external conformance suites), real IdP SSO round-trips, PQ TLS
+- OpenID certification live flows run against a dedicated local
+  conformance rig (§9a) - the OIDF suite's own tests are not part of the
+  in-service test binary. The rig is the pre-certification gate: every
+  profile in §9a must be green locally before a certification submission
+  is prepared.
+- Deliberately not covered in-service: real IdP SSO round-trips, PQ TLS
   transport (platform-level).
 
+## 9a. OIDF Certification Program (conformance rig)
+
+Sentin8:Auth is certified through the OpenID Foundation conformance
+suite (gitlab.com/openid/conformance-suite). The suite is open source
+and free to run; certification fees are waived for this project under
+the OIDF open-source project certification policy. The program covers
+every profile the platform implements except two deliberate exclusions.
+
+### 9a.1 Certification scope (target state)
+
+| Profile family | Certifiable profiles | Suite posture |
+|---|---|---|
+| OIDC Core | Basic OP, Config OP, Dynamic OP | code flow + discovery + DCR; the deprecated response types are excluded (below) |
+| OIDC Logout | RP-Initiated Logout, Back-Channel Logout | both endpoints implemented; Front-Channel Logout is an exclusion |
+| FAPI 2 | Security Profile OP, Message Signing OP | the platform-default `fapi_2` profile |
+| FAPI 1 | Advanced OP (final) | `fapi_1_advanced` profile |
+| FAPI-CIBA | Poll mode, Ping mode | `bc-authorize` + CIBA grant + ping delivery |
+| OID4VCI | Issuer | wallet credential-issuance surface |
+| OID4VP | Verifier | wallet presentation surface |
+| Identity Assurance (eKYC-IDA) | OP | `claims`/`verified_claims` at authorize |
+
+**Deliberate exclusions (design decisions, never to be reintroduced):**
+
+- **Implicit OP / Hybrid OP** - the implicit and hybrid response types
+  (`token`, `id_token`, `id_token token`, `code token`, …) are deprecated
+  by OAuth 2.1 and forbidden by FAPI. `response_types_supported` is
+  exactly `["code"]` and the authorize handler rejects any other value.
+- **Front-Channel Logout** - third-party iframes are a tracking surface
+  and silent-failure mode; logout signaling is back-channel only
+  (`backchannel_logout_supported: true` is advertised in discovery, no
+  `frontchannel_logout_uri` client field, no session iframe).
+
+### 9a.2 Local conformance rig (how the tests run)
+
+The certification pipeline is fully local and reproducible. No OIDF
+account or payment is needed until a certification submission is filed.
+
+```mermaid
+graph TD
+    subgraph RIG["conformance rig (.tmp/conformance/, docker network)"]
+        M[("mongodb<br/>suite result store")]
+        S["conformance-suite server<br/>(OIDF prebuilt image)"]
+        N["suite ingress nginx<br/>https://localhost.emobix.co.uk:8443"]
+        A["automated browser<br/>(suite Visit button / Playwright)"]
+    end
+    subgraph PLAT["local platform (classical mode)"]
+        P["Sentin8:Proxy ingress<br/>*.local.sentin8.dev:443"]
+        AUTH["sentin8:auth"]
+    end
+    N -- "redirect_uri + bc<br/>https://localhost.emobix.co.uk:8443/test/a/{alias}/callback" --> AUTH
+    S -- "PAR / token / introspect /<br/>JWKS / DCR / bc-authorize" --> P
+    A -- "sign-in + consent via UI" --> P
+    M --- S
+```
+
+**Rig mechanics:**
+
+1. **Suite stack** - the OIDF `docker-compose-prebuilt.yml` (mongo +
+   server + nginx) runs under `.tmp/conformance/` with
+   `BASE_URL=https://localhost.emobix.co.uk:8443`, pinned via
+   `IMAGE_TAG` for reproducible runs. `localhost.emobix.co.uk` resolves
+  to 127.0.0.1 in `/etc/hosts`.
+2. **Certification environment** - a dedicated org + env (`cert`) whose
+   security profile is `standard` (for OIDC Core/Config/Dynamic runs)
+   or `fapi_2` / `fapi_1_advanced` (FAPI runs). One test user with a
+   known password, seeded through the BFF API exactly like an E2E test
+   (no direct SQL - AGENTS E2E rule applies to the rig too).
+3. **Suite-visible posture (classical mode)** - the rig environment
+   sets `SENTIN8_TLS_PQ_MODE=classical` (TLS 1.2/1.3 + RSA/ECDSA certs,
+   JWT signing RS256) because the suite's Java client cannot speak the
+   platform's post-quantum-only TLS or verify ML-DSA-65 JOSE. The
+   production posture (exclusive PQ) is unchanged; classical mode is the
+   suite-compatible lens over the same protocol logic, and the
+   platform's emergency-rollback mode is exactly this mode.
+4. **Conformance clients** - registered through the DCR endpoint (for
+   Dynamic OP runs) or admin API: a `client_secret_basic` client, a
+   `client_secret_post` client, a `private_key_jwt` client, a
+   `tls_client_auth` client, and a public PKCE client, each with the
+   suite callback `https://localhost.emobix.co.uk:8443/test/a/{alias}/callback`
+   in `redirect_uris` and the CIBA ping callback in
+   `backchannel_uri`/ping fields where relevant.
+5. **Browser automation** - the suite's browser-interaction tests
+   (sign-in + consent at the hosted UI) are driven via the suite's
+   `Visit` flow with a scripted test user; the Flutter auth-ui E2E
+   driver may be reused. No captcha or bot-protection challenge is
+   present for the cert env (bot protection stays on for real tenants).
+6. **Result capture** - each run is exported from the suite
+   (`log-detail.html` / JSON) into `.tmp/conformance/results/`, and the
+   top-level `make conformance` target boots the suite, seeds, and
+   prints a per-profile pass/fail matrix.
+
+### 9a.3 Profile-by-profile implementation state
+
+| Capability | Status | Notes |
+|---|---|---|
+| Discovery (`/.well-known/openid-configuration`) | implemented | §4 surface; required-when-supported honesty fields in §9a.4 |
+| Basic OP (code + PKCE S256, ID token with `nonce`/`auth_time`/`at_hash`/`c_hash`/`s_hash`) | implemented | `c_hash` binds the ID token to the exchanged code; `s_hash` binds it to `state` when present |
+| Config OP (discovery completeness) | implemented | fields in §9a.4 |
+| Dynamic OP (DCR + management + WebFinger) | implemented | WebFinger at `/.well-known/webfinger` (`webfinger.rs`) |
+| RP-Initiated Logout | implemented | `state` echoed on the registered `post_logout_redirect_uri` redirect |
+| Back-Channel Logout | implemented | logout tokens carry `events`/`sid`; discovery advertises support |
+| `prompt=none/login/consent` + `max_age` re-auth | implemented | silent issuance or `error=login_required` back to the redirect_uri; `max_age` gates session freshness |
+| FAPI 2 Security Profile (PAR + DPoP + JARM + `iss` + rotation) | implemented | platform default |
+| FAPI 2 Message Signing | implemented | HTTP message signatures + signed introspection (RFC 9701) |
+| FAPI 1 Advanced (PAR + JAR + mTLS + JARM + `iss`) | implemented | `s_hash` on `state`; `resource` parameter rejected under the `fapi_1_advanced` profile |
+| FAPI-CIBA poll mode | implemented | `bc-authorize` + CIBA grant + discovery block |
+| FAPI-CIBA ping mode | implemented | notification POST to the registered `backchannel_client_notification_endpoint`, `client_notification_token` as bearer |
+| OID4VCI issuer | implemented | standard endpoint shapes in §9a.7 (credential-issuer metadata, `/credential`, offer URI, deferred, notification) over the existing SD-JWT/KB-JWT/status-list core |
+| OID4VP verifier | implemented | standard `/.well-known/openid-credential-verifier` metadata + `presentation_definition` handling at the wallet endpoint |
+| eKYC-IDA (claims / verified_claims) | implemented | `claims` request parameter (§5.5, narrowing selection) + `verified_claims` in ID token/userinfo from the credential store's assurance data |
+| JAR `request_uri` | implemented | the AS fetches the request-object JWT from the client-supplied URI (https scheme only), same verification path as the inline `request` parameter |
+| CIBA signed request objects | implemented | `request` JWT (or `request_uri` fetch) at `bc-authorize`, verified against the client's registered keys (CIBA §7.1) |
+
+### 9a.4 Discovery honesty fields
+
+The discovery document carries the following required-when-supported /
+recommended fields (advertised only when actually supported):
+
+- `token_endpoint_auth_signing_alg_values_supported` (required when
+  `private_key_jwt` is advertised)
+- `claims_parameter_supported: true` (completed with the claims parameter)
+- `claims_supported` (static list of the claims the ID token / userinfo
+  can carry)
+- `backchannel_logout_supported: true` + `backchannel_logout_session_supported`
+- `revocation_endpoint_auth_methods_supported`,
+  `introspection_endpoint_auth_methods_supported`
+- CIBA: `backchannel_authentication_endpoint`,
+  `backchannel_token_delivery_modes_supported: ["poll","ping"]`,
+  `backchannel_authentication_request_signing_alg_values_supported`,
+  plus `urn:openid:params:grant-type:ciba` in `grant_types_supported`
+- OAuth 2.1 posture: `code_challenge_methods_supported` already `S256`
+  only; PKCE stays mandatory for public clients.
+
+### 9a.5 Certification runbook (per profile)
+
+The rig lives in the platform group: `scripts/conformance/` (compose
+file, seed script, runbook) driven by `make conformance-up` /
+`conformance-down` / `conformance-purge` / `conformance-seed` from
+`sentin8/` (the group Makefile). The suite's Java runtime must trust the
+platform CA: import `.run/secrets/acme-ca/root-ca.crt` into the
+server container's truststore (runbook §1).
+
+1. Start the platform in classical mode (`SENTIN8_TLS_PQ_MODE=classical`
+   in the root `.env` for rig runs) and `make conformance-up`.
+2. `make conformance-seed` - provisions the certification tenant
+   (org `conformance-local`, env `cert`, test user, suite clients via
+   DCR with the suite callback) through the platform API only
+   (no direct SQL; inputs land in `.tmp/conformance/cert-user.env`).
+3. Create the test plan in the suite UI: "OpenID Connect Core: Basic OP"
+   (then Config, Dynamic; Logout: RP-Initiated + Back-Channel; FAPI 2:
+   Security Profile then Message Signing; FAPI 1: Advanced; CIBA: Poll
+   then Ping; OID4VCI issuer; OID4VP verifier; IDA) with alias
+   `sentin8-local` and the cert env's discovery URL.
+4. Run each test; the suite's browser automation completes sign-in via
+   the HTML login page (§9a.8) with the seeded test user.
+5. All tests must be PASSED / WARNING / REVIEW (no FAILED, no
+   INTERRUPTED) before the profile is considered green locally.
+6. Export logs to `.tmp/conformance/results/`, then `make conformance-down`.
+
+### 9a.6 Sequence - a suite browser interaction (authorize round-trip)
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant SU as suite client
+    participant NG as suite nginx (8443)
+    participant AU as suite browser automation
+    participant OP as sentin8:auth (cert env)
+    SU->>OP: PAR /oauth/par (client auth) → request_uri
+    SU->>NG: redirect browser → /oauth/authorize?client_id&request_uri
+    AU->>OP: GET /oauth/authorize → login-page redirect (§9a.8)
+    AU->>OP: POST /oauth/login (seeded user) → session cookie
+    OP-->>NG: 302 to suite callback?code=…&state=…&iss=…
+    SU->>OP: POST /oauth/token (code + PKCE verifier)
+    OP-->>SU: access / refresh / id_token (RS256 in classical mode)
+    SU->>SU: verify ID token against /oauth/grants? no - JWKS URI
+```
+
+### 9a.7 Wire-level certification surfaces
+
+**JAR `request_uri` (RFC 9101 §5.2.1).** When the authorize request
+carries `request_uri` (and it is NOT a PAR urn), the AS fetches the
+request-object JWT from the URI — `https` scheme only, response body
+size-capped, 10s timeout — then runs the same verification path as the
+inline `request` parameter: unverified decode, `validate_jar_claims`,
+`exp` freshness (±10 min), signature against the client's registered
+`jwks`/`jwks_uri`. The fetched JWT overlays inline params identically.
+This is what the FAPI 1 Advanced suite exercises (it pushes request
+objects by URI).
+
+**CIBA signed request objects (CIBA §7.1).** `bc-authorize` accepts a
+`request` JWT (or `request_uri` fetch, same mechanics as above) signed
+by the client's registered keys. Its claims carry the CIBA parameters
+(`scope`, `client_notification_token`, `request_mode`, `login_hint`,
+`binding_message`, `requested_expiry`, `exp`). On success the JWT's
+parameters REPLACE the form parameters (signed wins); verification is
+the same verifier as JAR's. Unsigned (form) parameters remain supported
+for poll-mode and platform-internal callers.
+
+**OID4VCI issuer (SD-JWT VC profile).** Standard endpoint shapes over
+the existing SD-JWT/KB-JWT/Status-List core, all issuer-hosted on auth:
+
+- `/.well-known/openid-credential-issuer` — metadata:
+  `credential_issuer`, `credential_configurations_supported` (one entry
+  per credential type auth mints), `credential_endpoint`,
+  `deferred_credential_endpoint`, `notification_endpoint`,
+  `credential_issuer_session` metadata as needed by the flow variant.
+- `POST /oauth/credential` — single-credential issuance request:
+  `credential_configuration_id`, optional `proof` (a `jwt` proof holding
+  the wallet's attestation key: `iss=client_id`, `aud=issuer`, `exp`,
+  nonce-bound); authorization rides the existing grant families
+  (authorization_code with the credential scope via the standard
+  authorize flow, or pre-authorized_code for QR-initiated flows).
+  Response: the signed SD-JWT credential (format `sd-jwt`), or
+  `transaction_id` + HTTP 202 for deferred issuance.
+- `POST /oauth/deferred_credential` — poll a `transaction_id` →
+  credential once minted.
+- `POST /oauth/notifications` — the wallet's events (credential
+  received/failed) are recorded against the credential record.
+- The internal offer record (credentials table) is the same store; the
+  standard `/oauth/credentials` endpoints remain as the platform-native
+  alias surface.
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant W as wallet
+    participant OP as sentin8:auth issuer
+    W->>OP: GET /.well-known/openid-credential-issuer
+    OP-->>W: credential_configurations_supported
+    W->>OP: authorize (scope incl. credential) → code
+    W->>OP: POST /oauth/token (code) → access_token
+    W->>OP: POST /oauth/credential (proof jwt, cnf key)
+    alt immediate
+        OP-->>W: 200 sd-jwt credential
+    else deferred
+        OP-->>W: 202 {transaction_id}
+        W->>OP: POST /oauth/deferred_credential (transaction_id)
+        OP-->>W: 200 sd-jwt credential
+    end
+    W->>OP: POST /oauth/notifications (credential received)
+```
+
+**OID4VP verifier.** `/.well-known/openid-credential-verifier` publishes
+the verifier metadata (redirect_uris, presentation definitions
+supported, client_id schemes). The existing wallet sign-in endpoint
+accepts a standard `presentation_definition` (or by reference:
+`presentation_definition_uri`) alongside the existing SD-JWT VP
+handling; the request object binding (`client_id`,
+`client_id_uri_scheme`) follows OID4VP §5.
+
+**eKYC-IDA `verified_claims` (OIDC eKYC-IDA §5).** The `claims` request
+parameter (`id_token`/`userinfo` sub-objects, `essential` flags) is
+accepted at authorize and applied at the ID-token/userinfo mint as a
+claim SELECTION (never widening — a claim the consented scope did not
+grant stays absent). When the request selects `verified_claims` (or the
+user holds an active wallet credential of the matching type), the
+ID token/userinfo carries `verified_claims` built from the credentials
+store: `verification` (trust framework, evidence, time) + `claims`
+(the verified subset), per the eKYC-IDA claim shape. `claims_supported`
+lists `verified_claims`; discovery advertises
+`claims_parameter_supported: true`.
+
+### 9a.8 Server-rendered HTML login page (automated-client surface)
+
+The hosted UI at `/sign-in` is the full **Flutter auth-ui** (canvas
+SPA) — the product surface for humans. Canvas apps expose no DOM input
+elements, so DOM-driven automation (the OIDF conformance suite's
+browser runner, Selenium-class RPs, CI clients) cannot complete the
+interactive login. Auth therefore serves a **server-rendered HTML
+login page** as a first-class surface for automated clients — the
+human flow stays on the Flutter UI.
+
+**Endpoints (both public, form-encoded; DESIGN §4 table updated):**
+
+- `GET /oauth/login` — the HTML page. The authorize handler's sign-in
+  redirect targets this path for OAuth flows (the `/sign-in` SPA route
+  remains for human navigation and app-initiated sign-in). The page
+  carries the OAuth context in a signed hidden field (HMAC over the
+  authorize params, TTL 10 min — the form cannot be used to steer a
+  different authorization request) plus visible fields with stable
+  element ids the suite's browser commands drive:
+  `input#username`, `input#password`, `input#submit` (`type=submit`).
+- `POST /oauth/login` — the form handler: verifies the context HMAC,
+  authenticates via the same password path as `POST /v1/sign-in`
+  (shared credential + lockout + rate-limit logic), creates the
+  session cookie, then re-dispatches the preserved authorize request
+  through the authorize-continue code path. Wrong credentials
+  re-render the page with `#error_message` visible (the suite's
+  negative tests read it); a valid login issues the code and 302s to
+  the client's `redirect_uri`.
+
+**Why a form POST, not fetch/XHR:** the page is deliberately
+JavaScript-free — a canvas-free, JS-free form works under every
+headless driver. The CSRF posture matches `POST /v1/sign-in` (the
+login form IS the cross-site concern; the OAuth context HMAC binds the
+form to one authorize request, and the session cookie is set with the
+platform's same-site/Csrf cookie attributes).
+
+**First-party consent bypass keeps the flow one-page:** the platform's
+existing `consent_required=false` client flag (§4.16) makes the login
+page the ONLY interactive step — after authentication the code is
+issued directly. Conformance clients register with the flag set, so
+the suite's browser automation completes in one form submission.
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant SU as suite client (OIDF)
+    participant BR as suite browser (DOM driver)
+    participant OP as sentin8:auth
+    SU->>OP: GET /oauth/authorize (code flow)
+    OP-->>BR: 302 /oauth/login (signed context)
+    BR->>OP: GET /oauth/login
+    OP-->>BR: 200 HTML form (#username, #password, #submit)
+    BR->>OP: POST /oauth/login (ctx, credentials)
+    alt invalid credentials
+        OP-->>BR: 200 re-render (#error_message)
+    else valid
+        OP->>OP: session create (shared /v1/sign-in path)
+        OP->>OP: authorize-continue (code mint, PKCE binding)
+        OP-->>SU: 302 redirect_uri?code=…&state=…&iss=…
+    end
+    SU->>OP: POST /oauth/token (code + verifier)
+```
+
+### 9a.9 Per-tenant JWT signing algorithm (security-profile plane)
+
+`SENTIN8_TLS_PQ_MODE` is a **process-level** switch that selects the JWT
+signing algorithm family (`MLDSA65` vs `RS256`) for the whole service.
+That is the right shape for the **TLS transport** half it also controls
+(the ClientHello's key exchange completes before the SNI hostname - and
+therefore the tenant - is known, so per-tenant TLS groups are
+physically impossible on one listening socket). But the **JWT signing**
+half is decided per-request, after tenant resolution - and a fleet-wide
+classical flip just to serve one suite-compatible tenant (the
+certification rig) demotes every other tenant's token security.
+
+The target state moves JWT signing onto the security-profile plane:
+
+- `security_profiles` gains a `signing_alg` column
+  (`MLDSA65` | `RS256`, default `MLDSA65`), resolved
+  platform → org → env exactly like the profile flags
+  (`resolve_security_profile`).
+- `SigningKeys` loads **both** algorithm key sets at boot (it already
+  verifies both for rotation overlap; both are persisted). The active
+  key per family is selected at **sign time**: `sign_value_alg(claims,
+  alg)` picks the ML-DSA or RSA active key from the requested family.
+  Absent key material for a family fails loudly (it is generated on
+  boot, so absence means the store was tampered with).
+- Every mint site that resolves a tenant context (ID token, access
+  token, refresh token, JARM, logout token, SD-JWT credential) signs
+  with the caller's env-resolved `signing_alg`. `SENTIN8_TLS_PQ_MODE`
+  remains the **process default** for contexts with no profile row
+  (the platform-plane row seeds `MLDSA65`, so the platform keeps PQ
+  signatures everywhere by default).
+- Discovery/JWKS honesty: the JWKS endpoint publishes **all** persisted
+  keys (both families - verifiers need the overlap set), and discovery
+  advertises the **caller's env-resolved** `id_token_signing_alg_values_supported`
+  (the resolved family), so a suite tenant advertises `RS256` while the
+  platform plane advertises `MLDSA65`.
+- **Acme cert families are out of scope here**: leaf certs are minted
+  per-hostname by Acme; the family follows the TLS transport mode
+  (process-level) - the per-tenant setting governs JWTs only.
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant C as client (cert env)
+    participant OP as sentin8:auth
+    participant P as security_profiles (env row)
+    OP->>P: resolve_security_profile(env)
+    P-->>OP: signing_alg = RS256 (cert env) / MLDSA65 (default)
+    OP->>OP: sign_value_alg(claims, alg) - active key of that family
+    OP-->>C: id_token (alg per the env's row; JWKS serves both families)
+    C->>C: verify via JWKS (kid-routed, family-agnostic)
+```
+
+**Why not per-tenant keys?** One key set per family (platform-global)
+keeps rotation (`jwks rotation timer`) and revocation semantics
+unchanged; per-tenant keys multiply rotation surface ×N with no
+security gain at the JWT layer (the tenant boundary is the claim set,
+not the key). Rejected as future-work if a tenant ever demands BYOK.
+
 ## 10. Open Questions
+
+- Webhook delivery gains a DLQ replay surface mirroring post's `replay_dlq`
+  shape (`POST /v1/admin/webhooks/attempts/{id}/replay`).
 
 - SAML flows beyond metadata/ACS are a declared non-goal for the platform IdP
   (enterprise SSO is served by OIDC federation).

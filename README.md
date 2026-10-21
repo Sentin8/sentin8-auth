@@ -28,6 +28,14 @@ Every other service verifies tokens it issues; no service mints its own.
 - **Conformance is a feature.** FAPI 2.0, OIDC conformance profiles,
   JAR/JARM, DPoP, and SD-JWT are implemented as first-class modes, not
   best-effort approximations - the platform targets regulated verticals.
+- **OIDF certification is a program, not an event.** The OIDF conformance
+  suite runs locally against a dedicated rig (classical TLS/RS256 lens over
+  the same protocol logic) as the gate before any certification submission.
+  Scope: OIDC Basic/Config/Dynamic + RP-Initiated/Back-Channel Logout,
+  FAPI 2 (Security Profile + Message Signing), FAPI 1 Advanced, FAPI-CIBA
+  (poll + ping), OID4VCI/OID4VP, and eKYC-IDA. Excluded by design: Implicit
+  and Hybrid OP (deprecated response types), Front-Channel Logout (tracking
+  surface). See `DESIGN.md` §9a.
 
 ## 3. Architecture & High-Level Design
 
