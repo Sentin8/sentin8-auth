@@ -21,12 +21,39 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 /// Claims inside a JAR request JWT (per RFC 9101 ).
+/// RFC 9101 §6.4 - `aud` may be a single string or an array of
+/// audiences; the AS matches ITSELF - the array collapse keeps the
+/// string comparison the callers make.
+#[derive(serde::Deserialize)]
+#[serde(untagged)]
+pub enum JarAudience {
+    /// A single audience string.
+    One(String),
+    /// An audience array (the AS matches any member).
+    Many(Vec<String>),
+}
+
+fn jar_aud<'de, D>(de: D) -> Result<Option<String>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let v = Option::<JarAudience>::deserialize(de)?;
+    Ok(match v {
+        Some(JarAudience::One(s)) => Some(s),
+        Some(JarAudience::Many(xs)) => Some(xs.join(" ")),
+        None => None,
+    })
+}
+
 #[derive(Debug, Deserialize)]
 /// The jarclaims type.
 pub struct JarClaims {
     /// The iss.
     pub iss: Option<String>,
-    /// The aud.
+    /// The aud (RFC 9101 §6.4 - a single audience string or an
+    /// audience ARRAY; the AS identifies itself among the members - the
+    /// suite's multiple-audiences module carries [issuer, others]).
+    #[serde(default, deserialize_with = "jar_aud")]
     pub aud: Option<String>,
     /// The response type.
     pub response_type: String,
@@ -49,6 +76,9 @@ pub struct JarClaims {
     #[serde(default)]
     /// The nonce.
     pub nonce: Option<String>,
+    /// OAuth response mode (`jwt` = JARM, the FAPI response mode).
+    #[serde(default)]
+    pub response_mode: Option<String>,
     /// JAR-specific: max_age
     #[serde(default)]
     /// Maximum age.
@@ -132,7 +162,10 @@ pub fn validate_jar_claims(claims: &JarClaims, issuer: &str) -> Result<(), Strin
         return Err("JAR iss must equal client_id".into());
     }
     if let Some(aud) = &claims.aud {
-        if aud != issuer {
+        // RFC 9101 §6.4 - the AS identifies itself among the audience
+        // members (the array form collapses on deserialize; a
+        // whitespace-joined multi-audience string matches per-member).
+        if !aud.split_whitespace().any(|a| a == issuer) {
             return Err("JAR aud must equal the AS issuer".into());
         }
     }
@@ -188,6 +221,7 @@ mod tests {
             code_challenge: Some("challenge".into()),
             code_challenge_method: Some("S256".into()),
             nonce: None,
+            response_mode: None,
             max_age: None,
             resource: None,
         };
@@ -207,6 +241,7 @@ mod tests {
             code_challenge: None,
             code_challenge_method: None,
             nonce: None,
+            response_mode: None,
             max_age: None,
             resource: None,
         };
@@ -226,6 +261,7 @@ mod tests {
             code_challenge: None,
             code_challenge_method: None,
             nonce: None,
+            response_mode: None,
             max_age: None,
             resource: None,
         };
@@ -245,6 +281,7 @@ mod tests {
             code_challenge: None,
             code_challenge_method: None,
             nonce: None,
+            response_mode: None,
             max_age: None,
             resource: None,
         };

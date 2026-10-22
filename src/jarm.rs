@@ -95,16 +95,26 @@ pub fn build_jarm_error(
 
 /// Sign the JARM JWT using the AS's signing key.
 /// Sign JARM JWT.
-pub fn sign_jarm_jwt(keys: &SigningKeys, claims: &JarmClaims) -> Result<String, String> {
+pub fn sign_jarm_jwt(
+    keys: &SigningKeys,
+    claims: &JarmClaims,
+    alg: &str,
+) -> Result<String, String> {
     let value = serde_json::to_value(claims).map_err(|e| format!("serialize JARM claims: {e}"))?;
-    keys.sign_value(&value)
+    // The profile's signing alg (ES256 in the FAPI postures) - the JARM
+    // response validates against the ALGS discovery advertises.
+    keys.sign_value_alg(&value, alg)
 }
 
 /// Build the redirect URL for a JARM response.
 /// The JWT is passed as the `response` query parameter.
 /// Build JARM redirect URL.
 pub fn build_jarm_redirect_url(redirect_uri: &str, jwt: &str) -> String {
-    format!("{redirect_uri}?response={jwt}")
+    // The redirect may ALREADY carry a query string (the registered
+    // redirect_uri's own per-request params - the suite's client2
+    // template) - extend with `&`, never a second `?`.
+    let sep = if redirect_uri.contains('?') { "&" } else { "?" };
+    format!("{redirect_uri}{sep}response={jwt}")
 }
 
 /// Check if the request uses `response_mode=jwt`.

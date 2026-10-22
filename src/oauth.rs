@@ -216,7 +216,14 @@ async fn verify_client_assertion(
     // fail (a multi-audience assertion cannot be audience-checked for a
     // single-receiver endpoint).
     let issuer = resolve_issuer(&state.config, headers);
-    let aud_ok = matches!(aud_json, Some(serde_json::Value::String(a)) if *a == issuer);
+    // RFC 8705 §5 - when the OP advertises `mtls_endpoint_aliases`, the
+    // mTLS connections' assertions target the ALIASED token endpoint
+    // (`{issuer}/mtls/oauth/token`) - the audience = the endpoint being
+    // called. Both audiences are valid (the suite's FAPI1 modules push
+    // through the alias).
+    let mtls_aud = format!("{issuer}/mtls/oauth/token");
+    let aud_ok = matches!(aud_json, Some(serde_json::Value::String(a)) if *a == issuer)
+        || matches!(aud_json, Some(serde_json::Value::String(a)) if *a == mtls_aud);
     if !aud_ok {
         return Err((
             StatusCode::UNAUTHORIZED,
@@ -1127,13 +1134,24 @@ pub async fn discovery(
             vec![]
         },
         authorization_response_iss_parameter_supported: profile.require_iss,
-        request_object_signing_alg_values_supported: vec![
-            crate::jwks::active_signing_alg().into(),
-            // RFC 9101 §5 - unsigned request objects (alg none) are
-            // accepted (TLS transport + client binding); §9a.10 honesty:
-            // advertised = served.
-            "none".into(),
-        ],
+        // FAPI1-ADV/FAPI2-SP (the suite's FAPICheckDiscEndpointRequestObject
+        // SigningAlgValuesSupported): the FAPI postures advertise the
+        // mandated set {PS256, ES256} (the client-side request objects -
+        // every member IS verifiable: verify_client_signed_jwt checks
+        // per-key) + `none` (RFC 9101 §5 - unsigned objects, TLS-bound).
+        request_object_signing_alg_values_supported: if profile.require_par || profile.require_mtls {
+            vec![
+                "PS256".into(),
+                "ES256".into(),
+                crate::jwks::active_signing_alg().into(),
+                "none".into(),
+            ]
+        } else {
+            vec![
+                crate::jwks::active_signing_alg().into(),
+                "none".into(),
+            ]
+        },
         request_parameter_supported: true,
         request_uri_parameter_supported: true,
         // PAR endpoint - present when require_par is true .
@@ -2073,10 +2091,17 @@ async fn resolve_par_request(state: &AppState, request_uri: &str) -> Option<serd
 #[derive(Debug, Deserialize, utoipa::ToSchema)]
 /// Request body for par.
 pub struct ParRequest {
-    /// The response type.
-    pub response_type: String,
-    /// client identifier.
-    pub client_id: String,
+    /// The response type (optional at the FORM layer: a JAR push
+    /// carries ONLY the request object - the params ride inside it,
+    /// RFC 9101 §4; the missing-form 422 the suite's CallPAREndpoint
+    /// saw is a deserializer rejection, not an OAuth error).
+    #[serde(default)]
+    pub response_type: Option<String>,
+    /// Client identifier (optional at the FORM layer - see
+    /// `response_type`; the JAR's client or the client_assertion
+    /// identifies the client).
+    #[serde(default)]
+    pub client_id: Option<String>,
     /// The redirect URI (optional at the FORM layer: a miss reaches the
     /// handler and answers the OAUTH JSON error shape - RFC 9126's
     /// `invalid_request` - instead of a text 422 from the deserializer).
@@ -2139,6 +2164,12 @@ pub struct ParRequest {
     /// negative).
     #[serde(default)]
     pub request_uri: Option<String>,
+    /// OAuth response mode (`query` default, `jwt` for JARM) - the
+    /// JAR-only push carries it INSIDE the request object; the form
+    /// overlay applies it to the stored record so the authorize +
+    /// continue paths honor JARM (FAPI1/2).
+    #[serde(default)]
+    pub response_mode: Option<String>,
 }
 
 #[derive(Serialize, utoipa::ToSchema)]
@@ -2192,13 +2223,6 @@ pub async fn pushed_authorization_request(
         )
             .into_response()
     };
-    if !crate::oauth::is_supported_response_type(&req.response_type) {
-        return Err(json_error(
-            StatusCode::BAD_REQUEST,
-            "unsupported_response_type",
-            "unsupported response_type (the standard five per OIDC Core)".into(),
-        ));
-    }
     // RFC 9126 §2 - `request_uri` is the PAR RESPONSE payload, never a
     // request parameter: a push carrying it as a form param is malformed
     // and rejects BEFORE client authentication (the suite's
@@ -2247,11 +2271,27 @@ pub async fn pushed_authorization_request(
     }
 
     // SEC- - PAR pushes require client authentication (RFC 9126
-    // ); the redirect_uri must be registered for the client.
+    // ); the redirect_uri must be registered for the client. A JAR-only
+    // push may omit the FORM client_id: the client_assertion's verified
+    // `iss`/`sub` (or the JAR's client_id claim) identifies it.
+    let form_client_id = req.client_id.clone().or_else(|| {
+        req.client_assertion
+            .as_deref()
+            .map(crate::enterprise_connections::decode_jwt_unverified)
+            .and_then(|r| r.ok())
+            .and_then(|c| c.get("iss").and_then(|v| v.as_str()).map(|s| s.to_string()))
+    });
+    if form_client_id.is_none() {
+        return Err(json_error(
+            StatusCode::BAD_REQUEST,
+            "invalid_request",
+            "client_id is required (form, request object, or client assertion)".into(),
+        ));
+    }
     let client = authenticate_client(
         &state,
         &headers,
-        Some(req.client_id.as_str()),
+        form_client_id.as_deref(),
         req.client_secret.as_deref(),
         req.client_assertion.as_deref(),
         true,
@@ -2261,7 +2301,20 @@ pub async fn pushed_authorization_request(
     .map_err(|(status, msg)| {
         json_error(status, "invalid_client", msg)
     })?;
-    let pushed_redirect_uri = req.redirect_uri.clone().unwrap_or_default();
+    // RFC 9101 §4 - the JAR-only push carries redirect_uri INSIDE the
+    // request object: the effective redirect validates after the
+    // overlay (the form's value wins when present).
+    let jar_redirect = req
+        .request
+        .as_deref()
+        .filter(|s| !s.is_empty())
+        .and_then(|jwt| crate::jar::decode_jar_unverified(jwt).ok())
+        .map(|c| c.redirect_uri);
+    let pushed_redirect_uri = req
+        .redirect_uri
+        .clone()
+        .or(jar_redirect)
+        .unwrap_or_default();
     if !redirect_uri_registered(&client.redirect_uris, &pushed_redirect_uri) {
         return Err(json_error(
             StatusCode::BAD_REQUEST,
@@ -2312,15 +2365,34 @@ pub async fn pushed_authorization_request(
         }
     }
 
+    // No JAR: the form's own response_type validates (the standard five).
+    if req.request.as_deref().map(str::trim).unwrap_or("").is_empty()
+        && !crate::oauth::is_supported_response_type(
+            req.response_type.as_deref().unwrap_or(""),
+        )
+    {
+        return Err(json_error(
+            StatusCode::BAD_REQUEST,
+            "unsupported_response_type",
+            "unsupported response_type (the standard five per OIDC Core)".into(),
+        ));
+    }
+
     // The pushed request object (FAPI 2.0 / JAR): when present it is
     // the AUTHORITATIVE parameter set - verify its signature against
     // the client's registered keys and overlay its params over the
     // inline ones before the record is stored (the authorize step
     // then resolves nonce/dpop_jkt exactly as the suite pushed them).
+    // RFC 9101 §4 - a JAR push may carry ALL params inside the object:
+    // the effective response_type validates after the overlay.
     let mut params_overlay: serde_json::Map<String, serde_json::Value> =
         serde_json::Map::new();
     if let Some(request_jwt) = req.request.as_deref().filter(|s| !s.is_empty()) {
-        let jar = verify_jar_request(&state, &client.client_id, request_jwt, &state.config.issuer)
+        // The JAR's aud = the ISSUER the client saw in DISCOVERY - the
+        // host-resolved issuer (x-sentin8-hostname/Host), not the static
+        // platform config (multi-tenant instance).
+        let issuer = resolve_issuer(&state.config, &headers);
+        let jar = verify_jar_request(&state, &client.client_id, request_jwt, &issuer)
             .await
             .map_err(|e| {
                     json_error(
@@ -2329,6 +2401,18 @@ pub async fn pushed_authorization_request(
                         format!("pushed request object rejected: {e}"),
                     )
                 })?;
+        let effective = if jar.response_type.is_empty() {
+            req.response_type.clone().unwrap_or_default()
+        } else {
+            jar.response_type.clone()
+        };
+        if !crate::oauth::is_supported_response_type(&effective) {
+            return Err(json_error(
+                StatusCode::BAD_REQUEST,
+                "unsupported_response_type",
+                "unsupported response_type (the standard five per OIDC Core)".into(),
+            ));
+        }
         let stored = serde_json::json!({
             "response_type": jar.response_type,
             "client_id": jar.client_id,
@@ -2338,6 +2422,7 @@ pub async fn pushed_authorization_request(
             "code_challenge": jar.code_challenge,
             "code_challenge_method": jar.code_challenge_method,
             "nonce": jar.nonce,
+            "response_mode": jar.response_mode,
         });
         if let Some(obj) = stored.as_object() {
             for (k, v) in obj {
@@ -2376,6 +2461,7 @@ pub async fn pushed_authorization_request(
         "resource": req.resource,
         "dpop_jkt": req.dpop_jkt,
         "authorization_details": authorization_details,
+        "response_mode": req.response_mode,
     });
     // The PAR's verified proof binds the request (overrides the absent
     // pre-bound value).
@@ -2585,6 +2671,9 @@ pub async fn authorize(
                 if let Some(ccm) = stored.get("code_challenge_method").and_then(|v| v.as_str()) {
                     params.code_challenge_method = Some(ccm.to_string());
                 }
+                if let Some(rm) = stored.get("response_mode").and_then(|v| v.as_str()) {
+                    params.response_mode = Some(rm.to_string());
+                }
                 if let Some(n) = stored.get("nonce").and_then(|v| v.as_str()) {
                     params.nonce = Some(n.to_string());
                 }
@@ -2660,7 +2749,7 @@ pub async fn authorize(
         None
     };
     if let Some(request_jwt) = jar_jwt {
-        match verify_jar_request(&state, &params.client_id, &request_jwt, &state.config.issuer).await
+        match verify_jar_request(&state, &params.client_id, &request_jwt, &resolve_issuer(&state.config, &headers)).await
         {
             Ok(jar) => {
                 if !jar.redirect_uri.is_empty() {
@@ -2978,7 +3067,7 @@ pub async fn authorize(
                         Some(&params.state)
                     },
                 );
-                if let Ok(jwt) = crate::jarm::sign_jarm_jwt(&state.keys, &jarm_claims) {
+                if let Ok(jwt) = crate::jarm::sign_jarm_jwt(&state.keys, &jarm_claims, &profile.signing_alg) {
                     let url = crate::jarm::build_jarm_redirect_url(&params.redirect_uri, &jwt);
                     return (StatusCode::FOUND, [("location", url)]).into_response();
                 }
@@ -3202,12 +3291,12 @@ pub async fn authorize(
         }
         if profile.require_jarm && params.response_mode.as_deref() == Some("jwt") {
             let jarm_claims = crate::jarm::build_jarm_success(
-                &state.config.issuer,
+                &resolve_issuer(&state.config, &headers),
                 &params.client_id,
                 &code,
                 if params.state.is_empty() { None } else { Some(&params.state) },
             );
-            if let Ok(jwt) = crate::jarm::sign_jarm_jwt(&state.keys, &jarm_claims) {
+            if let Ok(jwt) = crate::jarm::sign_jarm_jwt(&state.keys, &jarm_claims, &profile.signing_alg) {
                 let url = crate::jarm::build_jarm_redirect_url(&params.redirect_uri, &jwt);
                 return (StatusCode::FOUND, [("location", url)]).into_response();
             }
@@ -3287,12 +3376,12 @@ pub async fn authorize(
                     }
                     if profile.require_jarm && params.response_mode.as_deref() == Some("jwt") {
                         let jarm_claims = crate::jarm::build_jarm_success(
-                            &state.config.issuer,
+                            &resolve_issuer(&state.config, &headers),
                             &params.client_id,
                             &code,
                             Some(&params.state),
                         );
-                        if let Ok(jwt) = crate::jarm::sign_jarm_jwt(&state.keys, &jarm_claims) {
+                        if let Ok(jwt) = crate::jarm::sign_jarm_jwt(&state.keys, &jarm_claims, &profile.signing_alg) {
                             let url = crate::jarm::build_jarm_redirect_url(&params.redirect_uri, &jwt);
                             return (StatusCode::FOUND, [("location", url)]).into_response();
                         }
@@ -3537,6 +3626,24 @@ pub async fn authorize_continue(
     // to the redirect_uri with error=access_denied + state; OAuth2-iss
     // adds iss under require_iss). NO code is minted.
     if req.deny.unwrap_or(false) {
+        // JARM (response_mode=jwt) wraps ERROR responses too - the FAPI
+        // user-rejects module extracts the `response` JWT from the
+        // callback (the plain access_denied query is the non-JARM form).
+        if profile.require_jarm && req.response_mode.as_deref() == Some("jwt") {
+            let jarm_claims = crate::jarm::build_jarm_error(
+                &resolve_issuer(&state.config, &headers),
+                &req.client_id,
+                "access_denied",
+                None,
+                if req.state.is_empty() { None } else { Some(&req.state) },
+            );
+            let jarm_jwt = crate::jarm::sign_jarm_jwt(&state.keys, &jarm_claims, &profile.signing_alg)
+                .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?;
+            return Ok(Json(serde_json::json!({
+                "redirect_url": crate::jarm::build_jarm_redirect_url(&req.redirect_uri, &jarm_jwt)
+            }))
+            .into_response());
+        }
         let mut url = build_callback_url(
             &req.redirect_uri,
             "error=access_denied",
@@ -3651,12 +3758,12 @@ pub async fn authorize_continue(
     // `response` query parameter instead of plain query params.
     let response_url = if profile.require_jarm && req.response_mode.as_deref() == Some("jwt") {
         let jarm_claims = crate::jarm::build_jarm_success(
-            &state.config.issuer,
+            &resolve_issuer(&state.config, &headers),
             &req.client_id,
             &code,
             Some(&req.state),
         );
-        let jarm_jwt = crate::jarm::sign_jarm_jwt(&state.keys, &jarm_claims)
+        let jarm_jwt = crate::jarm::sign_jarm_jwt(&state.keys, &jarm_claims, &profile.signing_alg)
             .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?;
         crate::jarm::build_jarm_redirect_url(&req.redirect_uri, &jarm_jwt)
     } else {
@@ -4468,7 +4575,16 @@ async fn handle_code_exchange(
     // bind consumes the value). The mTLS cells sender-constrain via the
     // CERTIFICATE - a cnf.x5t#S256-bound token rides the plain 'Bearer'
     // scheme (RFC 8705 §3: the CERT is the sender, no proof header).
-    let mtls_cnf = client.cert_thumbprint.clone();
+    // RFC 8705 §3 - the TLS connection's OWN client certificate binds
+    // too: a mTLS-connected request (the proxy injects the presented
+    // cert's thumbprint) mints a certificate-bound token even when the
+    // client's auth method is not the cert itself (FAPI1's
+    // private_key_jwt clients still reach the token endpoint over mTLS).
+    let mtls_cnf = client.cert_thumbprint.clone().or_else(|| {
+        crate::mtls::extract_mtls_identity(&headers)
+            .map(|(t, _)| t)
+            .filter(|t| !t.is_empty())
+    });
     let response_token_type = if bound_jkt.is_some() || mtls_cnf.is_some() {
         if bound_jkt.is_some() {
             "DPoP"
@@ -4935,7 +5051,16 @@ async fn handle_refresh(
     // the client CERTIFICATE (cnf.x5t#S256) instead: the refresh call
     // re-presents the cert (the refresh binding below keeps the token's
     // own cnf - the cert identity never leaves the connection).
-    let mtls_cnf = client.cert_thumbprint.clone();
+    // RFC 8705 §3 - the TLS connection's OWN client certificate binds
+    // too: a mTLS-connected request (the proxy injects the presented
+    // cert's thumbprint) mints a certificate-bound token even when the
+    // client's auth method is not the cert itself (FAPI1's
+    // private_key_jwt clients still reach the token endpoint over mTLS).
+    let mtls_cnf = client.cert_thumbprint.clone().or_else(|| {
+        crate::mtls::extract_mtls_identity(&headers)
+            .map(|(t, _)| t)
+            .filter(|t| !t.is_empty())
+    });
     let response_token_type = if dpop_jkt.is_some() { "DPoP" } else { "Bearer" };
     if let Some(jkt) = dpop_jkt {
         access_claims.cnf = Some(crate::dpop::build_dpop_cnf_claim(jkt));
@@ -6112,6 +6237,28 @@ pub async fn revoke(
     Ok(StatusCode::OK)
 }
 
+/// FAPI 1.0 §6.2.2-1 interaction id: the resource endpoint MUST return
+/// `x-fapi-interaction-id` (echoing the request's value, or a fresh
+/// UUID when absent). Applies to the userinfo resource surface the
+/// FAPI plans exercise.
+fn userinfo_json(
+    headers: &HeaderMap,
+    claims: OidcClaims,
+) -> axum::response::Response {
+    use axum::response::IntoResponse;
+    let interaction = headers
+        .get("x-fapi-interaction-id")
+        .and_then(|v| v.to_str().ok())
+        .filter(|v| !v.trim().is_empty())
+        .map(str::to_string)
+        .unwrap_or_else(|| Uuid::new_v4().to_string());
+    (
+        [("x-fapi-interaction-id", interaction)],
+        Json(claims),
+    )
+        .into_response()
+}
+
 // ── UserInfo ────────────────────────────────────────────────────────────
 
 /// Handle userinfo.
@@ -6129,7 +6276,7 @@ pub async fn userinfo(
     State(state): State<AppState>,
     headers: HeaderMap,
     body: axum::body::Bytes,
-) -> Result<Json<OidcClaims>, (StatusCode, String)> {
+) -> Result<axum::response::Response, (StatusCode, String)> {
     // OIDC Core §5.3.1: the access token rides the Authorization header
     // (GET or POST), or the form body on POST (`access_token=...`). The
     // suite's post-body variant uses the form; header takes precedence.
@@ -6332,7 +6479,7 @@ pub async fn userinfo(
         let scopes = crate::handlers::fetch_role_scopes(&state.pool, act_user_id)
             .await
             .unwrap_or_default();
-        return Ok(Json(OidcClaims {
+        return Ok(userinfo_json(&headers, OidcClaims {
             sub: act_user_id.to_string(),
             email: Some(email),
             given_name: first_name,
@@ -6471,7 +6618,7 @@ pub async fn userinfo(
                     .map(str::to_string)
                     .filter(|v| !v.is_empty())
             };
-            return Ok(Json(OidcClaims {
+            return Ok(userinfo_json(&headers, OidcClaims {
                 sub: claims.sub,
                 email: has_email.then_some(u.email.clone()),
                 email_verified: has_email.then_some(true),
@@ -6557,7 +6704,7 @@ pub async fn userinfo(
     } else {
         (vec![], vec![])
     };
-    Ok(Json(OidcClaims {
+    Ok(userinfo_json(&headers, OidcClaims {
         sub: claims.sub,
         email: None,
         phone_number: None,
@@ -6895,13 +7042,26 @@ pub async fn verify_client_signed_jwt(
         return Ok(());
     }
 
-    // Resolve the client's registered keys.
+    // Resolve the client's registered keys. RLS: this verifier runs on
+    // unauthenticated request paths (PAR/authorize JAR, CIBA) - the key
+    // lookup goes through the platform-plane transaction (the same
+    // `with_client_env` pattern; a bare pool query sees zero rows).
+    let mut tx = state
+        .pool
+        .begin()
+        .await
+        .map_err(|e| format!("client lookup tx: {e}"))?;
+    let _ = sqlx::query("SELECT sentin8_set_tenant_context($1)")
+        .bind(crate::config::SYSTEM_ENV_ID)
+        .execute(&mut *tx)
+        .await;
     let row = sqlx::query(r#"SELECT jwks, jwks_uri FROM oauth_clients WHERE client_id = $1"#)
         .bind(client_id)
-        .fetch_optional(&state.pool)
+        .fetch_optional(&mut *tx)
         .await
         .map_err(|e| format!("client lookup: {e}"))?
         .ok_or_else(|| "unknown client".to_string())?;
+    let _ = tx.commit().await;
     let jwks: Option<serde_json::Value> = row.try_get("jwks").ok().flatten();
     let jwks_uri: Option<String> = row.try_get("jwks_uri").ok().flatten();
 

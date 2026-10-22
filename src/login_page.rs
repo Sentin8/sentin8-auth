@@ -453,7 +453,7 @@ pub async fn login_submit(
             &code,
             if q.state.is_empty() { None } else { Some(&q.state) },
         );
-        if let Ok(jwt) = crate::jarm::sign_jarm_jwt(&state.keys, &jarm_claims) {
+        if let Ok(jwt) = crate::jarm::sign_jarm_jwt(&state.keys, &jarm_claims, &profile.signing_alg) {
             redirect = crate::jarm::build_jarm_redirect_url(&q.redirect_uri, &jwt);
         }
     }
