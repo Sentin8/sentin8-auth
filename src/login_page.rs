@@ -65,6 +65,10 @@ pub struct LoginContextQuery {
     /// The OAuth response mode (query default, jwt for JARM).
     #[serde(default)]
     pub response_mode: Option<String>,
+    /// OIDC Core §3.1.2.1 acr_values - carried into the code record for
+    /// the ID-token acr echo (DESIGN §9a.11).
+    #[serde(default)]
+    pub acr_values: Option<String>,
 }
 
 /// The form body POSTed by the browser.
@@ -111,7 +115,7 @@ fn context_key() -> Vec<u8> {
 fn sign_context(query: &LoginContextQuery) -> String {
     let exp = (Utc::now() + Duration::seconds(CONTEXT_TTL_SECS)).timestamp();
     let payload = format!(
-        "{}\u{1}{}\u{1}{}\u{1}{}\u{1}{}\u{1}{}\u{1}{}\u{1}{}\u{1}{}\u{1}{}",
+        "{}\u{1}{}\u{1}{}\u{1}{}\u{1}{}\u{1}{}\u{1}{}\u{1}{}\u{1}{}\u{1}{}\u{1}{}",
         query.client_id,
         query.redirect_uri,
         query.scope,
@@ -121,6 +125,7 @@ fn sign_context(query: &LoginContextQuery) -> String {
         query.nonce.as_deref().unwrap_or(""),
         query.resource.as_deref().unwrap_or(""),
         query.response_mode.as_deref().unwrap_or(""),
+        query.acr_values.as_deref().unwrap_or(""),
         exp,
     );
     let mut mac = <Hmac<Sha256> as Mac>::new_from_slice(&context_key())
@@ -146,10 +151,10 @@ fn verify_context(blob: &str) -> Option<LoginContextQuery> {
         return None;
     }
     let parts: Vec<&str> = payload.split('\u{1}').collect();
-    if parts.len() != 10 {
+    if parts.len() != 11 {
         return None;
     }
-    let exp: i64 = parts[9].parse().ok()?;
+    let exp: i64 = parts[10].parse().ok()?;
     if Utc::now().timestamp() > exp {
         return None;
     }
@@ -163,6 +168,7 @@ fn verify_context(blob: &str) -> Option<LoginContextQuery> {
         nonce: (!parts[6].is_empty()).then(|| parts[6].to_string()),
         resource: (!parts[7].is_empty()).then(|| parts[7].to_string()),
         response_mode: (!parts[8].is_empty()).then(|| parts[8].to_string()),
+        acr_values: (!parts[9].is_empty()).then(|| parts[9].to_string()),
     })
 }
 
@@ -405,6 +411,11 @@ pub async fn login_submit(
         "resource": q.resource,
         "state": q.state,
         "auth_time": chrono::Utc::now().timestamp(),
+        // DESIGN §9a.11 - acr echo rides the code record.
+        "acr_values": q.acr_values,
+        // §9a.11 code-lifetime gate: the record's ISSUE TIME - the
+        // exchange enforces the RFC 6749 short-lived posture against it.
+        "iat": chrono::Utc::now().timestamp(),
     });
     let valkey_store = async {
         match sentin8::middleware::valkey_client(&state.config.valkey_url, "sentin8:auth").await {
@@ -500,6 +511,7 @@ mod tests {
             nonce: Some("n".into()),
             resource: None,
             response_mode: None,
+            acr_values: None,
         }
     }
 

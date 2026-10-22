@@ -159,6 +159,12 @@ pub(crate) struct StoredKey {
     rsa_e_b64: Option<String>,
     /// PKCS#8 PEM (base64) captured at generation time for RS256 persistence.
     rsa_pem_b64: Option<String>,
+    /// EC/P-256 encoding key (when alg = ES256).
+    ec_encoding_key: Option<jsonwebtoken::EncodingKey>,
+    /// Uncompressed P-256 public point `x||y` (base64url) for the JWK.
+    ec_pk_b64: Option<String>,
+    /// PKCS#8 PEM (base64) captured at generation time for ES256 persistence.
+    ec_pem_b64: Option<String>,
 }
 
 impl StoredKey {
@@ -180,9 +186,37 @@ impl StoredKey {
                 use_field: "sig".into(),
                 alg: "MLDSA65".into(),
                 x: self.ml_dsa_pk_b64.clone(),
+                y: None,
                 n: None,
                 e: None,
                 crv: None,
+            }
+        } else if self.alg == "ES256" {
+            // P-256 point split: byte 0 = 0x04 (uncompressed), then x (32)
+            // + y (32) - the JWK x/y are the raw halves (base64url).
+            let raw = self
+                .ec_pk_b64
+                .as_deref()
+                .and_then(|b64| base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(b64).ok())
+                .unwrap_or_default();
+            let (x_b64, y_b64) = if raw.len() == 65 && raw[0] == 0x04 {
+                (
+                    base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(&raw[1..33]),
+                    base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(&raw[33..65]),
+                )
+            } else {
+                (String::new(), String::new())
+            };
+            Jwk {
+                kty: "EC".into(),
+                kid: self.key_id.clone(),
+                use_field: "sig".into(),
+                alg: "ES256".into(),
+                x: Some(x_b64),
+                y: Some(y_b64),
+                n: None,
+                e: None,
+                crv: Some("P-256".into()),
             }
         } else {
             Jwk {
@@ -191,6 +225,7 @@ impl StoredKey {
                 use_field: "sig".into(),
                 alg: "RS256".into(),
                 x: None,
+                y: None,
                 n: self.rsa_n_b64.clone(),
                 e: self.rsa_e_b64.clone(),
                 crv: None,
@@ -200,7 +235,9 @@ impl StoredKey {
 
     /// Can this key sign new tokens (has private material)?
     fn can_sign(&self) -> bool {
-        self.ml_dsa_key.is_some() || self.rsa_encoding_key.is_some()
+        self.ml_dsa_key.is_some()
+            || self.rsa_encoding_key.is_some()
+            || self.ec_encoding_key.is_some()
     }
 }
 
@@ -254,6 +291,39 @@ impl SigningKeys {
                 rsa_n_b64: None,
                 rsa_e_b64: None,
                 rsa_pem_b64: None,
+                ec_encoding_key: None,
+                ec_pk_b64: None,
+                ec_pem_b64: None,
+            })
+        } else if alg == "ES256" {
+            // FAPI2 posture - P-256 ECDSA (suite-accepted FAPI2-SP-FINAL
+            // 5.4-1 family; compact, FIPS-friendly, no hash-PSS footguns).
+            use p256::ecdsa::SigningKey as EcSigning;
+            use p256::pkcs8::EncodePrivateKey;
+            use rand::RngCore;
+            let mut seed = [0u8; 32];
+            rand::rngs::OsRng.fill_bytes(&mut seed);
+            let sk = EcSigning::from_slice(&seed)
+                .map_err(|e| anyhow::anyhow!("ES256 keygen: {e}"))?;
+            let ver = p256::ecdsa::VerifyingKey::from(&sk);
+            let point = ver.to_encoded_point(false);
+            let pk_b64 = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(point.as_bytes());
+            let pem = sk.to_pkcs8_pem(p256::pkcs8::LineEnding::LF)?;
+            let encoding_key = jsonwebtoken::EncodingKey::from_ec_pem(pem.as_str().as_bytes())?;
+            let pem_b64 =
+                base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(pem.as_str().as_bytes());
+            Ok(StoredKey {
+                key_id,
+                alg: "ES256".into(),
+                ml_dsa_key: None,
+                ml_dsa_pk_b64: None,
+                rsa_encoding_key: None,
+                rsa_n_b64: None,
+                rsa_e_b64: None,
+                rsa_pem_b64: None,
+                ec_encoding_key: Some(encoding_key),
+                ec_pk_b64: Some(pk_b64),
+                ec_pem_b64: Some(pem_b64),
             })
         } else {
             // Classical mode - generate RSA-2048 keypair.
@@ -278,6 +348,9 @@ impl SigningKeys {
                 rsa_n_b64: Some(n_b64),
                 rsa_e_b64: Some(e_b64),
                 rsa_pem_b64: Some(pem_b64),
+                ec_encoding_key: None,
+                ec_pk_b64: None,
+                ec_pem_b64: None,
             })
         }
     }
@@ -361,6 +434,39 @@ impl SigningKeys {
                     rsa_n_b64: None,
                     rsa_e_b64: None,
                     rsa_pem_b64: None,
+                    ec_encoding_key: None,
+                    ec_pk_b64: None,
+                    ec_pem_b64: None,
+                }
+            } else if alg == "ES256" {
+                // ES256 rows store the PKCS#8 PEM (sealed) + the raw
+                // uncompressed point (pub_key_b64) for the JWK x/y.
+                let pem_str = String::from_utf8(priv_bytes)
+                    .map_err(|e| anyhow::anyhow!("EC PEM not UTF-8 for {key_id}: {e}"))?;
+                let encoding_key = jsonwebtoken::EncodingKey::from_ec_pem(pem_str.as_bytes())
+                    .map_err(|e| anyhow::anyhow!("build EC encoding key {key_id}: {e}"))?;
+                use p256::elliptic_curve::pkcs8::DecodePrivateKey;
+                let secret = p256::SecretKey::from_pkcs8_pem(&pem_str)
+                    .map_err(|e| anyhow::anyhow!("decode EC pkcs8 {key_id}: {e}"))?;
+                let signing = p256::ecdsa::SigningKey::from(&secret);
+                let point = p256::ecdsa::VerifyingKey::from(&signing)
+                    .to_encoded_point(false);
+                let pk_b64: Option<String> = row.try_get("pub_key_b64").ok();
+                let pk_b64 = pk_b64.unwrap_or_else(|| {
+                    base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(point.as_bytes())
+                });
+                StoredKey {
+                    key_id,
+                    alg: "ES256".into(),
+                    ml_dsa_key: None,
+                    ml_dsa_pk_b64: None,
+                    rsa_encoding_key: None,
+                    rsa_n_b64: None,
+                    rsa_e_b64: None,
+                    rsa_pem_b64: None,
+                    ec_encoding_key: Some(encoding_key),
+                    ec_pk_b64: Some(pk_b64),
+                    ec_pem_b64: None,
                 }
             } else {
                 // RS256 rows store the PKCS#8 PEM (sealed with the envelope).
@@ -379,6 +485,9 @@ impl SigningKeys {
                     rsa_n_b64,
                     rsa_e_b64,
                     rsa_pem_b64: None,
+                    ec_encoding_key: None,
+                    ec_pk_b64: None,
+                    ec_pem_b64: None,
                 }
             };
             all.push(key);
@@ -405,7 +514,7 @@ impl SigningKeys {
         // while the process default is MLDSA65 (and vice versa). Generate
         // + persist the missing family so the per-tenant lookup at mint
         // time always succeeds.
-        for family in ["MLDSA65", "RS256"] {
+        for family in ["MLDSA65", "RS256", "ES256"] {
             if !all.iter().any(|k| k.alg == family && k.can_sign()) {
                 let key = Self::generate(family)?;
                 Self::persist_one(&mut tx, &mk, &key).await?;
@@ -485,6 +594,14 @@ impl SigningKeys {
             let sealed = sentin8::crypto::seal(mk, &pem_bytes)
                 .map_err(|e| anyhow::anyhow!("encrypt RS256 private key: {e}"))?;
             (sealed, None, key.rsa_n_b64.clone(), key.rsa_e_b64.clone())
+        } else if let Some(ec_pem_b64) = &key.ec_pem_b64 {
+            // ES256 rows: sealed PKCS#8 PEM private + raw point in pub_key_b64.
+            let pem_bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD
+                .decode(ec_pem_b64)
+                .map_err(|e| anyhow::anyhow!("decode ES256 PEM for persistence: {e}"))?;
+            let sealed = sentin8::crypto::seal(mk, &pem_bytes)
+                .map_err(|e| anyhow::anyhow!("encrypt ES256 private key: {e}"))?;
+            (sealed, key.ec_pk_b64.clone(), None, None)
         } else {
             anyhow::bail!("no signing key material available to persist");
         };
@@ -561,6 +678,15 @@ impl SigningKeys {
             let sig_b64 =
                 base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(signature.encode());
             Ok(format!("{signing_input}.{sig_b64}"))
+        } else if let Some(ek) = &key.ec_encoding_key {
+            // ES256 signing (jsonwebtoken crate, P-256).
+            let header = jsonwebtoken::Header {
+                alg: jsonwebtoken::Algorithm::ES256,
+                typ: Some("JWT".to_string()),
+                kid: Some(key.key_id.clone()),
+                ..Default::default()
+            };
+            jsonwebtoken::encode(&header, claims, ek).map_err(|e| format!("ES256 sign error: {e}"))
         } else if let Some(ek) = &key.rsa_encoding_key {
             // RS256 signing (jsonwebtoken crate).
             let header = jsonwebtoken::Header {
@@ -585,6 +711,11 @@ impl SigningKeys {
                 .iter()
                 .rev()
                 .find(|k| k.alg == "RS256" && k.can_sign()),
+            "ES256" => self
+                .all
+                .iter()
+                .rev()
+                .find(|k| k.alg == "ES256" && k.can_sign()),
             "MLDSA65" | "" => self
                 .all
                 .iter()
@@ -698,11 +829,38 @@ impl SigningKeys {
                     .get("jwk")
                     .and_then(|j| j.get("y"))
                     .and_then(|v| v.as_str());
+                // Token minted HERE (stored ES256 key, no embedded jwk) or
+                // a proof/token with an embedded JWK. Try the stored family
+                // key FIRST (kid-routed - the same path RS256 takes); when
+                // no stored key matches, accept the EMBEDDED jwk (client
+                // assertion / DPoP proof keys).
+                let stored = self
+                    .find_key("ES256", kid)
+                    .and_then(|key| key.ec_pk_b64.clone())
+                    .map(|pk_b64| {
+                        let raw = base64::engine::general_purpose::URL_SAFE_NO_PAD
+                            .decode(&pk_b64)
+                            .ok()?;
+                        if raw.len() == 65 && raw[0] == 0x04 {
+                            Some((
+                                base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(&raw[1..33]),
+                                base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(&raw[33..65]),
+                            ))
+                        } else {
+                            None
+                        }
+                    })
+                    .unwrap_or(None);
                 let (x, y) = match (x, y) {
-                    (Some(x), Some(y)) => (x, y),
-                    _ => return Err(
-                        "ES256 verification requires an embedded jwk (Auth does not issue ES256 tokens)".to_string(),
-                    ),
+                    (Some(x), Some(y)) => (x.to_string(), y.to_string()),
+                    _ => match stored {
+                        Some((kx, ky)) => (kx, ky),
+                        None => {
+                            return Err(
+                                "ES256 verification requires an embedded jwk (Auth does not issue ES256 tokens)".to_string(),
+                            )
+                        }
+                    },
                 };
                 let x_bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD
                     .decode(x)
@@ -922,6 +1080,9 @@ pub struct Jwk {
     /// The x.
     pub x: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    /// The y (EC keys - P-256 point second coordinate).
+    pub y: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     /// The n.
     pub n: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -939,6 +1100,24 @@ impl JwksResponse {
     pub fn from_keys(keys: &SigningKeys) -> Self {
         let mut jwks: Vec<Jwk> = keys.all.iter().map(|k| k.to_jwk()).collect();
         // Deduplicate by kid (the active key may appear twice in `all`).
+        let mut seen = std::collections::HashSet::new();
+        jwks.retain(|j| seen.insert(j.kid.clone()));
+        Self { keys: jwks }
+    }
+
+    /// Publish only the persisted keys of ONE signing family
+    /// (tenant-plane filtered JWKS - DESIGN §9a.11). Verification stays
+    /// family-agnostic via kid routing; a tenant's JWKS carries exactly
+    /// the family its `signing_alg` resolves to, so a classical-only
+    /// verifier never receives an unparseable PQ key (and vice versa).
+    /// Handle from keys family.
+    pub fn from_keys_family(keys: &SigningKeys, alg: &str) -> Self {
+        let mut jwks: Vec<Jwk> = keys
+            .all
+            .iter()
+            .filter(|k| k.alg == alg)
+            .map(|k| k.to_jwk())
+            .collect();
         let mut seen = std::collections::HashSet::new();
         jwks.retain(|j| seen.insert(j.kid.clone()));
         Self { keys: jwks }
@@ -1125,6 +1304,29 @@ mod tests {
         assert_eq!(doc.keys.len(), 1);
         assert_eq!(doc.keys[0].alg, "MLDSA65");
         assert_eq!(doc.keys[0].kid, keys.key_id());
+    }
+
+    #[test]
+    fn jwks_family_filter_publishes_only_requested_family() {
+        // Both families loaded (DESIGN §9a.9 says both are persisted for
+        // per-tenant signing) - the family-filtered doc (§9a.11) carries
+        // exactly the requested family, and the unfiltered doc carries
+        // both.
+        let pq = SigningKeys::generate("MLDSA65").unwrap();
+        let rsa = SigningKeys::generate("RS256").unwrap();
+        let keys = SigningKeys {
+            active: rsa.clone(),
+            all: vec![pq, rsa],
+        };
+        let filtered = JwksResponse::from_keys_family(&keys, "RS256");
+        assert!(!filtered.keys.is_empty());
+        assert!(filtered.keys.iter().all(|k| k.alg == "RS256"));
+
+        let pq_filtered = JwksResponse::from_keys_family(&keys, "MLDSA65");
+        assert!(pq_filtered.keys.iter().all(|k| k.alg == "MLDSA65"));
+
+        let all = JwksResponse::from_keys(&keys);
+        assert_eq!(all.keys.len(), 2);
     }
 
     #[test]

@@ -22,6 +22,19 @@ CREATE TABLE IF NOT EXISTS auth.users (
     first_name      TEXT,
     last_name       TEXT,
     phone           TEXT,
+    -- OIDC `address` claim source (auth DESIGN §9a.4): the postal columns
+    -- are assembled into the spec's address JSON object at mint time,
+    -- gated on the consented `address` scope.
+    street_address  TEXT,
+    locality        TEXT,
+    region          TEXT,
+    postal_code     TEXT,
+    country         TEXT,
+    -- OIDC `profile` scope standard members (auth DESIGN §9a.11): the
+    -- scope-consented claim members minted verbatim at userinfo/ID-token
+    -- time. `name` + `updated_at` are DERIVED at mint (name falls back
+    -- through the name parts) and never stored here.
+    oidc_profile    JSONB NOT NULL DEFAULT '{}'::jsonb,
     status          TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'suspended', 'archived')),
     email_verified  BOOLEAN NOT NULL DEFAULT false,
     mfa_enabled     BOOLEAN NOT NULL DEFAULT false,
@@ -1202,7 +1215,7 @@ CREATE TABLE IF NOT EXISTS auth.security_profiles (
     -- platform → org → env alongside the flags; the TLS transport mode
     -- (SENTIN8_TLS_PQ_MODE) stays process-level by physical necessity.
     signing_alg     TEXT NOT NULL DEFAULT 'MLDSA65'
-                     CHECK (signing_alg IN ('MLDSA65', 'RS256')),
+                     CHECK (signing_alg IN ('MLDSA65', 'RS256', 'ES256')),
     created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at      TIMESTAMPTZ NOT NULL DEFAULT now()
 );
@@ -2319,11 +2332,18 @@ VALUES (
 ) ON CONFLICT (env_id, name) DO UPDATE SET permissions = EXCLUDED.permissions;
 
 -- ── sentin8:sys:admin role (platform super-user, nests all service-admin roles) ──
+-- The role's OWN permissions carry ONLY the marker scope
+-- 'sentin8:sys:admin' - what is_platform_admin() and the scope-mirror
+-- policies match on (auth DESIGN §3 "Platform-admin contract"). All
+-- remaining scopes come from the NESTED service-admin roles below.
+-- An empty ARRAY here severs the marker from every user: no one can be
+-- platform admin on a fresh apply (the bootstrap admin's sys:read
+-- calls fail the scope-mirror policy).
 INSERT INTO auth.roles (id, env_id, name, permissions)
 VALUES (
     gen_random_uuid(),
     '00000000-0000-0000-0000-000000000002',
-    'sentin8:sys:admin', ARRAY[]::TEXT[]  -- scopes come from nested service-admin roles
+    'sentin8:sys:admin', ARRAY['sentin8:sys:admin']::TEXT[]  -- marker scope; service scopes come from the nested roles
 )
 ON CONFLICT (env_id, name) DO UPDATE SET permissions = EXCLUDED.permissions;
 

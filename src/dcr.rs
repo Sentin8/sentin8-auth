@@ -318,7 +318,16 @@ fn extract_bearer(headers: &HeaderMap) -> Option<String> {
 }
 
 /// OIDC baseline scopes - never gated by the M2M scope grants.
-const OIDC_BASELINE: &[&str] = &["openid", "profile", "email", "offline_access"];
+/// DESIGN §9a.4: all four OIDC claim scopes are baseline (advertised
+/// and served; no suite skips per §9a.10).
+const OIDC_BASELINE: &[&str] = &[
+    "openid",
+    "profile",
+    "email",
+    "phone",
+    "address",
+    "offline_access",
+];
 
 /// Extract the *platform* (non-OIDC-baseline) scopes from a space-separated
 /// scope string. Empty result → no gate evaluation needed.

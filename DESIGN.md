@@ -238,8 +238,26 @@ stateDiagram-v2
 - **Secrets posture**: TOTP secrets, webhook secrets, client secrets are
   encrypted (`secret_cipher` BYTEA / hash); signing keys persisted
   AES-sealed under the master key; no plaintext secrets in any table.
+- **OIDC claim data (address/phone, §9a.4)**: the `users` table carries
+  `phone` and the postal-address columns
+  (`street_address`, `locality`, `region`, `postal_code`, `country`) -
+  written through the admin user surface (create/update), read at the
+  ID-token/userinfo mint gated on the consented `phone`/`address` scopes.
+  The OIDC `address` claim is the spec's JSON object
+  (`formatted`/`street_address`/`locality`/`region`/`postal_code`/
+  `country`), assembled at mint time from the columns.
 - **Seeds**: platform admin user + the platform role/nesting catalog +
   `dash` (public PKCE, dpop_exempt) + `sentin8-cli` (device flow) clients.
+  **Platform-admin contract (the `sentin8:sys:admin` role):** the role's
+  OWN permissions are exactly `['sentin8:sys:admin']` - the marker scope
+  that `is_platform_admin()` and the scope-mirror policies match on; its
+  remaining scopes come from the NESTED service-admin roles
+  (`dash:admin`, `auth:admin`, `db:admin`, …). The operator chain is
+  `org:sys:admins` group → `sentin8:org:sys:admin` role → nested
+  `sentin8:sys:admin` role → marker + closure. A seed that empties the
+  role's own permissions severs the marker scope from every user - no
+  one can be platform admin on a fresh apply (the bootstrap admin's
+  sys:read/admin API calls then fail the scope-mirror policy).
 
 ## 4. API Surface
 
@@ -275,6 +293,23 @@ design §4.2). The generic Shield handlers cannot be pathed directly
 policy mount binds the annotated wrappers in `src/policy_docs.rs` and the
 RFW POST-aliases bind `src/rfw_aliases.rs` (same operations, alias paths,
 annotated per OAPEC design §2 rule 3).
+
+**Tenant-aware issuer on every token mint (OIDC Core §3.1.3.7).** `iss`
+is `https://auth.{env-domain}` - the tenant's own auth host, where the
+env domain is **opaque** (the platform-derived `{env}.{org}.{tld}`
+shape, a registered custom domain, anything the env owns - never
+structurally parsed). Discovery already resolves it from
+the TLS-injected `X-Sentin8-Hostname` (`resolve_issuer`); every mint
+site (the ID token at code exchange and CIBA, and the access/refresh
+family) resolves the same way so a tenant's tokens carry the tenant's
+issuer. Token verification admits the `https://auth.*` issuer family
+(the JWT signature - Auth is the single issuer - is the trust anchor;
+the `iss` form is a sanity gate, never domain-coupled to the platform
+TLD: a custom env domain must verify identically). The suite's
+`ValidateIdToken` checks `iss` against the discovery issuer - a
+process-constant issuer fails every tenant run (found live in the
+OIDF rig: `iss=…ops.sys…` vs discovery `…cert.conformance-local…` →
+`Issuer mismatch`).
 
 **Drift guard.** `tests/openapi_drift.rs` asserts BOTH directions - every
 served route appears in the compiled spec and every spec pair is served -
@@ -697,6 +732,22 @@ graph TD
    `BASE_URL=https://localhost.emobix.co.uk:8443`, pinned via
    `IMAGE_TAG` for reproducible runs. `localhost.emobix.co.uk` resolves
   to 127.0.0.1 in `/etc/hosts`.
+1b. **Suite ingress TLS (no cert warnings - OIDF-CERT-1, §9a.10).**
+   The suite's nginx image ships a self-signed `CN=localhost` cert that
+   no browser trusts; every front-channel browser test (login →
+   callback) and the operator's plan tab died on
+   `ERR_CERT_AUTHORITY_INVALID` (11 INTERRUPTED + 1 WAITING/FAILED in
+   the 2026-10-21 run). The rig therefore serves the suite ingress
+   from a **platform-CA server leaf**: `--ensure-infra-tls` mints
+   `conformance-suite-server.crt/.key` (CN `conformance-suite`, SAN
+   `localhost.emobix.co.uk` - the Acme root CA is already in the OS
+   trust store), `make conformance-up` copies the pair into the
+   compose build context, and the compose nginx service bind-mounts
+   them read-only over the image's hardcoded
+   `/etc/ssl/certs/nginx-selfsigned.crt` + `/etc/ssl/private/
+   nginx-selfsigned.key` paths (no image rebuild; the image's own
+   nginx.conf keeps working). The suite stays reachable at
+   `https://localhost.emobix.co.uk:8443` with a fully trusted chain.
 2. **Certification environment** - a dedicated org + env (`cert`) whose
    security profile is `standard` (for OIDC Core/Config/Dynamic runs)
    or `fapi_2` / `fapi_1_advanced` (FAPI runs). One test user with a
@@ -732,6 +783,7 @@ graph TD
 |---|---|---|
 | Discovery (`/.well-known/openid-configuration`) | implemented | §4 surface; required-when-supported honesty fields in §9a.4 |
 | Basic OP (code + PKCE S256, ID token with `nonce`/`auth_time`/`at_hash`/`c_hash`/`s_hash`) | implemented | `c_hash` binds the ID token to the exchanged code; `s_hash` binds it to `state` when present |
+| OIDC scope-based claims (`email`/`profile`/`phone`/`address`) | implemented | ID token + userinfo mint the claim family gated on the consented scope: `email`→`email`/`email_verified`, `profile`→name family, `phone`→`phone_number`/`phone_number_verified`, `address`→the OIDC address JSON object; discovery advertises all four scopes and their claims (§9a.4) |
 | Config OP (discovery completeness) | implemented | fields in §9a.4 |
 | Dynamic OP (DCR + management + WebFinger) | implemented | WebFinger at `/.well-known/webfinger` (`webfinger.rs`) |
 | RP-Initiated Logout | implemented | `state` echoed on the registered `post_logout_redirect_uri` redirect |
@@ -752,6 +804,17 @@ graph TD
 
 The discovery document carries the following required-when-supported /
 recommended fields (advertised only when actually supported):
+
+- **The four OIDC claim scopes are advertised and served**: `scopes_supported`
+  is `openid profile email phone address offline_access` - every scope
+  advertised is mintable end-to-end (the §9a.10 no-skip rule). The `phone`
+  scope gates `phone_number`/`phone_number_verified` at the ID-token and
+  userinfo mint; the `address` scope gates the OIDC `address` JSON object
+  (built from the users table's postal columns). `claims_supported` lists
+  the full claim set: `sub`, `iss`, `aud`, `exp`, `iat`, `auth_time`,
+  `nonce`, `at_hash`, `c_hash`, `name`, `given_name`, `family_name`,
+  `email`, `email_verified`, `phone_number`, `phone_number_verified`,
+  `address`, `verified_claims`.
 
 - `token_endpoint_auth_signing_alg_values_supported` (required when
   `private_key_jwt` is advertised)
@@ -791,8 +854,28 @@ server container's truststore (runbook §1).
 4. Run each test; the suite's browser automation completes sign-in via
    the HTML login page (§9a.8) with the seeded test user.
 5. All tests must be PASSED / WARNING / REVIEW (no FAILED, no
-   INTERRUPTED) before the profile is considered green locally.
+   INTERRUPTED) before the profile is considered green locally - and
+   **no test may be SKIPPED** (§9a.10): a suite skip means discovery
+   advertised the capability away, which is a coverage hole, not a
+   pass.
 6. Export logs to `.tmp/conformance/results/`, then `make conformance-down`.
+
+### 9a.10 No-skip rule (conformance coverage)
+
+**A skipped conformance test is a failed conformance test.** The suite
+SKIPPED a test exactly when the discovery document declined to advertise
+a capability it tests (e.g. `scopes_supported` without `address`/
+`phone` → the scope tests self-skip). Advertising a capability away is
+hiding a coverage hole behind discovery honesty - the platform's rule is
+the inverse: **implement the capability, advertise it, let the suite test
+it**. Concretely: every scope in `scopes_supported` must be mintable
+end-to-end (authorize → token → ID-token/userinfo claims), every
+`claims_supported` entry must be producible by at least one scope, and a
+new suite skip is triaged as a defect with the same priority as a FAILED
+result. The rig's seed (§9a.5 step 2) must therefore also provision the
+data the advertised claims need (the cert user carries a phone number and
+a postal address) so scope tests that assert claim presence can pass,
+not just run.
 
 ### 9a.6 Sequence - a suite browser interaction (authorize round-trip)
 
@@ -824,6 +907,18 @@ inline `request` parameter: unverified decode, `validate_jar_claims`,
 `jwks`/`jwks_uri`. The fetched JWT overlays inline params identically.
 This is what the FAPI 1 Advanced suite exercises (it pushes request
 objects by URI).
+
+**Unsigned request objects (`alg: none`, RFC 9101 §5).** The value-form
+(inline `request` parameter) request object MAY be unsigned: the
+integrity story is the TLS transport plus the AS's own client
+authentication binding — no registered key is needed. The shared
+client-JWT verifier short-circuits on `alg: none` (everything else
+requires a verified signature), discovery advertises `none` in
+`request_object_signing_alg_values_supported` (§9a.10 honesty:
+advertised = served), and the suite's
+`unsigned-request-object`-family tests then RUN instead of skip.
+Fetched-by-URI request objects keep the https-only + signed rules
+(an attacker-controlled URI cannot carry `none`).
 
 **CIBA signed request objects (CIBA §7.1).** `bc-authorize` accepts a
 `request` JWT (or `request_uri` fetch, same mechanics as above) signed
@@ -1019,10 +1114,263 @@ unchanged; per-tenant keys multiply rotation surface ×N with no
 security gain at the JWT layer (the tenant boundary is the claim set,
 not the key). Rejected as future-work if a tenant ever demands BYOK.
 
-## 10. Open Questions
+### 9a.11 Warning-zero posture (suite WARNING classes → root fixes)
 
-- Webhook delivery gains a DLQ replay surface mirroring post's `replay_dlq`
-  shape (`POST /v1/admin/webhooks/attempts/{id}/replay`).
+The no-skip rule (§9a.10) makes FAILED/INTERRUPTED/SKIPPED blocking;
+the 2026-10-21 Basic-OP run additionally surfaced six WARNING classes.
+An owner decision promotes the target to **WARNING-zero**: every suite
+WARNING is a real (if spec-permissive) gap on our side and gets a root
+fix rather than an explanatory note. The classes, their owners, and the
+target shapes:
+
+| # | Suite warning | Root cause | Target state |
+|---|---|---|---|
+| 1 | "JWK set contains unsupported key type (kty `MLWE`)" (every instance) | JWKS publishes BOTH signing families; the suite's Java JOSE stack cannot parse ML-DSA | **Tenant-plane filtered JWKS** (below) |
+| 2 | userinfo lacks the `profile` scope's standard claims (`name`, `nickname`, `preferred_username`, `middle_name`, `website`, `picture`, `gender`, `birthdate`, `zoneinfo`, `locale`, `updated_at`, `profile`) | userinfo mints only given/family name | `users.oidc_profile` JSONB + full family mint (below) |
+| 3 | "Unexpectedly found email in id_token" (scope tests) | ID token carries scope-consented claims even when the claims request selected none | **§5.5-conservative ID token**: user claims ride the ID token only when the claims request selects them; userinfo remains the scope-gated delivery surface |
+| 4 | "acr requested but not returned" | `acr_values` unaccepted at authorize | `acr_values` accepted → code record → `acr` claim in the ID token |
+| 5 | "resource endpoint returned a different http status than expected" (codereuse-30s) | code reuse does not revoke the grant; userinfo serves the old access token 200 | **RFC 6749 §4.1.2 reuse revocation**: a replayed (burned) code revokes its grant at the second exchange; userinfo/introspect enforce token-denylist AND grant-revocation |
+| 6 | "name not found in userinfo" (claims-essential) | #2 | covered by #2 |
+| 7 | "Unknown properties were found in the OAuth Authorization Server metadata" (FAPI2 discovery-end-point-verification) — offender `software_statement_supported` | discovery advertises platform-extension metadata the FAPI profiles' RFC 8414 allow-list does not know | **Profile-honest discovery**: platform-extension members (`software_statement_supported`, `grant_management_endpoint`) ride discovery only when the caller's env profile is NOT a FAPI profile (FAPI profiles advertise the RFC-standard surface only) |
+| 8 | "userinfo response includes claims with names that are not known" (FAPI2 claims-parameter) — offenders `roles`/`groups`/`scopes`/`client_id` | userinfo projections carry the platform-plane identity members on every host | **OIDCC-5.1 standard-claims surface under FAPI**: the platform-plane projection rides only on non-FAPI hosts (Shield substrate resolver + BFF session enrichment are platform-plane, unaffected) |
+| 9 | ServerAllowedExpiredAuthorizationCode (FAPI2 expired-auth-code FAILED) | the Valkey TTL (600s) was the only code expiry; FAPI 2.0 mandates a SHORT-LIVED code | **60s code-lifetime gate (DESIGN §9a.11)**: every code record carries its issue-time `iat`; the exchange wall-clock-checks it (60s) and 400s `invalid_grant` `authorization code expired` |
+
+**Tenant-plane filtered JWKS (detail).** §9a.9 resolves one signing
+family per tenant; the JWKS endpoint applies the same resolution: it
+publishes only the persisted keys of **the caller's env-resolved
+family** (platform fallback when no row resolves). A rig tenant
+(`signing_alg = RS256`) sees RSA keys only - the suite parses everything
+it fetches - while an ML-DSA tenant sees ML-DSA keys only. Rotation
+overlap stays within the family (insert-overlap, §3.13). Cross-tenant
+token verification is unaffected: tokens name their kid, and a verifier
+validates a token minted in another tenant only through that tenant's
+own issuer surface.
+
+**The `oidc_profile` column (detail).** The `users` table gains
+`oidc_profile JSONB NOT NULL DEFAULT '{}'` holding the scope-consented
+profile-family members the platform mints verbatim: `nickname`,
+`preferred_username`, `middle_name`, `profile`, `picture`, `website`,
+`gender`, `birthdate`, `zoneinfo`, `locale` (the admin write surface
+accepts them). `name` and `updated_at` are DERIVED at mint time: `name`
+falls back through `oidc_profile.name → first_name + ' ' + last_name`,
+`updated_at` is the row's `updated_at`. The userinfo + ID-token mints
+emit every populated member gated on the `profile` scope; empty members
+are omitted (`skip_serializing_if`), never `null`. This is a greenfield
+schema change (AGENTS no-migration rule): `sql/init.sql` changes and the
+tenant re-inits - the certification tenant + suite clients re-seed after
+(`make conformance-seed`), suite plans in the mongo volume survive.
+
+**acv/`acr_values` flow.** authorize accepts `acr_values` (space-
+delimited, OIDC Core §3.1.2.1) into a dedicated `acr` field on
+`AuthorizeQuery`/`AuthorizeContinueRequest`, rides the code record, and
+the ID-token mint echoes the FIRST requested value as the `acr` claim
+(the platform issues a single effective assurance level per session;
+§9a.11 note: future MFA binding graduates this to real AAL levels).
+
+**Reuse revocation flow.** The first code exchange deletes the code as
+today but RECORDS the burned code's grant id (Valkey
+`auth:burnedcode:{code}` = `"<grant_id>|<env_id>"`, TTL = code TTL -
+the pair lets the replay path run the revocation under the RIGHT RLS
+tenant context before any code-record lookup). The replay check runs
+BEFORE the code fetch (the burned mark is the only trace a replay
+leaves - the code record itself was deleted at first use): a second
+exchange of the same code treats the replay as a token-compromise
+signal, cascades the grant revocation in a fresh transaction
+(`revoke_by_id`: status flip + `auth:grant:revoked:{id}` denylist +
+`grant.revoked` event), answers 400 `invalid_grant`, and the burned
+mark clears so a THIRD replay cannot re-revoke (idempotency). `userinfo` extends `verify_access_token_claims` with
+token-jti denylist + grant-revocation checks (the same predicate
+introspection already applies), so the suite's post-reuse resource fetch
+gets the expected 401.
+
+**§5.5 selection never drops at the hosted-UI hop.** The UI redirect
+forwards the authorize request's `claims` parameter (URL-encoded JSON)
+alongside `nonce`/`resource`/`response_mode`/`acr_values`; the
+`authorize/continue` request accepts the selection as a JSON object OR
+as the object-encoded string the forwarded parameter produces
+(`deserialize_claims_flex`) - the code record always ends with the
+parsed object, so §5.5-essential checks and the access-token
+`userinfo_claims` stamp survive any browser hops in between.
+
+**JAR redirect_uri binding (OIDC Core §6.4.1).** When a request object
+carries a `redirect_uri`, the outer authorize request's `redirect_uri`
+MUST match it exactly (absent outer is fine - the object's value
+wins); a mismatch is a parameter-forgery mix and rejects inline
+`invalid_request` BEFORE the hosted-UI hop. The previous accept-and-
+override behavior completed a flow with a forged outer parameter and
+let the user agent deliver a valid callback after the RP had already
+concluded (the suite's redirect-uri-error-page module chokes on the
+late callback arriving post-FINISH).
+
+**Authorization-code lifetime gate (FAPI2-SP).** Every code record
+(authorize-continue, silent issuance, hosted-UI login submit) stamps
+its issue time (`iat`); `handle_code_exchange` wall-clock-checks the
+record against a 60-second lifetime BEFORE any validation side
+effects (the code is still deleted first - the exchange is one-shot
+either way). The Valkey TTL (`set_ex ... 600`) remains the upper
+storage bound; the RFC 6749 code-lifetime posture is the wall-clock
+gate: an exchange of a record older than 60s answers 400
+`invalid_grant` `authorization code expired` (the suite sleeps 62s
+and requires the rejection; the Basic-OP suite's rapid exchanges are
+unaffected). A missing/unparseable `iat` fails closed.
+
+**Profile-honest discovery (FAPI2 metadata allow-list).** The suite's
+OAuth 2.0 Authorization Server Metadata check (`RFC8414-2`) warns on
+members outside its RFC-standard set. The platform-extension members
+are conditional:
+- `grant_management_endpoint` (FAPI 2.0 Grant Management) rides ONLY
+  when the caller's env profile IS a FAPI profile (the capability is
+  a FAPI-family surface).
+- `software_statement_supported` rides only on non-FAPI hosts (the
+  DCR software-statement acceptance is a platform capability the FAPI
+  final-suite allow-list does not admit).
+The RFC-standard members (endpoints, response/grant types,
+`claims_parameter_supported`, `dpop_signing_alg_values_supported`, …)
+stay unconditional - they are understood by every checker.
+
+**Userinfo = the OIDC standard-claims surface under FAPI (OIDCC-5.1).**
+userinfo is the OIDC standard-claims document on FAPI hosts: the
+platform-plane projection (`roles`/`groups`/`scopes`/`client_id`/
+`token_tp`) rides ONLY when the caller's env profile is NOT a FAPI
+profile - the Shield substrate live-identity resolver and the BFF
+session enrichment run exclusively on non-FAPI platform hosts and
+keep the projection. On a FAPI host the response carries the OIDC
+Core §5.1 standard members only (`sub` + the scope/selection-gated
+profile/email/phone/address families), which the suite's standard-
+claims validator accepts without warnings.
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant RP as suite client
+    participant OP as sentin8:auth
+    participant V as Valkey
+    participant DB as auth schema
+    Note over RP,OP: reuse-revocation (warning #5)
+    RP->>OP: POST /oauth/token (code, 1st)
+    OP->>V: DEL auth:authcode:{code} + SET auth:burnedcode:{code} = "grant_id|env_id"
+    OP-->>RP: 200 tokens
+    RP->>OP: POST /oauth/token (code, replay)
+    OP->>V: GET auth:burnedcode:{code} → "grant_id|env_id" (parsed BEFORE the code fetch)
+    OP->>DB: UPDATE grants SET status='revoked'
+    OP->>V: SET auth:grant:revoked:{grant_id}
+    OP-->>RP: 400 invalid_grant (replay path never needs the stale code record)
+    RP->>OP: GET /oauth/userinfo (old access token)
+    OP-->>RP: 401 invalid_token (grant revoked)
+```
+
+**Resource endpoint accepts the DPoP scheme (RFC 9449 §7.1).** The
+token endpoint advertises `token_type: DPoP` for cnf-bound tokens
+(warning-table row: CheckTokenTypeIsDpop), and per RFC 9449 §7.1 the
+client then presents the access token with the `DPoP` **authorization
+scheme** on subsequent resource calls - the suite's resource call
+(`EnsureHttpStatusCodeIs200or201`) does exactly that. `userinfo`'s
+bearer extraction accepts BOTH schemes case-insensitively
+(`Bearer` per RFC 6750 §2.1, `DPoP` per RFC 9449 §7.1) - the token is
+verified identically (signature, `cnf.jkt` vs the DPoP proof's key
+thumbprint, expiry, grant/deny state); the scheme only names the
+transport convention, never the security decision.
+
+**PAR form-parameter contract (RFC 9126 §2).** `request_uri` is the
+PAR *response* payload, never a request parameter: a push carrying it
+as a form param is malformed and the PAR endpoint rejects it inline
+`invalid_request` BEFORE client authentication (the suite's
+"authorization request containing request_uri form param" negative
+expects the rejection).
+
+**PKCE violations are grant failures (RFC 7636 §4.6).** The PKCE
+contract binds the ISSUED GRANT - a missing `code_verifier` or a
+mismatched S256 proof at the exchange invalidates THAT grant, so the
+token endpoint answers `invalid_grant` (not `invalid_request`, which
+names a malformed REQUEST construct). The suite's
+`ensure-pkce-code-verifier-required` requires the grant-shape error.
+
+### 9a.12 mTLS client authentication + sender constraint (FAPI2-SP mtls cell)
+
+The FAPI2-SP suite runs four variant cells: `sender_constrain`
+(mtls|dpop) × `client_auth_type` (mtls|private_key_jwt). The dpop
+cell (private_key_jwt client auth + DPoP sender constraint) is the
+one fully green today (§9a.11 addendum); the mtls cells make the
+CLIENT CERTIFICATE both the client authentication and, in the mTLS
+sender-constrain cell, the token binding. RFC 8705 §2-§3 govern
+both surfaces.
+
+**Server-side acceptance of suite-generated client certs
+(self-signed, RFC 8705 §2.4).** In the rig the suite generates a
+self-signed client certificate per mtls variant and registers it via
+DCR (`token_endpoint_auth_method: self_signed_tls_client_auth`) or
+carries its PEM in the STATIC plan config. The TLS layer (sentin8-tls
+acceptor) gains a listener posture that REQUESTS a client
+certificate and accepts the presented cert at the HANDSHAKE without
+CA verification (`allow_self_signed` posture, for the cert-tenant
+rig surface) - the `X-Sentin8-Client-Cert-Thumbprint` (= `x5t#S256`)
+injection covers the UNVERIFIED cert too. The SECURITY decision
+never moves to the TLS layer: auth compares the presented thumbprint
+against the registration row's
+`self_signed_tls_client_auth_thumbprint` (and `subject_dn` for
+CA-issued `tls_client_auth`) - an unregistered thumbprint
+authenticates NOTHING (cert presence never implies trust; RFC 8705
+§2.4 "the AS MUST verify that the certificate is bound to the
+client").
+
+**Client authentication methods (authenticate_client).** The shared
+client authenticator accepts the mTLS methods when the registration
+row carries the matching identity field: `self_signed_tls_client_auth`
+→ thumbprint equality with the presented identity; `tls_client_auth`
+→ presented subject-DN equality. Both ride the SAME header source
+(`extract_mtls_identity`), work identically at `/oauth/token`,
+`/oauth/par`, and `/oauth/revoke`, and pair with every
+sender-constrain posture.
+
+**Sender-constrained tokens (mtls cell) - `cnf.x5t#S256`.** When the
+exchange (or refresh) rides a VERIFIED client-certificate identity,
+the minted access token carries `cnf: {x5t#S256: <thumbprint>}`
+(`build_cnf_claim`, mtls.rs) INSTEAD of the DPoP `jkt` (a token
+carries exactly one confirmation member); `token_type` is `Bearer`
+(RFC 8705 §3 - mTLS-bound tokens ride the plain bearer scheme; the
+CERT is the sender). The userinfo RS then REQUIRES the request to
+present the SAME certificate: a missing/mismatched thumbprint is 401
+`invalid_token` - the suite's `ensure-holder-of-key-required` and
+mtls resource calls depend on this. Refresh tokens rotate within the
+same binding (the refresh call re-presents the cert).
+
+**Suite ingress path.** The suite's mTLS calls terminate at the
+Sentin8:Proxy (the single ingress); the proxy forwards the presented
+leaf cert as `X-Sentin8-Client-Cert` (PROXY-4). auth resolves the
+identity from the forwarded cert DIRECTLY - it computes the RFC 8705
+thumbprint itself from the base64 DER and compares it against the
+registration row (no dependence on a thumbprint header the proxy
+does not produce). `mtls_endpoint_aliases` (token/revocation
+aliases) stays advertised only under `require_mtls` (per-profile
+posture, §9a.3); the FAPI2-SP mtls-cell variants exercise the
+ALIASES (the suite follows `mtls_endpoint_aliases.token_endpoint`),
+so the cert-tenant profile seed sets `require_mtls: true` for those
+cells.
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant S as suite (FAPI2-SP mtls variant)
+    participant P as sentin8:proxy (ingress)
+    participant OP as sentin8:auth
+    Note over S,OP: self_signed_tls_client_auth + cert-bound tokens
+    S->>OP: POST /oauth/register (self_signed_tls_client_auth)
+    OP->>OP: store self_signed_tls_client_auth_thumbprint
+    S->>P: POST mtls token endpoint (client cert C, PAR'd request_uri)
+    P->>OP: X-Sentin8-Client-Cert: der(C)
+    OP->>OP: thumbprint(C) == registered thumbprint?
+    alt verified
+        OP->>OP: mint AT cnf={x5t#S256: thumb}, token_type=Bearer
+        OP-->>S: 200 tokens
+        S->>P: GET /oauth/userinfo (AT + cert C again)
+        P->>OP: X-Sentin8-Client-Cert: der(C)
+        OP-->>S: 200 claims (thumb matches cnf)
+    else unregistered
+        OP-->>S: 401 invalid_client (cert never implies trust)
+    end
+```
+
+## 10. Open Questions
 
 - SAML flows beyond metadata/ACS are a declared non-goal for the platform IdP
   (enterprise SSO is served by OIDC federation).

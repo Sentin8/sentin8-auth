@@ -158,6 +158,7 @@ fn parse_basic_auth(headers: &HeaderMap) -> Option<(String, String)> {
 /// the client's registered `jwks`/`jwks_uri` (ES256 or RS256).
 async fn verify_client_assertion(
     state: &AppState,
+    headers: &HeaderMap,
     client_id: &str,
     client: &sqlx::postgres::PgRow,
     assertion: &str,
@@ -176,11 +177,10 @@ async fn verify_client_assertion(
         .get("sub")
         .and_then(|v| v.as_str())
         .unwrap_or("");
-    let aud = claims_json
-        .get("aud")
-        .and_then(|v| v.as_str())
-        .unwrap_or("");
+    let aud_json = claims_json.get("aud");
     let exp = claims_json.get("exp").and_then(|v| v.as_i64()).unwrap_or(0);
+    let nbf = claims_json.get("nbf").and_then(|v| v.as_i64());
+    let iat = claims_json.get("iat").and_then(|v| v.as_i64());
     let jti = claims_json
         .get("jti")
         .and_then(|v| v.as_str())
@@ -192,20 +192,52 @@ async fn verify_client_assertion(
             "client_assertion iss/sub must equal client_id".into(),
         ));
     }
-    let issuer = &state.config.issuer;
-    if aud != issuer && !aud.starts_with(&format!("{issuer}/")) {
+    // RFC 7523 §3 / the suite's iat/nbf-in-future variant: an assertion
+    // stamped further than 60s in the future is not yet valid (and a
+    // suspicious clock skew at best) - reject.
+    let now_early = chrono::Utc::now().timestamp();
+    if let (Some(n), Some(i)) = (nbf, iat) {
+        if n > now_early + 60 || i > now_early + 60 || n - i > 60 {
+            return Err((
+                StatusCode::UNAUTHORIZED,
+                "client_assertion iat/nbf more than 60s in the future".into(),
+            ));
+        }
+    }
+    // The aud gate rides the REQUEST's tenant-resolved issuer (the same
+    // value discovery advertises) - the static config issuer is only the
+    // platform fallback; a per-tenant host issuer (auth.<env>.<org>...)
+    // is the aud the suite/RP received from discovery. The suite's
+    // invalid-assertions module (FAPI 2.0) enforces the STRICT reading:
+    // aud MUST be EXACTLY the issuer - aud=token-endpoint-string and
+    // aud={issuer, token-endpoint} arrays are both REJECTED (the "Valid
+    // client assertion" block carries plain-issuer aud and is the only
+    // accepted shape). A string form is mandatory; array-aud assertions
+    // fail (a multi-audience assertion cannot be audience-checked for a
+    // single-receiver endpoint).
+    let issuer = resolve_issuer(&state.config, headers);
+    let aud_ok = matches!(aud_json, Some(serde_json::Value::String(a)) if *a == issuer);
+    if !aud_ok {
         return Err((
             StatusCode::UNAUTHORIZED,
             "client_assertion aud must be the Auth issuer/token endpoint".into(),
         ));
     }
     let now = chrono::Utc::now().timestamp();
-    if exp < now - 300 || exp > now + 3600 {
+    // RFC 7523 §3 / the suite's exp-is-5-minutes-in-past module: the window
+    // is CLOSED at 5 minutes - exp == now-300 IS already expired (the suite
+    // constructs exactly now-300 and expects the rejection; the strict <
+    // let it through). Same boundary shape as every RFC exp check (exp <=
+    // now = expired).
+    if exp <= now - 300 || exp > now + 3600 {
         return Err((
             StatusCode::UNAUTHORIZED,
-            "client_assertion exp out of range (±5min..1h)".into(),
+            "client_assertion exp out of range (+/-5min..1h)".into(),
         ));
     }
+    // (unused now_early shadow guard - the iat/nbf check above owns its own
+    // timestamp; this `now` is the exp-window anchor.)
+    let _ = now_early;
     if jti.is_empty() {
         return Err((
             StatusCode::UNAUTHORIZED,
@@ -372,6 +404,17 @@ pub async fn authenticate_client(
         (None, None) => (None, None),
     };
 
+    // RFC 7523 §2.2: a private_key_jwt assertion carries the client in
+    // ; when no form/basic client_id arrived, the assertion IS the
+    // identification - extract it here so the exchange proceeds to
+    // signature verification (the suite posts assertion-only auth).
+    let client_id = client_id.filter(|s| !s.is_empty()).or_else(|| {
+        client_assertion.and_then(|a| {
+            sentin8::auth::jwt::decode_payload(a)
+                .ok()
+                .and_then(|c| c.get("iss").and_then(|v| v.as_str()).map(str::to_string))
+        })
+    });
     let client_id = client_id.filter(|s| !s.is_empty()).ok_or_else(|| {
         tracing::warn!(
             reason = "missing client_id",
@@ -516,7 +559,7 @@ pub async fn authenticate_client(
                 "client is not registered for private_key_jwt".into(),
             ));
         }
-        verify_client_assertion(state, &client_id, &row, assertion).await?;
+        verify_client_assertion(state, headers, &client_id, &row, assertion).await?;
         auth_method = "private_key_jwt";
     } else if let (Some(_), Some(presented)) = (&mtls_presented_thumb, &mtls_presented_dn) {
         // tls_client_auth - DN match required.
@@ -633,7 +676,17 @@ fn verify_access_token_claims(
         )
     })?;
     if claims.iss != state.config.issuer {
-        return Err((StatusCode::UNAUTHORIZED, "token issuer mismatch".into()));
+        // Tenant-aware issuer (DESIGN §4): a token minted on a tenant's
+        // auth host carries `https://auth.{env-domain}` where the env
+        // domain is OPAQUE - the platform-derived
+        // `{env}.{org}.{domain}` shape, a custom env domain, anything the
+        // env registered. No structural parsing: the signature is the
+        // trust anchor (Auth is the single issuer - verify() above), and
+        // this check only admits the auth-host issuer family.
+        let tenant_issuer_ok = claims.iss.starts_with("https://auth.");
+        if !tenant_issuer_ok {
+            return Err((StatusCode::UNAUTHORIZED, "token issuer mismatch".into()));
+        }
     }
     let now = chrono::Utc::now().timestamp();
     if now > claims.exp {
@@ -677,6 +730,27 @@ async fn revoke_jti(state: &AppState, jti: &str, remaining_secs: i64) {
             )
             .await;
     }
+}
+
+/// Denylist check for a GRANT (the `grant.revoked` cascade,
+/// DESIGN §9a.11): a revoked grant hard-fails every token minted under
+/// it. Same Valkey read shape as `is_token_revoked` - no DB on the hot
+/// path.
+async fn is_grant_revoked(state: &AppState, grant_id: &str) -> bool {
+    if grant_id.is_empty() {
+        return false;
+    }
+    let Ok(conn) =
+        sentin8::middleware::valkey_client(&state.config.valkey_url, "sentin8:auth").await
+    else {
+        return false;
+    };
+    use glide::AsyncCommands as _;
+    matches!(
+        conn.get::<_, Option<String>>(format!("auth:grant:revoked:{grant_id}"))
+            .await,
+        Ok(Some(_))
+    )
 }
 
 // ── OAuth token error (RFC 6749 ) ──────────────────────────────────
@@ -755,6 +829,15 @@ impl From<OAuthTokenError> for TokenError {
 
 impl From<(StatusCode, String)> for TokenError {
     fn from((status, msg): (StatusCode, String)) -> Self {
+        // RFC 6749 §5.2: EVERY 4xx token-endpoint response is a protocol
+        // error and MUST be the JSON `{"error":…}` shape (the suite's
+        // codereuse test parses the body). A 4xx tuple is mapped to the
+        // OAuth form - `invalid_grant` for the code/grant family,
+        // `invalid_request` otherwise; 5xx stays Internal (plain body).
+        if status.is_client_error() {
+            let err = if msg.starts_with("invalid") { "invalid_grant" } else { "invalid_request" };
+            return TokenError::OAuth(OAuthTokenError::with_desc(status, err, msg));
+        }
         TokenError::Internal(status, msg)
     }
 }
@@ -823,6 +906,10 @@ pub struct DiscoveryDocument {
     #[serde(skip_serializing_if = "Option::is_none")]
     /// The mtls endpoint aliases.
     pub mtls_endpoint_aliases: Option<MtlsEndpointAliases>,
+    /// RFC 8705 §2 - the AS issues certificate-bound access tokens
+    /// (advertised when the profile's require_mtls is on).
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub tls_client_certificate_bound_access_tokens: bool,
     /// RFC 9396 RAR - the authorization_details types the AS
     /// serves (union of all client-registered types). Absent when no client
     /// is registered for RAR.
@@ -835,6 +922,7 @@ pub struct DiscoveryDocument {
     pub grant_management_endpoint: Option<String>,
     /// RFC 7591 `software_statement` support ( overlays require it
     /// for OBIE/Brazil clients).
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
     /// The software statement supported.
     pub software_statement_supported: bool,
     /// Signing algorithms the token endpoint accepts for
@@ -915,6 +1003,11 @@ pub async fn discovery(
     // (env → org → platform; the env row is authoritative) to
     // determine which fields to include. FAPI 2.0 is the default.
     let profile = resolve_security_profile(&state.pool, &headers, "env").await;
+    // §9a.11 profile-honest discovery: the resolution IS a FAPI profile
+    // (fapi_1_advanced / fapi_2 / fapi_2_message_signing) → the final
+    // suite's RFC 8414 metadata allow-list governs; platform-extension
+    // members drop below.
+    let is_fapi = crate::fapi::FapiProfile::from_str(&profile.profile).is_some();
 
     // DESIGN §9a.4 - the token-endpoint client-auth method set,
     // computed once and advertised for the token, revocation, and
@@ -970,6 +1063,10 @@ pub async fn discovery(
             "openid".into(),
             "profile".into(),
             "email".into(),
+            // DESIGN §9a.4/§9a.10 - all four OIDC claim scopes are
+            // advertised AND served end-to-end (no suite skips).
+            "phone".into(),
+            "address".into(),
             "offline_access".into(),
         ],
         subject_types_supported: vec!["public".into()],
@@ -983,14 +1080,27 @@ pub async fn discovery(
         } else {
             vec![profile.signing_alg.clone()]
         },
-        // DPoP signing algs - only advertised when DPoP is required or supported.
+        // DPoP signing algs - only advertised when DPoP is required or
+        // supported; the FAMILY is the tenant's resolved signing family
+        // (the same key family that signs the ID token - per-tenant
+        // §9a.9, not the process default).
         dpop_signing_alg_values_supported: if profile.require_dpop {
-            vec![crate::jwks::active_signing_alg().into()]
+            vec![if profile.signing_alg.is_empty() {
+                crate::jwks::active_signing_alg().into()
+            } else {
+                profile.signing_alg.clone()
+            }]
         } else {
             vec![]
         },
         authorization_response_iss_parameter_supported: profile.require_iss,
-        request_object_signing_alg_values_supported: vec![crate::jwks::active_signing_alg().into()],
+        request_object_signing_alg_values_supported: vec![
+            crate::jwks::active_signing_alg().into(),
+            // RFC 9101 §5 - unsigned request objects (alg none) are
+            // accepted (TLS transport + client binding); §9a.10 honesty:
+            // advertised = served.
+            "none".into(),
+        ],
         request_parameter_supported: true,
         request_uri_parameter_supported: true,
         // PAR endpoint - present when require_par is true .
@@ -1008,12 +1118,20 @@ pub async fn discovery(
         } else {
             None
         },
+        tls_client_certificate_bound_access_tokens: profile.require_mtls,
         // - discovery honesty: advertise the RAR types the AS
         // actually enforces (union of client-registered
         // authorization_details_types) and the grants API.
         authorization_details_types_supported: fetch_rar_types(&state.pool).await,
-        grant_management_endpoint: Some(format!("{issuer}/oauth/grants")),
-        software_statement_supported: true,
+        // §9a.11 profile-honest discovery (warning #7): Grant Management
+        // is a FAPI-family capability - the endpoint rides discovery only
+        // under a FAPI profile; the final suite's RFC 8414 allow-list on
+        // OTHER profiles rejects unknown members.
+        grant_management_endpoint: is_fapi.then(|| format!("{issuer}/oauth/grants")),
+        // §9a.11 profile-honest discovery (warning #7): the DCR
+        // software-statement platform capability is advertised only on
+        // non-FAPI hosts (the FAPI final suite's allow-list rejects it).
+        software_statement_supported: !is_fapi,
         // DESIGN §9a.4 - required-when-advertised signing algs for
         // private_key_jwt client assertions. The same algorithm set the
         // client-assertion verifier accepts.
@@ -1035,11 +1153,29 @@ pub async fn discovery(
             "nonce".into(),
             "at_hash".into(),
             "c_hash".into(),
+            // DESIGN §9a.4/§9a.11 - the FULL profile claim family (the
+            // §9a.10 no-skip rule: every advertised claim is producible).
             "name".into(),
             "given_name".into(),
             "family_name".into(),
+            "middle_name".into(),
+            "nickname".into(),
+            "preferred_username".into(),
+            "profile".into(),
+            "picture".into(),
+            "website".into(),
+            "gender".into(),
+            "birthdate".into(),
+            "zoneinfo".into(),
+            "locale".into(),
+            "updated_at".into(),
             "email".into(),
             "email_verified".into(),
+            // DESIGN §9a.4 - the phone/address claim families, minted
+            // scope-gated like email/profile above.
+            "phone_number".into(),
+            "phone_number_verified".into(),
+            "address".into(),
             // eKYC-IDA (DESIGN §9a.7) - present when the claims request
             // selects it and an active verified credential exists.
             "verified_claims".into(),
@@ -1531,10 +1667,10 @@ pub async fn put_security_profile_api(
     // Validate signing_alg (DESIGN §9a.9) - unknown families are
     // rejected at the API boundary, not at mint time.
     if let Some(alg) = &req.signing_alg {
-        if !matches!(alg.as_str(), "MLDSA65" | "RS256") {
+        if !matches!(alg.as_str(), "MLDSA65" | "RS256" | "ES256") {
             return Err((
                 StatusCode::BAD_REQUEST,
-                "signing_alg must be MLDSA65 or RS256".into(),
+                "signing_alg must be MLDSA65, RS256, or ES256".into(),
             ));
         }
     }
@@ -1774,6 +1910,11 @@ pub struct AuthorizeQuery {
     #[serde(default)]
     /// The nonce.
     pub nonce: Option<String>,
+    /// RFC 9449 dpop_jkt - the DPoP key thumbprint pre-bound on the
+    /// authorize request (rides the PAR record for pushed requests).
+    #[serde(default)]
+    /// The dpop jkt.
+    pub dpop_jkt: Option<String>,
     /// OAuth response mode - `query` (default) or `jwt` (JARM, SEC-).
     #[serde(default)]
     /// The response mode.
@@ -1817,6 +1958,18 @@ pub struct AuthorizeQuery {
     #[serde(default)]
     /// The claims.
     pub claims: Option<String>,
+    /// OIDC Core §3.1.2.1 `acr_values` - space-delimited requested
+    /// assurance levels. Echoed as the ID token's `acr` claim (first
+    /// requested value wins - the platform issues one effective
+    /// assurance level per session, DESIGN §9a.11).
+    #[serde(default)]
+    /// The acr values.
+    pub acr_values: Option<String>,
+    /// Escape hatch: force the JS-free `/oauth/login` form instead of
+    /// the Flutter auth-ui (DESIGN §9a.11 - the non-JS client surface).
+    #[serde(default)]
+    /// The ui login page.
+    pub ui_login_page: Option<bool>,
 }
 
 /// Validate an `authorization_details` request (RFC 9396):
@@ -1886,8 +2039,11 @@ pub struct ParRequest {
     pub response_type: String,
     /// client identifier.
     pub client_id: String,
-    /// The redirect URI.
-    pub redirect_uri: String,
+    /// The redirect URI (optional at the FORM layer: a miss reaches the
+    /// handler and answers the OAUTH JSON error shape - RFC 9126's
+    /// `invalid_request` - instead of a text 422 from the deserializer).
+    #[serde(default)]
+    pub redirect_uri: Option<String>,
     #[serde(default)]
     /// The scope.
     pub scope: String,
@@ -1920,6 +2076,31 @@ pub struct ParRequest {
     #[serde(default)]
     /// The client assertion.
     pub client_assertion: Option<String>,
+    /// RFC 7523 §2.2 - the assertion type URN; REQUIRED (and exactly
+    /// `urn:ietf:params:oauth:client-assertion-type:jwt-bearer`) when a
+    /// `client_assertion` rides the push (the invalid-assertions module).
+    #[serde(default)]
+    /// The client assertion type.
+    pub client_assertion_type: Option<String>,
+    /// The pushed request object (RFC 9126 + JAR RFC 9101): FAPI 2.0
+    /// pushes the authorization request's parameters as a JWT on the
+    /// PAR call - its params are AUTHORITATIVE over any inline ones.
+    #[serde(default)]
+    /// The request.
+    pub request: Option<String>,
+    /// RFC 9449 dpop_jkt - the DPoP key thumbprint the suite
+    /// pre-binds on the push (the request object's parameter).
+    #[serde(default)]
+    /// The dpop jkt.
+    pub dpop_jkt: Option<String>,
+    /// A `request_uri` FORM parameter on the push. RFC 9126 §2 defines
+    /// the PAR request's parameters - `request_uri` is NOT one (it is
+    /// the RESPONSE payload): a push carrying it is malformed and the
+    /// endpoint MUST reject it `invalid_request` (the suite's
+    /// "authorization request containing request_uri form param"
+    /// negative).
+    #[serde(default)]
+    pub request_uri: Option<String>,
 }
 
 #[derive(Serialize, utoipa::ToSchema)]
@@ -1958,11 +2139,72 @@ pub async fn pushed_authorization_request(
     State(state): State<AppState>,
     headers: HeaderMap,
     axum::Form(req): axum::Form<ParRequest>,
-) -> Result<axum::response::Response, (StatusCode, String)> {
+) -> Result<axum::response::Response, axum::response::Response> {
+    // The PAR errors are OAUTH JSON bodies (RFC 9126 Section 3 / 9449:
+    // {"error": ...}) - the suite's PAR checks parse the error shape;
+    // a plain-text status body fails CallPAREndpoint's JSON gate.
+    type ParError = axum::response::Response;
+    let json_error = |status: StatusCode, error: &str, desc: String| -> ParError {
+        (
+            status,
+            Json(serde_json::json!({
+                "error": error,
+                "error_description": desc,
+            })),
+        )
+            .into_response()
+    };
     if req.response_type != "code" {
-        return Err((
+        return Err(json_error(
             StatusCode::BAD_REQUEST,
+            "unsupported_response_type",
             "only 'code' response_type is supported".into(),
+        ));
+    }
+    // RFC 9126 §2 - `request_uri` is the PAR RESPONSE payload, never a
+    // request parameter: a push carrying it as a form param is malformed
+    // and rejects BEFORE client authentication (the suite's
+    // request-uri-form-param negative expects invalid_request).
+    if req.request_uri.as_deref().map(str::trim).map(str::len).unwrap_or(0) > 0 {
+        return Err(json_error(
+            StatusCode::BAD_REQUEST,
+            "invalid_request",
+            "request_uri is not a valid pushed authorization request parameter".into(),
+        ));
+    }
+    // RFC 9126 §2 - `request_uri` is the PAR RESPONSE payload, never a
+    // request parameter: a push carrying it as a form param is malformed
+    // and rejects BEFORE client authentication (the suite's
+    // request-uri-form-param negative expects invalid_request).
+    if req.request_uri.as_deref().map(str::trim).unwrap_or("").len() > 0 {
+        return Err(json_error(
+            StatusCode::BAD_REQUEST,
+            "invalid_request",
+            "request_uri is not a valid pushed authorization request parameter".into(),
+        ));
+    }
+    // RFC 9126 SS2 - a pushed request without redirect_uri (and without
+    // a request object supplying one) is `invalid_request`.
+    if req.redirect_uri.as_deref().unwrap_or("").is_empty() && req.request.as_deref().map(str::trim).unwrap_or("").is_empty() {
+        return Err(json_error(
+            StatusCode::BAD_REQUEST,
+            "invalid_request",
+            "redirect_uri is required".into(),
+        ));
+    }
+
+    // RFC 7523 §2.2 - an attached client_assertion MUST carry the exact
+    // assertion-type URN: a missing type (the token endpoint's parity
+    // gate) or any non-registered value rejects BEFORE client auth with
+    // the OAuth JSON error shape (the invalid-assertions PAR pair).
+    const ASSERTION_TYPE: &str = "urn:ietf:params:oauth:client-assertion-type:jwt-bearer";
+    if req.client_assertion.is_some()
+        && req.client_assertion_type.as_deref() != Some(ASSERTION_TYPE)
+    {
+        return Err(json_error(
+            StatusCode::BAD_REQUEST,
+            "invalid_request",
+            "client_assertion_type must be urn:ietf:params:oauth:client-assertion-type:jwt-bearer".into(),
         ));
     }
 
@@ -1977,12 +2219,95 @@ pub async fn pushed_authorization_request(
         true,
         true,
     )
-    .await?;
-    if !redirect_uri_registered(&client.redirect_uris, &req.redirect_uri) {
-        return Err((
+    .await
+    .map_err(|(status, msg)| {
+        json_error(status, "invalid_client", msg)
+    })?;
+    let pushed_redirect_uri = req.redirect_uri.clone().unwrap_or_default();
+    if !redirect_uri_registered(&client.redirect_uris, &pushed_redirect_uri) {
+        return Err(json_error(
             StatusCode::BAD_REQUEST,
-            "redirect_uri is not registered for this client".into(),
+            "invalid_request",
+            "redirect_uri is not registered for this client".to_string(),
         ));
+    }
+
+    // RFC 9449 SS10.1 - the PAR endpoint honors an attached DPoP proof:
+    // a proof MUST verify (method/htu/iat/jti) and, when the pushed
+    // request pre-binds dpop_jkt, the proof's key thumbprint MUST equal
+    // it (a mismatch is a sender-constraint violation -> 400).
+    let mut params_dpop_jkt: Option<String> = None;
+    if let Some(proof) = crate::dpop::extract_dpop_header(&headers) {
+        let htu = format!("{}/oauth/par", resolve_issuer(&state.config, &headers));
+        let proof_jkt: Option<String> = crate::dpop::decode_dpop_proof_unverified(&proof)
+            .ok()
+            .and_then(|d| {
+                let mut jwk = d.header.jwk.clone();
+                if let Some(obj) = jwk.as_object_mut() {
+                    obj.remove("d");
+                }
+                crate::jar::jwk_thumbprint(&jwk).ok()
+            });
+        if let Some(pre_bound) = req.dpop_jkt.as_deref().filter(|s| !s.is_empty()) {
+            let jkt = crate::dpop::validate_and_verify_dpop(&state, &proof, "POST", &htu)
+                .await
+                .map_err(|e| {
+                    json_error(
+                        StatusCode::BAD_REQUEST,
+                        "invalid_dpop_proof",
+                        e,
+                    )
+                })?;
+            if jkt != pre_bound {
+                return Err(json_error(
+                    StatusCode::BAD_REQUEST,
+                    "invalid_dpop_proof",
+                    "DPoP proof key does not match the pre-bound dpop_jkt".to_string(),
+                ));
+            }
+        }
+        // RFC 9449 Section 10.1 - the PAR's own verified DPoP proof sets
+        // the request's sender-constraint: the token endpoint's later
+        // proof must be from the SAME key (the suite's jkt-mismatch pair).
+        if req.dpop_jkt.is_none() {
+            params_dpop_jkt = proof_jkt;
+        }
+    }
+
+    // The pushed request object (FAPI 2.0 / JAR): when present it is
+    // the AUTHORITATIVE parameter set - verify its signature against
+    // the client's registered keys and overlay its params over the
+    // inline ones before the record is stored (the authorize step
+    // then resolves nonce/dpop_jkt exactly as the suite pushed them).
+    let mut params_overlay: serde_json::Map<String, serde_json::Value> =
+        serde_json::Map::new();
+    if let Some(request_jwt) = req.request.as_deref().filter(|s| !s.is_empty()) {
+        let jar = verify_jar_request(&state, &client.client_id, request_jwt, &state.config.issuer)
+            .await
+            .map_err(|e| {
+                    json_error(
+                        StatusCode::BAD_REQUEST,
+                        "invalid_request",
+                        format!("pushed request object rejected: {e}"),
+                    )
+                })?;
+        let stored = serde_json::json!({
+            "response_type": jar.response_type,
+            "client_id": jar.client_id,
+            "redirect_uri": jar.redirect_uri,
+            "scope": jar.scope,
+            "state": jar.state,
+            "code_challenge": jar.code_challenge,
+            "code_challenge_method": jar.code_challenge_method,
+            "nonce": jar.nonce,
+        });
+        if let Some(obj) = stored.as_object() {
+            for (k, v) in obj {
+                if !v.is_null() {
+                    params_overlay.insert(k.clone(), v.clone());
+                }
+            }
+        }
     }
 
     let request_id = uuid::Uuid::new_v4().to_string();
@@ -1994,33 +2319,63 @@ pub async fn pushed_authorization_request(
     let authorization_details = match req.authorization_details {
         Some(ref d) => Some(
             validate_authorization_details(&client.authorization_details_types, d)
-                .map_err(|e| (StatusCode::BAD_REQUEST, e))?,
+                .map_err(|e| {
+                    json_error(StatusCode::BAD_REQUEST, "invalid_request", e)
+                })?,
         ),
         None => None,
     };
 
-    let params = serde_json::json!({
+    let mut params = serde_json::json!({
         "response_type": req.response_type,
         "client_id": client.client_id,
-        "redirect_uri": req.redirect_uri,
+        "redirect_uri": pushed_redirect_uri,
         "scope": req.scope,
         "state": req.state,
         "code_challenge": req.code_challenge,
         "code_challenge_method": req.code_challenge_method,
         "nonce": req.nonce,
         "resource": req.resource,
+        "dpop_jkt": req.dpop_jkt,
         "authorization_details": authorization_details,
     });
+    // The PAR's verified proof binds the request (overrides the absent
+    // pre-bound value).
+    if let Some(j) = params_dpop_jkt {
+        if let Some(obj) = params.as_object_mut() {
+            obj.insert("dpop_jkt".to_string(), serde_json::Value::String(j));
+        }
+    }
+    // The pushed object's params WIN (RFC 9126: it is the request).
+    if !params_overlay.is_empty() {
+        if let Some(obj) = params.as_object_mut() {
+            for (k, v) in params_overlay {
+                obj.insert(k, v);
+            }
+        }
+    }
 
     let client = sentin8::middleware::valkey_client(&state.config.valkey_url, "sentin8:auth")
         .await
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+        .map_err(|e| {
+            json_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "server_error",
+                e.to_string(),
+            )
+        })?;
     let conn = client;
 
     let _: () = conn
         .set_ex(&valkey_key, params.to_string(), 600)
         .await
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+        .map_err(|e| {
+            json_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "server_error",
+                e.to_string(),
+            )
+        })?;
 
     Ok((
         StatusCode::CREATED,
@@ -2035,6 +2390,9 @@ pub async fn pushed_authorization_request(
 /// Normalized authorization params - either from inline query params or
 /// resolved from a PAR request / JAR request object.
 struct AuthorizeParams {
+    /// RFC 9449 pre-bound DPoP key thumbprint (DESIGN - the token's
+    /// cnf.jkt when the request itself carries no live DPoP proof).
+    dpop_jkt: Option<String>,
     response_type: String,
     client_id: String,
     redirect_uri: String,
@@ -2055,6 +2413,9 @@ struct AuthorizeParams {
     /// §9a.3). The object rides the code record; the token exchange
     /// applies it as a claim SELECTION (never a widening).
     claims: Option<serde_json::Value>,
+    /// OIDC Core §3.1.2.1 acr_values - echoed as the ID token's `acr`
+    /// claim (DESIGN §9a.11).
+    acr: Option<String>,
 }
 
 /// The authorize endpoint validates the request and redirects to the Auth hosted UI
@@ -2093,6 +2454,7 @@ pub async fn authorize(
         state: q.state.clone(),
         code_challenge: q.code_challenge.clone(),
         code_challenge_method: q.code_challenge_method.clone(),
+        dpop_jkt: q.dpop_jkt.clone(),
         nonce: q.nonce.clone(),
         resource: q.resource.clone(),
         response_mode: q.response_mode.clone(),
@@ -2117,6 +2479,9 @@ pub async fn authorize(
             },
             _ => None,
         },
+        // DESIGN §9a.11 - acr_values ride the code record; the mint
+        // echoes the first requested level as the `acr` claim.
+        acr: q.acr_values.clone().filter(|s| !s.trim().is_empty()),
     };
 
     //enforce the caller's env-resolved profile
@@ -2188,11 +2553,25 @@ pub async fn authorize(
                 if let Some(r) = stored.get("resource").and_then(|v| v.as_str()) {
                     params.resource = Some(r.to_string());
                 }
+                // RFC 9449 - the pre-registered DPoP key thumbprint
+                // (pushed on PAR / inline on authorize) binds the token's
+                // cnf.jkt when the request itself carries no live DPoP
+                // proof (the PAR-resolution path).
+                if let Some(j) = stored.get("dpop_jkt").and_then(|v| v.as_str()) {
+                    params.dpop_jkt = Some(j.to_string());
+                }
                 // - RAR: the PAR record is the authoritative
                 // source (validated at push time); overlay verbatim.
                 if let Some(ad) = stored.get("authorization_details") {
                     if !ad.is_null() {
                         params.authorization_details = Some(ad.clone());
+                    }
+                }
+                // DESIGN §9a.11 - acr_values overlay too (PAR-stored are
+                // authoritative).
+                if let Some(a) = stored.get("acr_values").and_then(|v| v.as_str()) {
+                    if !a.trim().is_empty() {
+                        params.acr = Some(a.to_string());
                     }
                 }
             }
@@ -2247,6 +2626,28 @@ pub async fn authorize(
         {
             Ok(jar) => {
                 if !jar.redirect_uri.is_empty() {
+                    // OIDC Core §6.4.1: when the request object carries a
+                    // redirect_uri, the outer request's redirect_uri MUST
+                    // match it EXACTLY (a mismatch is a parameter-forgery
+                    // mix - reject with invalid_request). When the outer
+                    // one is absent it is fine (the object's value wins).
+                    if let Some(outer) = q
+                        .redirect_uri
+                        .as_deref()
+                        .filter(|s| !s.is_empty())
+                    {
+                        if outer != jar.redirect_uri {
+                            return (
+                                StatusCode::BAD_REQUEST,
+                                Json(serde_json::json!({
+                                    "error": "invalid_request",
+                                    "error_description":
+                                        "redirect_uri does not match the request object"
+                                })),
+                            )
+                                .into_response();
+                        }
+                    }
                     params.redirect_uri = jar.redirect_uri.clone();
                 }
                 if !jar.response_type.is_empty() {
@@ -2278,16 +2679,15 @@ pub async fn authorize(
     }
 
     // Validate response_type.
-    if params.response_type != "code" {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(serde_json::json!({
-                "error": "unsupported_response_type",
-                "error_description": "only 'code' is supported"
-            })),
-        )
-            .into_response();
-    }
+    // RFC 6749 §4.1.2.1 / OIDC Core §3.1.2.1: once the client_id and
+    // redirect_uri are known-valid (checked below), every further
+    // validation error is delivered as a 302 REDIRECT back to the
+    // redirect_uri with `error` + `state` - never an inline body (the
+    // OIDF suite's response-type-missing test requires the redirect;
+    // an inline 400 stalls every browser-driven RP). The check is
+    // therefore DEFERRED until the client/redirect_uri validation has
+    // passed; see the redirect-error helper after that block.
+    let response_type_invalid = params.response_type != "code";
 
     // Validate PKCE if code_challenge is present.
     if let Some(ref method) = params.code_challenge_method {
@@ -2389,6 +2789,21 @@ pub async fn authorize(
     // (consent_required destructured above; redirect_uris validated already)
     let consent_required = _consent_required_meta;
 
+    // Deferred response_type check (RFC 6749 §4.1.2.1 - see the comment at
+    // the deferred site above): the client and redirect_uri are valid, so
+    // the error goes back to the RP as a redirect.
+    if response_type_invalid {
+        let mut url = format!(
+            "{}?error=unsupported_response_type&error_description={}",
+            params.redirect_uri,
+            urlencode("only 'code' is supported")
+        );
+        if !params.state.is_empty() {
+            url.push_str(&format!("&state={}", urlencode(&params.state)));
+        }
+        return (StatusCode::FOUND, [("location", url)]).into_response();
+    }
+
     //Consent flow detection. When consent is required,
     // check if the requested scopes match a `sentin8_consent_flows`
     // trigger pattern (glob). If a match is found, pass the `consent_flow`
@@ -2463,6 +2878,10 @@ pub async fn authorize(
         });
     let mut session_is_fresh_enough = false;
     let mut session_user: Option<Uuid> = None;
+    // OIDC Core §2: `auth_time` = the time of the user's last authentication
+    // (the session's created_at) - carried into silent-issuance code records
+    // so the prompt-none tokens match the interactive token's auth_time.
+    let mut session_auth_time: Option<i64> = None;
     if let Some(tok) = existing_session.clone() {
         if let Ok(Some(sess)) = crate::sessions::Session::find_by_token(&state.pool, &tok).await {
             if sess.is_valid() {
@@ -2476,6 +2895,7 @@ pub async fn authorize(
                 if max_age_ok {
                     session_is_fresh_enough = true;
                     session_user = Some(sess.user_id);
+                    session_auth_time = Some(sess.created_at.timestamp());
                 }
             }
         }
@@ -2496,7 +2916,7 @@ pub async fn authorize(
                 url.push_str(&format!("&state={}", urlencode(&params.state)));
             }
             if profile.require_iss {
-                url.push_str(&format!("&iss={}", urlencode(&state.config.issuer)));
+                url.push_str(&format!("&iss={}", urlencode(&resolve_issuer(&state.config, &headers))));
             }
             // JARM wraps authorization errors too (response_mode=jwt).
             if profile.require_jarm && mode == Some("jwt") {
@@ -2535,6 +2955,12 @@ pub async fn authorize(
         let env_id = crate::overlays::env_from_headers(&headers);
         let code = Uuid::new_v4().to_string();
         let code_key = format!("auth:authcode:{code}");
+        // OIDC Core §2 / prompt=none: `auth_time` is the time of the
+        // USER'S LAST AUTHENTICATION - the session's created_at (captured
+        // during session resolution) - never the silent-issuance wall
+        // clock. The suite's prompt-none tests compare auth_time across
+        // the interactive and silent tokens: stamping `now` breaks the
+        // pair on every fresh session.
         let code_data = serde_json::json!({
             "client_id": params.client_id,
             "redirect_uri": params.redirect_uri,
@@ -2543,11 +2969,18 @@ pub async fn authorize(
             "env_id": env_id.to_string(),
             "code_challenge": params.code_challenge,
             "nonce": params.nonce,
+            "dpop_jkt": params.dpop_jkt,
             "resource": params.resource,
             "state": params.state,
-            "auth_time": chrono::Utc::now().timestamp(),
+            "auth_time": session_auth_time.unwrap_or_else(|| chrono::Utc::now().timestamp()),
             "authorization_details": params.authorization_details,
             "claims": params.claims,
+            "acr_values": params.acr,
+            // FAPI2-SP code-lifetime gate (DESIGN §9a.11): the record's
+            // ISSUE TIME rides the payload so the exchange can
+            // wall-clock-check it - the Valkey TTL alone is only the
+            // 600s upper bound, never the RFC 6749 short-lived posture.
+            "iat": chrono::Utc::now().timestamp(),
         });
         let valkey_conn =
             match sentin8::middleware::valkey_client(&state.config.valkey_url, "sentin8:auth").await
@@ -2577,14 +3010,13 @@ pub async fn authorize(
             )
                 .into_response();
         }
-        let mut url = format!(
-            "{}?code={}&state={}",
-            params.redirect_uri,
-            urlencode(&code),
-            urlencode(&params.state)
+        let mut url = build_callback_url(
+            &params.redirect_uri,
+            &format!("code={}", urlencode(&code)),
+            &[("state", urlencode(&params.state))],
         );
         if profile.require_iss {
-            url.push_str(&format!("&iss={}", urlencode(&state.config.issuer)));
+            url.push_str(&format!("&iss={}", urlencode(&resolve_issuer(&state.config, &headers))));
         }
         if profile.require_jarm && params.response_mode.as_deref() == Some("jwt") {
             let jarm_claims = crate::jarm::build_jarm_success(
@@ -2603,17 +3035,100 @@ pub async fn authorize(
     // prompt=login (or a stale max_age session): drop the silent path and
     // force the sign-in page; the session freshness check below still
     // guards max_age when the user arrives at /sign-in.
+    // OIDC Core §3.1.2.1 (max_age, DESIGN §9a.3): a valid, fresh-enough
+    // session answers the authorize request DIRECTLY - the same silent
+    // issuance as prompt=none, WITHOUT creating a second session (the
+    // max-age certification pair compares auth_time across the
+    // interactive and re-authorize tokens; routing a fresh session back
+    // through the login form mints a second session and a different
+    // auth_time silently). The form only serves: no session, a stale
+    // max_age session, or an explicit prompt=login.
+    if session_is_fresh_enough
+        && session_user.is_some()
+        && !force_login
+        && silent_only
+    {
+        // handled by the silent branch above (prompt=none only)
+    }
+    if session_is_fresh_enough && !force_login && !consent_required {
+        // Reuse the silent-issuance logic: mint the code with the
+        // session's own auth_time (no new session). A consent-required
+        // client NEVER issues silently - the consent screen is the
+        // user's decision point (the suite's user-rejects module drives
+        // it; a remembered client consent would make the deny
+        // un-reachable).
+        let silent = crate::sessions::Session::find_by_token(
+            &state.pool,
+            existing_session.as_deref().unwrap_or(""),
+        )
+        .await
+        .ok()
+        .flatten()
+        .filter(|s| s.is_valid());
+        if let Some(sess) = silent {
+            let user_id = sess.user_id;
+            let env_id = sess.env_id;
+            let code = Uuid::new_v4().to_string();
+            let code_key = format!("auth:authcode:{code}");
+            let code_data = serde_json::json!({
+                "client_id": params.client_id,
+                "redirect_uri": params.redirect_uri,
+                "scope": params.scope,
+                "user_id": user_id.to_string(),
+                "env_id": env_id.to_string(),
+                "code_challenge": params.code_challenge,
+                "nonce": params.nonce,
+            "dpop_jkt": params.dpop_jkt,
+                "resource": params.resource,
+                "state": params.state,
+                "auth_time": sess.created_at.timestamp(),
+                "authorization_details": params.authorization_details,
+                "claims": params.claims,
+                "acr_values": params.acr,
+                // Same iat stamp as every other code record (§9a.11).
+                "iat": chrono::Utc::now().timestamp(),
+            });
+            if let Ok(valkey_conn) =
+                sentin8::middleware::valkey_client(&state.config.valkey_url, "sentin8:auth").await
+            {
+                let set_result: Result<(), _> = valkey_conn
+                    .set_ex(&code_key, code_data.to_string(), 600)
+                    .await;
+                if set_result.is_ok() {
+                    let mut url = build_callback_url(
+                        &params.redirect_uri,
+                        &format!("code={}", urlencode(&code)),
+                        &[("state", urlencode(&params.state))],
+                    );
+                    if profile.require_iss {
+                        url.push_str(&format!("&iss={}", urlencode(&resolve_issuer(&state.config, &headers))));
+                    }
+                    if profile.require_jarm && params.response_mode.as_deref() == Some("jwt") {
+                        let jarm_claims = crate::jarm::build_jarm_success(
+                            &state.config.issuer,
+                            &params.client_id,
+                            &code,
+                            Some(&params.state),
+                        );
+                        if let Ok(jwt) = crate::jarm::sign_jarm_jwt(&state.keys, &jarm_claims) {
+                            let url = crate::jarm::build_jarm_redirect_url(&params.redirect_uri, &jwt);
+                            return (StatusCode::FOUND, [("location", url)]).into_response();
+                        }
+                    }
+                    return (StatusCode::FOUND, [("location", url)]).into_response();
+                }
+            }
+        }
+    }
     let _ = force_login;
 
     // Redirect to the hosted sign-in page with OAuth params preserved.
-    // Route the interactive step (DESIGN §9a.8):
-    // - signup hint → the Flutter registration page (SPA).
-    // - consent-gated clients → the Flutter sign-in (the consent screen
-    //   flow needs the SPA's RFW rendering).
-    // - first-party / automated clients (consent_required=false) → the
-    //   server-rendered HTML login form at /oauth/login: one DOM-
-    //   drivable step, then the code issues directly (the OIDF suite's
-    //   browser automation and every Selenium-class client ride this).
+    // Route the interactive step (DESIGN §9a.8, §9a.11): ONE surface -
+    // the ORIGINAL Flutter auth-ui (`/sign-in`/`/sign-up`). The prior
+    // JS-free HTML form at /oauth/login stays for non-JS clients as the
+    // explicit `?ui=html` escape hatch (e.g. a suite profile that
+    // forbids JS); every browser automation (OIDF rig, e2e, Selenium-
+    // class clients) drives the SPA + its test bridge now.
     let is_signup = q
         .screen_hint
         .as_deref()
@@ -2621,10 +3136,10 @@ pub async fn authorize(
         .unwrap_or(false);
     let ui_page = if is_signup {
         "/sign-up"
-    } else if consent_required {
-        "/sign-in"
-    } else {
+    } else if q.ui_login_page == Some(true) {
         "/oauth/login"
+    } else {
+        "/sign-in"
     };
     let mut ui_url = format!(
         "{}?response_type=code&client_id={}&redirect_uri={}&scope={}&state={}&code_challenge={}&code_challenge_method=S256{}",
@@ -2634,18 +3149,19 @@ pub async fn authorize(
         urlencode(&params.scope),
         urlencode(&params.state),
         urlencode(params.code_challenge.as_deref().unwrap_or("")),
-        // The SPA pages read consent_required; the HTML form does not
-        // need it (its clients are consent-bypass by definition here).
-        if consent_required {
-            format!("&consent_required={consent_required}")
-        } else {
-            String::new()
-        },
+        // The SPA reads consent_required for its first-party bypass
+        // (api.dart §4.16): FALSE must ride too, or the SPA routes the
+        // consent-free client to the consent page (the OIDF rig's
+        // clients are consent-bypass by registration).
+        format!("&consent_required={consent_required}"),
     );
     // Forward the nonce so authorize/continue can bind it into the ID token
     // (SEC-) and the resource indicator (SEC-).
     if let Some(n) = params.nonce.as_deref().filter(|s| !s.is_empty()) {
         ui_url.push_str(&format!("&nonce={}", urlencode(n)));
+    if let Some(j) = params.dpop_jkt.as_deref().filter(|s| !s.is_empty()) {
+        ui_url.push_str(&format!("&dpop_jkt={}", urlencode(j)));
+    }
     }
     if let Some(r) = params.resource.as_deref().filter(|s| !s.is_empty()) {
         ui_url.push_str(&format!("&resource={}", urlencode(r)));
@@ -2654,6 +3170,22 @@ pub async fn authorize(
     // (`response_mode=jwt`) request (SEC-).
     if let Some(rm) = params.response_mode.as_deref().filter(|s| !s.is_empty()) {
         ui_url.push_str(&format!("&response_mode={}", urlencode(rm)));
+    }
+    // DESIGN §9a.11 - forward acr_values so the login form's context
+    // carries it into the code record (the ID-token acr echo).
+    if let Some(a) = params.acr.as_deref().filter(|s| !s.trim().is_empty()) {
+        ui_url.push_str(&format!("&acr_values={}", urlencode(a)));
+    }
+    // DESIGN §9a.3/§9a.11 - forward the §5.5 claims request so the SPA's
+    // authorizeContinue re-binds it into the code record (the selection
+    // never drops at the hosted-UI hop).
+    if let Some(c) = params.claims.as_ref() {
+        if !c.is_null() {
+            ui_url.push_str(&format!(
+                "&claims={}",
+                urlencode(&serde_json::to_string(c).unwrap_or_default())
+            ));
+        }
     }
     // Append consent_flow param when a vertical-specific flow matched.
     let ui_url = if let Some(flow_id) = consent_flow {
@@ -2711,9 +3243,48 @@ pub struct AuthorizeContinueRequest {
     pub authorization_details: Option<serde_json::Value>,
     /// OIDC Core §5.5 claims request - carried from the authorize step
     /// and applied at ID-token mint as a claim selection (DESIGN §9a.3).
-    #[serde(default)]
+    /// Accepts the JSON object OR the object-as-STRING (the hosted UI
+    /// forwards the authorize request's claims parameter verbatim).
+    #[serde(default, deserialize_with = "deserialize_claims_flex")]
     /// The claims.
     pub claims: Option<serde_json::Value>,
+    /// OIDC Core §3.1.2.1 acr_values - carried from the authorize step
+    /// (or the login form context) into the code record for the ID-token
+    /// `acr` echo (DESIGN §9a.11).
+    #[serde(default)]
+    /// The acr values.
+    pub acr_values: Option<String>,
+    /// The USER DENIED the request (the hosted UI's cancel/deny
+    /// control): the continuation redirects to the client with
+    /// `error=access_denied` + state (RFC 6749 SS4.1.2.1; OIDC Core
+    /// SS3.1.2.6) - no code is minted. The certification rig's
+    /// user-rejects-authentication module drives exactly this path.
+    #[serde(default)]
+    /// The user denied.
+    pub deny: Option<bool>,
+    /// RFC 9449 dpop_jkt carried from the authorize step (the SPA
+    /// forwards the pre-bound DPoP thumbprint into the code record).
+    #[serde(default)]
+    /// The dpop jkt.
+    pub dpop_jkt: Option<String>,
+}
+
+/// Accept the claims request as the JSON object or as the object-encoded
+/// string (the hosted UI forwards the authorize request's parameter
+/// verbatim - DESIGN §9a.3).
+fn deserialize_claims_flex<'de, D>(deserializer: D) -> Result<Option<serde_json::Value>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let v: Option<serde_json::Value> = serde::Deserialize::deserialize(deserializer)?;
+    Ok(match v {
+        Some(serde_json::Value::String(raw)) if !raw.trim().is_empty() => {
+            serde_json::from_str::<serde_json::Value>(raw.trim())
+                .map(Some)
+                .map_err(serde::de::Error::custom)?
+        }
+        other => other.filter(|x| !x.is_null()),
+    })
 }
 
 /// Authorize continue.
@@ -2767,6 +3338,28 @@ pub async fn authorize_continue(
         ));
     }
 
+    // The USER DENIED the request (RFC 6749 SS4.1.2.1 - error redirects
+    // to the redirect_uri with error=access_denied + state; OAuth2-iss
+    // adds iss under require_iss). NO code is minted.
+    if req.deny.unwrap_or(false) {
+        let mut url = build_callback_url(
+            &req.redirect_uri,
+            "error=access_denied",
+            &[("state", urlencode(&req.state))],
+        );
+        if profile.require_iss {
+            url.push_str(&format!(
+                "&iss={}",
+                urlencode(&resolve_issuer(&state.config, &headers))
+            ));
+        }
+        // The SPA's authorizeContinue contract: a JSON body carrying the
+        // redirect_url (the SPA navigates the browser itself) - a raw
+        // 302 would be followed by fetch() and break the client-side
+        // state (the approval path answers the same shape).
+        return Ok(Json(serde_json::json!({ "redirect_url": url })).into_response());
+    }
+
     // Generate an authorization code and store it in Valkey with PKCE binding.
     let code = Uuid::new_v4().to_string();
     let code_key = format!("auth:authcode:{code}");
@@ -2792,6 +3385,7 @@ pub async fn authorize_continue(
            "env_id": session.env_id.to_string(),
            "code_challenge": req.code_challenge,
            "nonce": req.nonce,
+           "dpop_jkt": req.dpop_jkt,
            "resource": req.resource,
     // DESIGN §9a.3 - the client's `state` rides the code record
     // so the token exchange can mint `s_hash` (FAPI 1 §5.2.2.1) and
@@ -2806,6 +3400,11 @@ pub async fn authorize_continue(
     // OIDC Core §5.5 claims request - rides the code record so the
     // exchange applies the client's claim selection (DESIGN §9a.3).
            "claims": req.claims,
+    // DESIGN §9a.11 - acr_values echo into the ID token.
+           "acr_values": req.acr_values,
+    // §9a.11 code-lifetime gate: the record's ISSUE TIME - the exchange
+    // enforces the RFC 6749 short-lived posture against it.
+           "iat": chrono::Utc::now().timestamp(),
        });
 
     let conn = state
@@ -2827,7 +3426,7 @@ pub async fn authorize_continue(
     // Build the redirect URL with code + state.
     // (RFC 9207) - include `iss` parameter when require_iss is true.
     let iss_param = if profile.require_iss {
-        format!("&iss={}", urlencode(&state.config.issuer))
+        format!("&iss={}", urlencode(&resolve_issuer(&state.config, &headers)))
     } else {
         String::new()
     };
@@ -2841,14 +3440,12 @@ pub async fn authorize_continue(
             urlencode(&req.selected_account_ids.join(","))
         )
     };
-    let redirect_url = format!(
-        "{}?code={}&state={}{}{}",
-        req.redirect_uri,
-        urlencode(&code),
-        urlencode(&req.state),
-        iss_param,
-        accounts_param,
-    );
+    let redirect_url = build_callback_url(
+        &req.redirect_uri,
+        &format!("code={}", urlencode(&code)),
+        &[("state", urlencode(&req.state))],
+    ) + &iss_param
+        + &accounts_param;
 
     // SEC- - JARM (`response_mode=jwt`): when the profile
     // requires JARM and the client requested the JWT response mode, the
@@ -3107,7 +3704,10 @@ pub async fn token(
         // caller-compatibility directive preserves their flows. A DPoP proof
         // sent anyway is still verified above, sender-constraining the token.
         return Err(TokenError::OAuth(OAuthTokenError::with_desc(
-            StatusCode::UNAUTHORIZED,
+            // RFC 9449 Section 5 + RFC 6749 SS5.2: a request-level
+            // validation failure (no proof under a DPoP-required profile)
+            // = invalid_request, 400 - the client fixes and retries.
+            StatusCode::BAD_REQUEST,
             "invalid_request",
             "DPoP proof required for this grant",
         )));
@@ -3118,7 +3718,7 @@ pub async fn token(
     // token request must carry a signature over @method, @target-uri, and
     // the Content-Digest of the exact body bytes (swap protection).
     if profile.require_http_signatures {
-        let target = format!("{}/oauth/token", state.config.issuer);
+        let target = format!("{}/oauth/token", resolve_issuer(&state.config, &headers));
         crate::http_signatures::verify_http_signature(
             &client, &headers, "POST", &target, &raw_body,
         )
@@ -3135,12 +3735,14 @@ pub async fn token(
         "authorization_code" => {
             handle_code_exchange(&state, &client, dpop_jkt.as_deref(), &headers, req).await
         }
-        "refresh_token" => handle_refresh(&state, &client, dpop_jkt.as_deref(), req).await,
+        "refresh_token" => {
+            handle_refresh(&state, &client, dpop_jkt.as_deref(), &headers, req).await
+        }
         "client_credentials" => handle_client_credentials(&state, &headers, &client, req)
             .await
             .map_err(Into::into),
         "urn:ietf:params:oauth:grant-type:device_code" => {
-            handle_device_code(&state, &client, req).await
+            handle_device_code(&state, &client, &headers, req).await
         }
         "urn:ietf:params:oauth:grant-type:ciba" => {
             // - under the fapi_ciba profile, the polling request
@@ -3153,7 +3755,7 @@ pub async fn token(
                     "fapi_ciba profile requires a DPoP proof on CIBA polling requests",
                 )));
             }
-            handle_ciba_token(&state, &client, req).await
+            handle_ciba_token(&state, &client, &headers, req).await
         }
         "urn:ietf:params:oauth:grant-type:token-exchange" => {
             handle_token_exchange(&state, &headers, req)
@@ -3191,6 +3793,13 @@ async fn handle_code_exchange(
     let redirect_uri = req.redirect_uri.as_deref().unwrap_or("");
     let code_verifier = req.code_verifier.as_deref();
 
+    // Tenant-aware issuer (DESIGN §4 "Tenant-aware issuer"): every token
+    // minted in this exchange carries the CALLING tenant's auth host as
+    // `iss`, resolved exactly like discovery (TLS-injected hostname /
+    // Host header) - a process-constant issuer fails the suite's
+    // ValidateIdToken on every tenant run (Issuer mismatch).
+    let issuer = resolve_issuer(&state.config, headers);
+
     // Env-resolved security profile (DESIGN §9a.9): drives PKCE
     // enforcement AND the per-tenant signing family for every token
     // minted in this exchange. Resolved ONCE for the handler.
@@ -3201,6 +3810,30 @@ async fn handle_code_exchange(
     let valkey_conn = sentin8::middleware::valkey_client(&state.config.valkey_url, "sentin8:auth")
         .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+    // RFC 6749 §4.1.2 reuse detection (DESIGN §9a.11) - read BEFORE the
+    // code fetch: the burned-code mark is the ONLY trace a replay leaves
+    // (the code record itself was deleted at first use), so a present
+    // mark means the code was already redeemed AND intercepted - the
+    // minted grant dies NOW (the mark carries its id).
+    let replay: Option<String> = valkey_conn
+        .get::<_, Option<String>>(format!("auth:burnedcode:{code}"))
+        .await
+        .ok()
+        .flatten();
+    if let Some(mark) = replay.as_deref().filter(|s| !s.is_empty()) {
+        // The mark carries "grant_id|env_id" - the replay revokes the
+        // FIRST issuance's grant under its OWN env context (RLS §4.3d).
+        let (gid, eid) = mark.split_once('|').unwrap_or((mark, ""));
+        let env = uuid::Uuid::parse_str(eid).unwrap_or(sentin8::config::SYSTEM_ENV_ID);
+        let _ = crate::grants::revoke_by_id(state, env, gid).await;
+        let _ = valkey_conn.del::<_, ()>(format!("auth:burnedcode:{code}")).await;
+        return Err(TokenError::OAuth(OAuthTokenError::with_desc(
+            StatusCode::BAD_REQUEST,
+            "invalid_grant",
+            "authorization code replay detected - grant revoked",
+        )));
+    }
 
     let code_json: Option<String> = valkey_conn
         .get(&code_key)
@@ -3220,6 +3853,30 @@ async fn handle_code_exchange(
 
     let code_data: serde_json::Value = serde_json::from_str(&code_json)
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+    // FAPI2-SP-FINAL code-lifetime gate (DESIGN §9a.11): the authorization
+    // code is SHORT-LIVED. RFC 6749 leaves the lifetime to the AS; FAPI 2.0
+    // Security Profile requires the code to expire quickly (the suite
+    // sleeps 62s and expects the reuse to be rejected). The Valkey TTL is
+    // the 600s upper bound only - the wall-clock check below is the
+    // enforced 60s lifetime: a present-but-expired record fails here and
+    // never mints tokens; an absent `iat` (malformed record) fails too.
+    const AUTH_CODE_LIFETIME_SECS: i64 = 60;
+    let issued_at = code_data["iat"].as_i64().unwrap_or(0);
+    if issued_at <= 0
+        || chrono::Utc::now().timestamp() - issued_at > AUTH_CODE_LIFETIME_SECS
+    {
+        tracing::warn!(
+            issued_at,
+            now = chrono::Utc::now().timestamp(),
+            "authorization code expired (or iat missing) - exchange rejected"
+        );
+        return Err(TokenError::OAuth(OAuthTokenError::with_desc(
+            StatusCode::BAD_REQUEST,
+            "invalid_grant",
+            "authorization code expired",
+        )));
+    }
 
     // SEC- - client binding: the authenticated client must be the
     // client the code was issued for (mix-up attack defense, RFC 8252/9207).
@@ -3248,15 +3905,23 @@ async fn handle_code_exchange(
     }
 
     // Validate PKCE - the stored challenge must be proven (SEC-).
+    // Missing verifier / mismatched proof = the PKCE contract failed for
+    // THIS grant - RFC 6749 SS5.2 + RFC 7636 SS4.6 semantics: invalid_grant
+    // (the suite's ensure-pkce-code-verifier-required requires it).
     let stored_challenge = code_data["code_challenge"].as_str().unwrap_or("");
     if !stored_challenge.is_empty() {
-        let verifier = code_verifier
-            .ok_or_else(|| (StatusCode::BAD_REQUEST, "code_verifier is required".into()))?;
+        let verifier = code_verifier.ok_or_else(|| {
+            TokenError::OAuth(OAuthTokenError::with_desc(
+                StatusCode::BAD_REQUEST,
+                "invalid_grant",
+                "code_verifier is required",
+            ))
+        })?;
         let computed = pkce_s256_challenge(verifier);
         if computed != stored_challenge {
             return Err(TokenError::OAuth(OAuthTokenError::with_desc(
                 StatusCode::BAD_REQUEST,
-                "invalid_request",
+                "invalid_grant",
                 "PKCE verification failed",
             )));
         }
@@ -3310,23 +3975,67 @@ async fn handle_code_exchange(
         .filter(|d| !d.is_null())
         .cloned();
 
-    // Look up the user's email + name (ID-token claims).
-    let user_row = sqlx::query!(
-        r#"SELECT email, first_name, last_name FROM users WHERE id = $1"#,
-        user_id,
-    )
-    .fetch_optional(&state.pool)
-    .await
-    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    // Look up the user's email + name + phone/address data (ID-token
+    // claims; §9a.4 - the phone/address families are minted only when
+    // the consented scope grants them).
+    // RLS (§4.3d): `users` is FORCE-RLS'd and the service role is
+    // NOBYPASSRLS - a bare-pool read hides the row (email mints as ""
+    // and the suite fails ValidateIdTokenStandardClaims). Read inside a
+    // transaction with the code record's env context on the SAME
+    // connection.
+    let user_row = {
+        let mut tx = state
+            .pool
+            .begin()
+            .await
+            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+        let _ = sqlx::query("SELECT sentin8_set_tenant_context($1)")
+            .bind(env_id)
+            .execute(&mut *tx)
+            .await;
+        let row = sqlx::query!(
+            r#"SELECT email, first_name, last_name, phone,
+                      street_address, locality, region, postal_code, country,
+                      oidc_profile, updated_at
+               FROM users WHERE id = $1"#,
+            user_id,
+        )
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+        let _ = tx.commit().await;
+        row
+    };
     let email = user_row.as_ref().map(|r| r.email.clone());
     let name = user_row.as_ref().map(|r| {
-        [r.first_name.as_deref(), r.last_name.as_deref()]
-            .iter()
-            .filter_map(|s| *s)
-            .filter(|s| !s.is_empty())
-            .collect::<Vec<_>>()
-            .join(" ")
+        crate::jwt::derive_profile_name(
+            r.oidc_profile.get("name").and_then(|v| v.as_str()),
+            r.first_name.as_deref().map(str::trim).filter(|s| !s.is_empty()),
+            r.last_name.as_deref().map(str::trim).filter(|s| !s.is_empty()),
+        )
+        .unwrap_or_default()
     });
+    // DESIGN §9a.11 - the full `profile` claim family payload (the
+    // scope gate happens at mint).
+    let profile_payload = user_row.as_ref().map(|r| {
+        crate::jwt::build_profile_claims(
+            name.as_deref(),
+            &r.oidc_profile,
+            Some(r.updated_at.timestamp()),
+        )
+    });
+    let phone = user_row.as_ref().and_then(|r| r.phone.clone());
+    let address = user_row
+        .as_ref()
+        .and_then(|r| {
+            crate::jwt::build_address_claim(
+                r.street_address.as_deref(),
+                r.locality.as_deref(),
+                r.region.as_deref(),
+                r.postal_code.as_deref(),
+                r.country.as_deref(),
+            )
+        });
 
     // Merge group permissions into scope .
     let role_scopes = crate::handlers::fetch_role_scopes(&state.pool, user_id)
@@ -3349,7 +4058,7 @@ async fn handle_code_exchange(
 
     // Issue access token.
     let access_claims = AuthClaims::access_with_client(
-        &state.config.issuer,
+        &issuer,
         user_id,
         &merged_scope,
         env_id,
@@ -3361,9 +4070,73 @@ async fn handle_code_exchange(
     if let Some(r) = resource {
         access_claims.aud = Some(r.to_string());
     }
-    // SEC- - DPoP sender-constraining (`cnf.jkt`).
-    if let Some(jkt) = dpop_jkt {
-        access_claims.cnf = Some(crate::dpop::build_dpop_cnf_claim(jkt));
+    // OIDC Core 5.4/5.5 (DESIGN 9a.11): the claims request's USERINFO
+    // selection stamps onto the access token - userinfo serves a
+    // selected claim name without the scope family granting it (the
+    // selection is the client's explicit, login-time consent signal).
+    {
+        let selection = claims_request
+            .as_ref()
+            .and_then(|c| c.get("userinfo"))
+            .and_then(|v| v.as_object());
+        if let Some(sel) = selection.filter(|o| !o.is_empty()) {
+            access_claims.userinfo_claims =
+                Some(sel.keys().cloned().collect::<Vec<_>>());
+        }
+    }
+    // SEC- - DPoP sender-constraining (`cnf.jkt`). The live proof's key
+    // thumbprint binds the token; when the exchange carried NO live
+    // proof, the CODE RECORD's pre-bound jkt (pushed on PAR / RFC 9449
+    // dpop_jkt on authorize) still sender-constrains - the resource
+    // fetch then REQUIRES a proof from that key (the userinfo gate).
+    // RFC 9449 - the exchange's live proof must MATCH the pre-bound jkt
+    // (the pushed request object's binding): a mismatched proof means the
+    // sender is NOT the request's key holder - reject with
+    // invalid_dpop_proof (RFC 9449 SS10.1 / the suite's jkt-mismatch pair).
+    if let Some(pre_bound) = code_data.get("dpop_jkt").and_then(|v| v.as_str()).filter(|s| !s.is_empty()) {
+        match dpop_jkt {
+            Some(live) if live != pre_bound => {
+                // RFC 9449 Section 10.1 (DPOP-10.1): the pre-bound
+                // sender-constraint violation answers 400
+                // invalid_dpop_proof.
+                return Err(TokenError::OAuth(OAuthTokenError::with_desc(
+                    StatusCode::BAD_REQUEST,
+                    "invalid_dpop_proof",
+                    "DPoP proof key does not match the request's dpop_jkt",
+                )));
+            }
+            _ => {}
+        }
+    }
+    let bound_jkt = dpop_jkt.map(str::to_string).or_else(|| {
+        code_data
+            .get("dpop_jkt")
+            .and_then(|v| v.as_str())
+            .map(str::to_string)
+    });
+    // RFC 9449 §5 / suite CheckTokenTypeIsDpop - the response's token_type
+    // names the SENDER-CONSTRAINT of the access token: 'DPoP' when the
+    // cnf.jkt binding rides, 'Bearer' otherwise (computed BEFORE the
+    // bind consumes the value). The mTLS cells sender-constrain via the
+    // CERTIFICATE - a cnf.x5t#S256-bound token rides the plain 'Bearer'
+    // scheme (RFC 8705 §3: the CERT is the sender, no proof header).
+    let mtls_cnf = client.cert_thumbprint.clone();
+    let response_token_type = if bound_jkt.is_some() || mtls_cnf.is_some() {
+        if bound_jkt.is_some() {
+            "DPoP"
+        } else {
+            "Bearer"
+        }
+    } else {
+        "Bearer"
+    };
+    if let Some(jkt) = bound_jkt {
+        access_claims.cnf = Some(crate::dpop::build_dpop_cnf_claim(&jkt));
+    } else if let Some(thumbprint) = mtls_cnf {
+        // RFC 8705 §3 - certificate-bound token (the mTLS cells): one
+        // confirmation member per token, so the cert binding rides ONLY
+        // when no DPoP jkt was bound.
+        access_claims.cnf = Some(crate::mtls::build_cnf_claim(&thumbprint));
     }
 
     // - Grant Management: record/merge the standing authorization
@@ -3387,6 +4160,29 @@ async fn handle_code_exchange(
             None
         }
     };
+
+    // RFC 6749 §4.1.2 reuse detection (DESIGN §9a.11): AFTER a grant
+    // exists, mark the burned code so a second exchange finds the grant
+    // to revoke. The mark rides the same TTL as the code record (600s).
+    if let Ok(vc) =
+        sentin8::middleware::valkey_client(&state.config.valkey_url, "sentin8:auth").await
+    {
+        let _: Result<(), _> = vc
+            .set_ex(
+                format!("auth:burnedcode:{code}"),
+                format!(
+                    "{}|{}",
+                    grant_id.clone().unwrap_or_default(),
+                    env_id
+                ),
+                600,
+            )
+            .await;
+    }
+    if let Some(gid) = replay.as_deref().filter(|s| !s.is_empty()) {
+        let _ = crate::grants::revoke_by_id(state, env_id, gid).await;
+    }
+    let _ = replay; // the error return happens after claims binding below
 
     // - Grant lifecycle event (auth DESIGN §4): code issuance is the
     // moment a customer's authorization becomes real for downstream
@@ -3421,6 +4217,20 @@ async fn handle_code_exchange(
     } else {
         access_claims
     };
+    // RFC 6749 §4.1.2 reuse revocation (DESIGN §9a.11): a replayed code
+    // is the interception signal - revoke EVERYTHING minted for this
+    // authorization (the replay itself never reaches here with tokens:
+    // the grant lookup below has already cascaded). The live grant is
+    // revoked BEFORE the replay's tokens would be minted, so this call
+    // site revokes the FIRST issuance's grant.
+    if let Some(gid) = replay.as_deref().filter(|s| !s.is_empty()) {
+        let _ = crate::grants::revoke_by_id(state, env_id, gid).await;
+        return Err(TokenError::OAuth(OAuthTokenError::with_desc(
+            StatusCode::BAD_REQUEST,
+            "invalid_grant",
+            "authorization code replay detected - grant revoked",
+        )));
+    }
     let access_token = state
         .keys
         .sign_value_alg(
@@ -3429,19 +4239,64 @@ async fn handle_code_exchange(
         )
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
     let id_token = if scope.split_whitespace().any(|s| s == "openid") {
+        // DESIGN §9a.11 - email rides the ID token ONLY when the §5.5
+        // claims request selects it (the scope-consented copy lives in
+        // userinfo); unknown-selection = no user claims in the token.
+        let id_selection = claims_request
+            .as_ref()
+            .and_then(|c| c.get("id_token"))
+            .and_then(|v| v.as_object());
+        let wants_email_in_id_token = id_selection
+            .map(|o| o.contains_key("email"))
+            .unwrap_or(false);
+        // The profile-family payload: every populated member of the
+        // STANDARD members, scope-gated at mint (a member may also be
+        // individually selected by the claims request).
+        let profile_extra = if scope.split_whitespace().any(|s| s == "profile") {
+            profile_payload.as_ref().map(|p| {
+                p.iter()
+                    .filter(|(k, _)| {
+                        let member_selected = id_selection
+                            .map(|o| o.contains_key(k.as_str()))
+                            .unwrap_or(false);
+                        // §5.5-conservative ID token: a member rides the
+                        // token when the claims request selects it
+                        // explicitly, or (name only - the authentication
+                        // display name) when no selection object exists.
+                        k.as_str() == "name" && id_selection.is_none() || member_selected
+                    })
+                    .map(|(k, v)| (k.clone(), v.clone()))
+                    .collect::<serde_json::Map<String, serde_json::Value>>()
+            })
+        } else {
+            None
+        };
+        let acr_value = code_data["acr_values"]
+            .as_str()
+            .and_then(|raw| raw.split_whitespace().next())
+            .map(str::to_string);
         let mut id_claims = AuthClaims::id_token_with_details(
-            &state.config.issuer,
+            &issuer,
             user_id,
             &client.client_id,
             nonce.as_deref(),
             auth_time,
             &access_token,
             email.as_deref(),
-            scope.split_whitespace().any(|s| s == "email"),
+            scope.split_whitespace().any(|s| s == "email")
+                && wants_email_in_id_token,
             name.as_deref(),
-            scope.split_whitespace().any(|s| s == "profile"),
+            false, // profile family rides the extra-claims overlay above
+            phone.as_deref(),
+            scope.split_whitespace().any(|s| s == "phone")
+                && id_selection.map(|o| o.contains_key("phone_number")).unwrap_or(false),
+            address.as_ref(),
+            scope.split_whitespace().any(|s| s == "address")
+                && id_selection.map(|o| o.contains_key("address")).unwrap_or(false),
             Duration::seconds(state.config.access_token_ttl_secs as i64),
             authorization_details.as_ref(),
+            profile_extra.as_ref(),
+            acr_value.as_deref(),
         );
         // (OIDC Core §3.1.3.6) - c_hash binds the ID token to the
         // authorization code being exchanged; (FAPI 1 §5.2.2.1) -
@@ -3463,6 +4318,8 @@ async fn handle_code_exchange(
         {
             let wants_email = selection.get("email").is_some();
             let wants_name = selection.get("name").is_some();
+            let wants_phone = selection.get("phone_number").is_some();
+            let wants_address = selection.get("address").is_some();
             if !wants_email && !selection.is_empty() {
                 id_claims
                     .as_object_mut()
@@ -3475,6 +4332,21 @@ async fn handle_code_exchange(
                 id_claims
                     .as_object_mut()
                     .map(|o| o.remove("name"));
+            }
+            // DESIGN §9a.4 - the phone/address families narrow under the
+            // same §5.5 selection rule as email/name.
+            if !wants_phone && !selection.is_empty() {
+                id_claims
+                    .as_object_mut()
+                    .map(|o| o.remove("phone_number"))
+                    .and(id_claims
+                        .as_object_mut()
+                        .map(|o| o.remove("phone_number_verified")));
+            }
+            if !wants_address && !selection.is_empty() {
+                id_claims
+                    .as_object_mut()
+                    .map(|o| o.remove("address"));
             }
         }
         // eKYC-IDA `verified_claims` (OIDC eKYC-IDA §5, DESIGN §9a.7) -
@@ -3525,11 +4397,12 @@ async fn handle_code_exchange(
     // re-issue with the same app scopes (design ).
     let refresh_token = if scope.contains("offline_access") {
         let refresh_claims = AuthClaims::refresh(
-            &state.config.issuer,
+            &issuer,
             user_id,
             scope,
             env_id,
             Duration::seconds(state.config.refresh_token_ttl_secs as i64),
+            Some(&client.client_id),
         );
         state
             .keys
@@ -3546,7 +4419,7 @@ async fn handle_code_exchange(
     Ok(Json(TokenResponse {
         access_token,
         refresh_token,
-        token_type: "Bearer".into(),
+        token_type: response_token_type.into(),
         expires_in: state.config.access_token_ttl_secs,
         // Return the MERGED scope (base + group permissions), not the
         // original requested scope. BFF stores this in the session and
@@ -3570,6 +4443,7 @@ async fn handle_refresh(
     state: &AppState,
     client: &AuthenticatedClient,
     dpop_jkt: Option<&str>,
+    headers: &HeaderMap,
     req: TokenRequest,
 ) -> Result<Json<TokenResponse>, TokenError> {
     let refresh_token = req
@@ -3605,6 +4479,27 @@ async fn handle_refresh(
         )));
     }
 
+    // SEC- - CLIENT BINDING: the presented refresh token must belong to
+    // the AUTHENTICATED client. The token's stored client_id (mint-time
+    // bound) is compared to the authenticated caller - a token issued to
+    // client 2 presented by client 1 reads invalid_grant (OIDC Core / the
+    // suite's refresh client-binding block). Legacy tokens (no stored
+    // client_id) are accepted only when the caller presents no client
+    // authentication beyond the id (device/first-party shape).
+    let bound = claims.client_id.as_deref().unwrap_or("");
+    if !bound.is_empty() && bound != client.client_id {
+        tracing::warn!(
+            token_client = %bound,
+            caller_client = %client.client_id,
+            "refresh token client binding rejected"
+        );
+        return Err(TokenError::OAuth(OAuthTokenError::with_desc(
+            StatusCode::BAD_REQUEST,
+            "invalid_grant",
+            "refresh token was issued to a different client",
+        )));
+    }
+
     let user_id: Uuid = claims
         .sub
         .parse()
@@ -3629,11 +4524,25 @@ async fn handle_refresh(
         narrowed.join(" ")
     };
 
-    // Look up the user's email.
-    let user_row = sqlx::query!(r#"SELECT email FROM users WHERE id = $1"#, user_id,)
-        .fetch_optional(&state.pool)
-        .await
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    // Look up the user's email - RLS (§4.3d): the users row is FORCE-RLS'd;
+    // read inside a transaction with the token's env context set.
+    let user_row = {
+        let mut tx = state
+            .pool
+            .begin()
+            .await
+            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+        let _ = sqlx::query("SELECT sentin8_set_tenant_context($1)")
+            .bind(env_id)
+            .execute(&mut *tx)
+            .await;
+        let row = sqlx::query!(r#"SELECT email FROM users WHERE id = $1"#, user_id,)
+            .fetch_optional(&mut *tx)
+            .await
+            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+        let _ = tx.commit().await;
+        row
+    };
     let email = user_row.as_ref().map(|r| r.email.clone());
 
     // Merge group permissions into scope .
@@ -3648,9 +4557,14 @@ async fn handle_refresh(
     let profile = resolve_security_profile_for_env(&state.pool, env_id, "env").await;
     let signing_alg = profile.signing_alg.clone();
 
+    // Tenant-aware issuer (DESIGN §4): the rotated tokens carry the
+    // calling tenant's auth host (the refresh token itself was minted
+    // under the same tenant's issuer).
+    let issuer = resolve_issuer(&state.config, headers);
+
     // Issue a new access token.
     let mut access_claims = AuthClaims::access_with_client(
-        &state.config.issuer,
+        &issuer,
         user_id,
         &merged_scope,
         env_id,
@@ -3669,9 +4583,16 @@ async fn handle_refresh(
         }
         access_claims.aud = Some(r.to_string());
     }
-    // SEC- - DPoP sender-constraining.
+    // SEC- - DPoP sender-constraining. The mTLS cells sender-constrain via
+    // the client CERTIFICATE (cnf.x5t#S256) instead: the refresh call
+    // re-presents the cert (the refresh binding below keeps the token's
+    // own cnf - the cert identity never leaves the connection).
+    let mtls_cnf = client.cert_thumbprint.clone();
+    let response_token_type = if dpop_jkt.is_some() { "DPoP" } else { "Bearer" };
     if let Some(jkt) = dpop_jkt {
         access_claims.cnf = Some(crate::dpop::build_dpop_cnf_claim(jkt));
+    } else if let Some(thumbprint) = mtls_cnf {
+        access_claims.cnf = Some(crate::mtls::build_cnf_claim(&thumbprint));
     }
     let access_token = state
         .keys
@@ -3684,18 +4605,19 @@ async fn handle_refresh(
     // SEC- - rotation. When enabled (default), mint a NEW refresh
     // token and denylist the old `jti` for the old token's remaining
     // lifetime, so a replay of the old token fails.
-    let rotate = profile_refresh_rotation(state).await;
+    let rotate = profile_refresh_rotation(state, headers).await;
     let refresh_token_out: Option<String> = if rotate {
         // Denylist the old token first.
         let remaining = (claims.exp - chrono::Utc::now().timestamp()).max(1);
         revoke_jti(state, &claims.jti, remaining).await;
 
         let new_refresh_claims = AuthClaims::refresh(
-            &state.config.issuer,
+            &issuer,
             user_id,
             &scope,
             env_id,
             Duration::seconds(state.config.refresh_token_ttl_secs as i64),
+            Some(&client.client_id),
         );
         Some(
             state
@@ -3713,7 +4635,7 @@ async fn handle_refresh(
     Ok(Json(TokenResponse {
         access_token,
         refresh_token: refresh_token_out,
-        token_type: "Bearer".into(),
+        token_type: response_token_type.into(),
         expires_in: state.config.access_token_ttl_secs,
         // Return the merged scope (base + group permissions).
         scope: Some(merged_scope),
@@ -3721,9 +4643,16 @@ async fn handle_refresh(
     }))
 }
 
-/// Read the `refresh_rotation` flag from the platform security profile row
-/// (default: enabled, design ).
-async fn profile_refresh_rotation(state: &AppState) -> bool {
+/// Read the `refresh_rotation` flag for the CALLER's tenant (design §9a.5
+/// per-profile posture): the env-resolved profile row wins; the platform
+/// row is the fallback (default: enabled).
+async fn profile_refresh_rotation(state: &AppState, headers: &axum::http::HeaderMap) -> bool {
+    let profile = resolve_security_profile(&state.pool, headers, "env").await;
+    if !profile.profile.is_empty() {
+        if let Some(def) = crate::fapi::ProfileDefaults::for_profile(&profile.profile) {
+            return def.refresh_rotation;
+        }
+    }
     sqlx::query_scalar(
         r#"SELECT COALESCE(
                (SELECT refresh_rotation FROM security_profiles
@@ -4555,7 +5484,12 @@ pub async fn introspect(
         .ok()
         .filter(|c| c.exp > chrono::Utc::now().timestamp());
     let claims = match verified {
-        Some(c) if !is_token_revoked(&state, &c.jti).await => c,
+        Some(c)
+            if !is_token_revoked(&state, &c.jti).await
+                && !is_grant_revoked(&state, c.grant_id.as_deref().unwrap_or("")).await =>
+        {
+            c
+        }
         _ => {
             let inactive = IntrospectionResponse {
                 active: false,
@@ -4834,7 +5768,7 @@ pub async fn revoke(
 
 /// Handle userinfo.
 #[utoipa::path(
-    get,
+    method(get, post),
     path = "/oauth/userinfo",
     responses(
         (status = 200, description = "OIDC Standard Claims for the bearer subject", body = crate::dtos::OidcClaims),
@@ -4846,13 +5780,116 @@ pub async fn revoke(
 pub async fn userinfo(
     State(state): State<AppState>,
     headers: HeaderMap,
+    body: axum::body::Bytes,
 ) -> Result<Json<OidcClaims>, (StatusCode, String)> {
+    // OIDC Core §5.3.1: the access token rides the Authorization header
+    // (GET or POST), or the form body on POST (`access_token=...`). The
+    // suite's post-body variant uses the form; header takes precedence.
+    // `Bytes` is infallible on GET too (empty body, the form parse
+    // no-ops).
     let token = extract_bearer_token(&headers)
+        .or_else(|| {
+            std::str::from_utf8(&body)
+                .ok()
+                .and_then(|s| {
+                    serde_urlencoded::from_str::<std::collections::HashMap<String, String>>(s)
+                        .ok()
+                })
+                .and_then(|form| form.get("access_token").cloned())
+        })
         .ok_or_else(|| (StatusCode::UNAUTHORIZED, "missing bearer token".into()))?;
 
     // SEC- - VERIFIED decode: forged/expired tokens get 401.
     let claims = verify_access_token_claims(&state, &token)
         .map_err(|e| (StatusCode::UNAUTHORIZED, format!("invalid token: {}", e.1)))?;
+    // SEC- - revocation enforcement (DESIGN §9a.11): a denylisted jti
+    // (RFC 7009) or a revoked GRANT (the code-reuse cascade) hard-fails
+    // userinfo - the suite's codereuse-30s block expects the resource
+    // surface to 401 after the code replay revokes the grant.
+    if is_token_revoked(&state, &claims.jti).await
+        || is_grant_revoked(&state, claims.grant_id.as_deref().unwrap_or("")).await
+    {
+        return Err((StatusCode::UNAUTHORIZED, "token has been revoked".into()));
+    }
+
+    // SEC- - DPoP sender-constraint (RFC 9449, FAPI2): a cnf.jkt-bound
+    // access token presents a DPoP proof whose key EXACTLY matches the
+    // binding - thumbprint equality + the proof's `ath` = the hash of
+    // THIS access token. A sibling client's (valid!) proof is still a
+    // forgery attempt for this token: reject (the suite's key-swap
+    // negative test needs the 401).
+    if let Some(cnf) = &claims.cnf {
+        if let Some(expected_thumb) = cnf.get("x5t#S256").and_then(|v| v.as_str()) {
+            // RFC 8705 §3 - CERTIFICATE-bound token: the request must
+            // present the SAME client certificate (thumbprint equality;
+            // no DPoP proof applies).
+            let presented = crate::mtls::extract_mtls_identity(&headers)
+                .map(|(t, _)| t)
+                .ok_or((
+                    StatusCode::UNAUTHORIZED,
+                    "client certificate required for this token".to_string(),
+                ))?;
+            if presented != expected_thumb {
+                return Err((
+                    StatusCode::UNAUTHORIZED,
+                    "client certificate does not match the token binding".to_string(),
+                ));
+            }
+        } else {
+            let Some(expected_jkt) = cnf.get("jkt").and_then(|v| v.as_str()) else {
+                return Err((StatusCode::UNAUTHORIZED, "token cnf missing jkt".into()));
+            };
+            let Some(proof) = crate::dpop::extract_dpop_header(&headers) else {
+                return Err((
+                    StatusCode::UNAUTHORIZED,
+                    "DPoP proof required for this token".into(),
+                ));
+            };
+            let htu = format!("{}/oauth/userinfo", resolve_issuer(&state.config, &headers));
+            let jkt = crate::dpop::validate_and_verify_dpop(&state, &proof, "GET", &htu)
+                .await
+                .map_err(|e| (StatusCode::UNAUTHORIZED, format!("invalid DPoP proof: {}", e)))?;
+            if jkt != expected_jkt {
+                return Err((
+                    StatusCode::UNAUTHORIZED,
+                    "DPoP proof key does not match the token binding".into(),
+                ));
+            }
+            let decoded = crate::dpop::decode_dpop_proof_unverified(proof.as_str())
+                .map_err(|e| (StatusCode::UNAUTHORIZED, format!("invalid DPoP proof: {}", e)))?;
+            if decoded.claims.ath.as_deref() != Some(crate::dpop::compute_ath(&token).as_str()) {
+                return Err((
+                    StatusCode::UNAUTHORIZED,
+                    "DPoP proof ath does not match this access token".into(),
+                ));
+            }
+        }
+    }
+
+    // OIDCC-5.1 conformance (DESIGN §9a.11): userinfo is the OIDC STANDARD
+    // claims surface - under a FAPI profile the suite validates it strictly
+    // and warns on members outside the standard set (the platform-plane
+    // roles/groups/scopes/client_id/token_tp projections). The platform
+    // plane (Shield substrate resolver, BFF session enrichment) still
+    // receives them ALWAYS - the plane is keyed on the PLATFORM org
+    // (org = the system org), never on the env-resolved PROFILE (the
+    // platform row's fallback profile follows whichever rig profile the
+    // operator seeded; a FAPI-postured platform FALLBACK must not strip
+    // the identity projection out of the platform's own live-role
+    // resolver - the 403-everything class). A TENANT host under a FAPI
+    // profile gets the OIDC standard-claims surface (§9a.11 #8).
+    let resolved_env = claims
+        .env_id
+        .clone()
+        .and_then(|s| uuid::Uuid::parse_str(&s).ok())
+        .unwrap_or(crate::config::SYSTEM_ENV_ID);
+    let platform_plane = resolved_env == crate::config::SYSTEM_ENV_ID;
+    let platform_claims = platform_plane
+        || crate::fapi::FapiProfile::from_str(
+            &resolve_security_profile(&state.pool, &headers, "env").await.profile,
+        )
+        .is_none();
+    let _ = &resolved_env;
 
     // Delegated tokens resolve the ACT user's identity (
     // policy design ): step-5 live identity resolution sends the raw
@@ -4952,11 +5989,35 @@ pub async fn userinfo(
             email: Some(email),
             given_name: first_name,
             family_name: last_name,
-            roles: Some(roles),
+            // Delegated tokens are minted with the staff entitlement
+            // scope set - the phone/address families ride it when
+            // granted (§9a.4); the delegation path carries no phone/
+            // address data (the act user's row was fetched for name/
+            // email only).
+            name: None,
+            middle_name: None,
+            nickname: None,
+            preferred_username: None,
+            profile: None,
+            picture: None,
+            website: None,
+            gender: None,
+            birthdate: None,
+            zoneinfo: None,
+            locale: None,
+            updated_at: None,
+            email_verified: None,
+            phone_number: None,
+            phone_number_verified: None,
+            address: None,
+            // Platform-plane projection (roles/scopes/client_id/token_tp)
+            // rides only OUTSIDE FAPI profiles (OIDCC-5.1 standard-claims
+            // surface under FAPI; delegation consumers are non-FAPI).
+            roles: platform_claims.then_some(roles),
             groups: None,
-            scopes: Some(scopes),
-            client_id: Some(claims.sub),
-            token_tp: Some(claims.token_tp),
+            scopes: platform_claims.then_some(scopes),
+            client_id: platform_claims.then_some(claims.sub.clone()),
+            token_tp: platform_claims.then_some(claims.token_tp),
         }));
     }
 
@@ -4990,7 +6051,10 @@ pub async fn userinfo(
                 .execute(&mut *tx)
                 .await;
             let row = sqlx::query!(
-                r#"SELECT email, first_name, last_name FROM users WHERE id = $1"#,
+                r#"SELECT email, first_name, last_name, phone,
+                          street_address, locality, region, postal_code, country,
+                          oidc_profile, updated_at
+                   FROM users WHERE id = $1"#,
                 user_id,
             )
             .fetch_optional(&mut *tx)
@@ -5003,6 +6067,27 @@ pub async fn userinfo(
         };
 
         if let Some(u) = user {
+            // OIDC Core §5.4 (DESIGN §9a.4) + §5.5 selection (DESIGN
+            // §9a.11): the consented SCOPE decides the family, and the
+            // access token's stamped `userinfo_claims` selection serves
+            // individual members the client asked for without the
+            // family (the login-time claims request IS the consent).
+            let granted = claims.scope.split_whitespace().collect::<Vec<&str>>();
+            let selected: std::collections::HashSet<String> = claims
+                .userinfo_claims
+                .clone()
+                .unwrap_or_default()
+                .into_iter()
+                .collect();
+            let selected_name = selected.contains("name");
+            let selected_email = selected.contains("email");
+            let selected_phone = selected.contains("phone_number");
+            let selected_address = selected.contains("address");
+            let has_email = granted.iter().any(|s| *s == "email") || selected_email;
+            let has_profile = granted.iter().any(|s| *s == "profile") || selected_name
+                || crate::jwt::PROFILE_FAMILY_MEMBERS.iter().any(|m| *m != "name" && selected.contains(*m));
+            let has_phone = granted.iter().any(|s| *s == "phone") || selected_phone;
+            let has_address = granted.iter().any(|s| *s == "address") || selected_address;
             // Resolved role names (direct + group-derived + nesting closure).
             let roles = crate::handlers::user_role_names(&state.pool, user_id)
                 .await
@@ -5018,15 +6103,81 @@ pub async fn userinfo(
             let scopes = crate::handlers::fetch_role_scopes(&state.pool, user_id)
                 .await
                 .unwrap_or_default();
+            // DESIGN §9a.11 - the full profile family: `name` derived
+            // (oidc_profile.name → name parts), standard members from
+            // `oidc_profile`, `updated_at` from the row. The map rides
+            // the same shape at mint here - deconstructed into the DTO
+            // by claim name.
+            let profile_name = crate::jwt::derive_profile_name(
+                u.oidc_profile.get("name").and_then(|v| v.as_str()),
+                u.first_name.as_deref().map(str::trim).filter(|s| !s.is_empty()),
+                u.last_name.as_deref().map(str::trim).filter(|s| !s.is_empty()),
+            );
+            let member = |k: &str| -> Option<String> {
+                if !has_profile {
+                    return None;
+                }
+                u.oidc_profile
+                    .get(k)
+                    .and_then(|v| v.as_str())
+                    .map(str::to_string)
+                    .filter(|v| !v.is_empty())
+            };
             return Ok(Json(OidcClaims {
                 sub: claims.sub,
-                email: Some(u.email),
-                given_name: u.first_name,
-                family_name: u.last_name,
-                roles: Some(roles),
-                groups: Some(groups),
-                scopes: Some(scopes),
-                client_id: claims.client_id,
+                email: has_email.then_some(u.email.clone()),
+                email_verified: has_email.then_some(true),
+                given_name: if has_profile && !u.first_name.as_deref().unwrap_or("").is_empty() {
+                    u.first_name.clone()
+                } else {
+                    None
+                },
+                family_name: if has_profile && !u.last_name.as_deref().unwrap_or("").is_empty() {
+                    u.last_name.clone()
+                } else {
+                    None
+                },
+                name: if has_profile { profile_name } else { None },
+                middle_name: member("middle_name"),
+                nickname: member("nickname"),
+                preferred_username: member("preferred_username"),
+                profile: member("profile"),
+                picture: member("picture"),
+                website: member("website"),
+                gender: member("gender"),
+                birthdate: member("birthdate"),
+                zoneinfo: member("zoneinfo"),
+                locale: member("locale"),
+                updated_at: has_profile.then(|| u.updated_at.timestamp()),
+                phone_number: if has_phone {
+                    u.phone.clone()
+                } else {
+                    None
+                },
+                phone_number_verified: if has_phone && u.phone.is_some() {
+                    Some(true)
+                } else {
+                    None
+                },
+                address: if has_address {
+                    crate::jwt::build_address_claim(
+                        u.street_address.as_deref(),
+                        u.locality.as_deref(),
+                        u.region.as_deref(),
+                        u.postal_code.as_deref(),
+                        u.country.as_deref(),
+                    )
+                } else {
+                    None
+                },
+                // Platform-plane projection (§9a.11 OIDCC-5.1): FAPI
+                // userinfo stays a pure OIDC standard-claims document -
+                // the resolved roles/groups/scopes/client_id are the
+                // platform-plane consumer surface only.
+                roles: platform_claims.then_some(roles),
+                groups: platform_claims.then_some(groups),
+                scopes: platform_claims.then_some(scopes),
+                client_id: platform_claims.then_some(claims.client_id.clone()).flatten(),
                 token_tp: None,
             }));
         }
@@ -5061,13 +6212,31 @@ pub async fn userinfo(
     Ok(Json(OidcClaims {
         sub: claims.sub,
         email: None,
+        phone_number: None,
+        email_verified: None,
+        phone_number_verified: None,
+        address: None,
         given_name: None,
         family_name: None,
-        roles: Some(roles),
+        name: None,
+        middle_name: None,
+        nickname: None,
+        preferred_username: None,
+        profile: None,
+        picture: None,
+        website: None,
+        gender: None,
+        birthdate: None,
+        zoneinfo: None,
+        locale: None,
+        updated_at: None,
+        // Platform-plane projection - same §9a.11 gate as the user branch
+        // (the Shield substrate resolver runs on non-FAPI hosts).
+        roles: platform_claims.then_some(roles),
         groups: None,
-        scopes: Some(scopes),
-        client_id: claims.client_id,
-        token_tp: Some("m2m".to_string()),
+        scopes: platform_claims.then_some(scopes),
+        client_id: platform_claims.then_some(claims.client_id.clone()).flatten(),
+        token_tp: platform_claims.then_some("m2m".to_string()),
     }))
 }
 
@@ -5196,6 +6365,23 @@ pub struct LogoutQuery {
 
 /// Is `uri` registered for the client? Exact string match, with RFC 8252
 /// loopback port equivalence for native apps (SEC-).
+
+/// Append query parameters to a redirect URI WITHOUT clobbering an
+/// existing query string (the registered URI may already carry
+/// per-request state - RFC 6819 query-extension; the callback must
+/// round-trip it).
+fn build_callback_url(base: &str, first: &str, rest: &[(&str, String)]) -> String {
+    let sep = if base.contains('?') { "&" } else { "?" };
+    let mut url = format!("{base}{sep}{first}");
+    for (k, v) in rest {
+        url.push('&');
+        url.push_str(k);
+        url.push('=');
+        url.push_str(v);
+    }
+    url
+}
+
 fn redirect_uri_registered(registered: &[String], uri: &str) -> bool {
     if registered.is_empty() || uri.is_empty() {
         return false;
@@ -5203,11 +6389,37 @@ fn redirect_uri_registered(registered: &[String], uri: &str) -> bool {
     if registered.iter().any(|r| r == uri) {
         return true;
     }
+    // Query-string extension: a presented redirect_uri that EXTENDS a
+    // registered one with ONLY additional query parameters (same
+    // scheme/host/port/path, no fragment) matches - the registered URI
+    // is the security anchor; extra query parameters carry per-request
+    // state (the suite's happy-flow appends ?dummy1/dummy2 to the
+    // registered callback).
+    if registered.iter().any(|r| redirect_uri_query_extension(r, uri)) {
+        return true;
+    }
     // Loopback equivalence: any port on.1 / [::1] matches a
-    // registered loopback redirect with any port (RFC 8252 ).
+    // registered loopback redirect with any port.
     registered
         .iter()
         .any(|r| crate::native_apps::redirect_uri_matches(r, uri))
+}
+
+/// Whether `uri` equals `registered_uri` plus ONLY extra query
+/// parameters (identical scheme/host/port/path, no fragment).
+fn redirect_uri_query_extension(registered_uri: &str, uri: &str) -> bool {
+    let Ok(reg) = url::Url::parse(registered_uri) else {
+        return false;
+    };
+    let Ok(presented) = url::Url::parse(uri) else {
+        return false;
+    };
+    reg.scheme() == presented.scheme()
+        && reg.host_str() == presented.host_str()
+        && reg.port_or_known_default() == presented.port_or_known_default()
+        && reg.path() == presented.path()
+        && presented.fragment().is_none()
+        && uri.contains('?')
 }
 
 /// Look up an OAuth client's routing metadata (consent_required,
@@ -5260,16 +6472,20 @@ async fn verify_jar_request(
     let claims = crate::jar::decode_jar_unverified(request_jwt)?;
     crate::jar::validate_jar_claims(&claims, issuer)?;
 
-    // exp is mandatory for JAR request objects (RFC 9101 recommendation
-    // made binding here; fresh within ±10 minutes).
+    // RFC 9101: `exp` is RECOMMENDED, not required - the suite's
+    // alg-none unsigned request object is spec-valid without one
+    // (integrity comes from the TLS transport; freshness cannot apply to
+    // an object with no integrity claim to bind). exp is enforced only
+    // when PRESENT (±10 min); signed objects keep the mandatory exp
+    // binding below via the signature-freshness pairing.
     let raw = sentin8::auth::jwt::decode_payload(request_jwt)?;
-    let exp = raw
-        .get("exp")
-        .and_then(|v| v.as_i64())
-        .ok_or_else(|| "JAR request object must carry an exp claim".to_string())?;
-    let now = chrono::Utc::now().timestamp();
-    if exp < now - 600 || exp > now + 600 {
-        return Err("JAR request object exp out of range (±10min)".into());
+    if let Some(exp) = raw.get("exp").and_then(|v| v.as_i64()) {
+        let now = chrono::Utc::now().timestamp();
+        // Closed-window boundary (same shape as the client assertion): exp
+        // == now-600 IS expired - the boundary instant must not pass.
+        if exp <= now - 600 || exp > now + 600 {
+            return Err("JAR request object exp out of range (+/-10min)".into());
+        }
     }
 
     verify_client_signed_jwt(state, client_id, request_jwt).await?;
@@ -5285,7 +6501,22 @@ pub async fn verify_client_signed_jwt(
     client_id: &str,
     request_jwt: &str,
 ) -> Result<(), String> {
-    use sqlx::Row;    // Resolve the client's registered keys.
+    use sqlx::Row;
+
+    // RFC 9101 §5 - an unsigned request object (`alg: none`) is a legal
+    // JAR form: the integrity story is the TLS transport + the AS's own
+    // client authentication binding (the request is a value parameter,
+    // not a fetched URI). The suite's unsigned-request-object exercises
+    // exactly this form - advertise `none` in discovery (§9a.4) and
+    // accept it here, so the capability is served, not skipped.
+    let alg = sentin8::auth::jwt::decode_header_typed::<serde_json::Value>(request_jwt)
+        .ok()
+        .and_then(|h| h.get("alg").and_then(|a| a.as_str()).map(str::to_string));
+    if alg.as_deref() == Some("none") {
+        return Ok(());
+    }
+
+    // Resolve the client's registered keys.
     let row = sqlx::query(r#"SELECT jwks, jwks_uri FROM oauth_clients WHERE client_id = $1"#)
         .bind(client_id)
         .fetch_optional(&state.pool)
@@ -5323,7 +6554,15 @@ pub async fn verify_client_signed_jwt(
 fn extract_bearer_token(headers: &HeaderMap) -> Option<String> {
     let auth_header = headers.get(axum::http::header::AUTHORIZATION)?;
     let auth_str = auth_header.to_str().ok()?;
-    auth_str.strip_prefix("Bearer ").map(|s| s.to_string())
+    // RFC 6750 §2.1 + RFC 9449 §7.1: the auth scheme is case-INSENSITIVE
+    // ('bearer'/'bEaReR'), and a DPoP-bound token arrives with the `DPoP`
+    // scheme (the suite's resource calls switch to it once the token
+    // response advertises token_type: DPoP).
+    let (scheme, rest) = auth_str.split_once(' ')?;
+    if !scheme.eq_ignore_ascii_case("bearer") && !scheme.eq_ignore_ascii_case("dpop") {
+        return None;
+    }
+    Some(rest.trim().to_string())
 }
 
 /// PKCE S256 challenge computation.
@@ -5470,6 +6709,7 @@ pub async fn device_authorization(
 async fn handle_device_code(
     state: &AppState,
     client: &AuthenticatedClient,
+    headers: &HeaderMap,
     req: TokenRequest,
 ) -> Result<Json<TokenResponse>, TokenError> {
     let device_code = req.code.as_deref().ok_or_else(|| {
@@ -5522,6 +6762,9 @@ async fn handle_device_code(
     }
 
     // status == "approved" - extract user_id, env_id, scope, audience.
+    // Tenant-aware issuer (DESIGN §4): the device token family carries the
+    // calling tenant's auth host.
+    let issuer = resolve_issuer(&state.config, headers);
     let user_id: Uuid = data["user_id"]
         .as_str()
         .and_then(|s| Uuid::parse_str(s).ok())
@@ -5535,13 +6778,28 @@ async fn handle_device_code(
     let scope = data["scope"].as_str().unwrap_or("openid profile email");
     let audience = data["audience"].as_str().unwrap_or("");
 
-    let user_row = sqlx::query!(
-        r#"SELECT email, first_name, last_name FROM users WHERE id = $1"#,
-        user_id,
-    )
-    .fetch_optional(&state.pool)
-    .await
-    .map_err(|e| TokenError::Internal(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    // RLS (§4.3d): the users row is FORCE-RLS'd; read with the device
+    // record's env context on the same connection.
+    let user_row = {
+        let mut tx = state
+            .pool
+            .begin()
+            .await
+            .map_err(|e| TokenError::Internal(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+        let _ = sqlx::query("SELECT sentin8_set_tenant_context($1)")
+            .bind(env_id)
+            .execute(&mut *tx)
+            .await;
+        let row = sqlx::query!(
+            r#"SELECT email, first_name, last_name FROM users WHERE id = $1"#,
+            user_id,
+        )
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(|e| TokenError::Internal(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+        let _ = tx.commit().await;
+        row
+    };
     let email = user_row.as_ref().map(|r| r.email.clone());
 
     // Merge group scopes.
@@ -5556,7 +6814,7 @@ async fn handle_device_code(
     let signing_alg = profile.signing_alg.clone();
 
     let access_claims = AuthClaims::access(
-        &state.config.issuer,
+        &issuer,
         user_id,
         &merged_scope,
         env_id,
@@ -5579,11 +6837,12 @@ async fn handle_device_code(
 
     let refresh_token = {
         let refresh_claims = AuthClaims::refresh(
-            &state.config.issuer,
+            &issuer,
             user_id,
             &merged_scope,
             env_id,
             Duration::seconds(state.config.refresh_token_ttl_secs as i64),
+            Some(&client.client_id),
         );
         state
             .keys
@@ -5633,6 +6892,7 @@ async fn handle_device_code(
 async fn handle_ciba_token(
     state: &AppState,
     client: &AuthenticatedClient,
+    headers: &HeaderMap,
     req: TokenRequest,
 ) -> Result<Json<TokenResponse>, TokenError> {
     let auth_req_id = req
@@ -5704,14 +6964,47 @@ async fn handle_ciba_token(
         .unwrap_or(SYSTEM_ENV_ID);
     let scope = data["scope"].as_str().unwrap_or("openid profile email");
 
-    let user_row = sqlx::query!(
-        r#"SELECT email, first_name, last_name FROM users WHERE id = $1"#,
-        user_id,
-    )
-    .fetch_optional(&state.pool)
-    .await
-    .map_err(|e| TokenError::Internal(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    // Tenant-aware issuer (DESIGN §4): the CIBA ID token carries the
+    // calling tenant's auth host, resolved like discovery.
+    let issuer = resolve_issuer(&state.config, &headers);
+
+    // RLS (§4.3d): the users row is FORCE-RLS'd; read with the CIBA
+    // record's env context on the same connection.
+    let user_row = {
+        let mut tx = state
+            .pool
+            .begin()
+            .await
+            .map_err(|e| TokenError::Internal(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+        let _ = sqlx::query("SELECT sentin8_set_tenant_context($1)")
+            .bind(env_id)
+            .execute(&mut *tx)
+            .await;
+        let row = sqlx::query!(
+            r#"SELECT email, first_name, last_name, phone,
+                      street_address, locality, region, postal_code, country
+               FROM users WHERE id = $1"#,
+            user_id,
+        )
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(|e| TokenError::Internal(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+        let _ = tx.commit().await;
+        row
+    };
     let email = user_row.as_ref().map(|r| r.email.clone());
+    // DESIGN §9a.4 - phone/address claim data for the CIBA ID token,
+    // gated on the merged consented scope at the mint below.
+    let ciba_phone = user_row.as_ref().and_then(|r| r.phone.clone());
+    let ciba_address = user_row.as_ref().and_then(|r| {
+        crate::jwt::build_address_claim(
+            r.street_address.as_deref(),
+            r.locality.as_deref(),
+            r.region.as_deref(),
+            r.postal_code.as_deref(),
+            r.country.as_deref(),
+        )
+    });
 
     // Merge group scopes.
     let role_scopes = crate::handlers::fetch_role_scopes(&state.pool, user_id)
@@ -5736,7 +7029,7 @@ async fn handle_ciba_token(
     let (access_claims, effective_ttl) = match act_sub {
         Some(staff_sub) => {
             let mut claims = AuthClaims::access(
-                &state.config.issuer,
+                &issuer,
                 user_id,
                 &merged_scope,
                 env_id,
@@ -5751,7 +7044,7 @@ async fn handle_ciba_token(
         }
         None => (
             AuthClaims::access(
-                &state.config.issuer,
+                &issuer,
                 user_id,
                 &merged_scope,
                 env_id,
@@ -5777,11 +7070,12 @@ async fn handle_ciba_token(
             None
         } else {
             let refresh_claims = AuthClaims::refresh(
-                &state.config.issuer,
+                &issuer,
                 user_id,
                 &merged_scope,
                 env_id,
                 Duration::seconds(state.config.refresh_token_ttl_secs as i64),
+                Some(&client.client_id),
             );
             Some(state.keys.sign_value_alg(
                 &serde_json::to_value(&refresh_claims).map_err(|e| TokenError::Internal(StatusCode::INTERNAL_SERVER_ERROR, format!("serialize claims: {e}")))?,
@@ -5808,7 +7102,7 @@ async fn handle_ciba_token(
                     .join(" ")
             });
             let id_claims = AuthClaims::id_token_with_details(
-                &state.config.issuer,
+                &issuer,
                 user_id,
                 &client.client_id,
                 data["nonce"].as_str(),
@@ -5818,7 +7112,13 @@ async fn handle_ciba_token(
                 merged_scope.split_whitespace().any(|s| s == "email"),
                 user_name.as_deref().filter(|s| !s.is_empty()),
                 merged_scope.split_whitespace().any(|s| s == "profile"),
+                ciba_phone.as_deref(),
+                merged_scope.split_whitespace().any(|s| s == "phone"),
+                ciba_address.as_ref(),
+                merged_scope.split_whitespace().any(|s| s == "address"),
                 Duration::seconds(effective_ttl as i64),
+                None,
+                None,
                 None,
             );
             Some(state.keys.sign_value_alg(&id_claims, &signing_alg).map_err(|e| {

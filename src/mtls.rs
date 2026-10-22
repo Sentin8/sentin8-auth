@@ -66,13 +66,43 @@ pub fn is_mtls_auth_method(method: &str) -> bool {
 ///
 /// Returns `Some(thumbprint, subject_dn)` when present.
 pub fn extract_mtls_identity(headers: &axum::http::HeaderMap) -> Option<(String, Option<String>)> {
-    let thumbprint = headers
+    // Primary: the thumbprint header (in-process TLS termination -
+    // sentin8-tls computes and injects it from the handshake cert).
+    if let Some(thumbprint) = headers
         .get("x-sentin8-client-cert-thumbprint")
         .and_then(|v| v.to_str().ok())
-        .filter(|s| !s.is_empty())?
-        .to_string();
+        .filter(|s| !s.is_empty())
+    {
+        let subject_dn = headers
+            .get("x-sentin8-client-cert-subject-dn")
+            .or_else(|| headers.get("x-sentin8-client-cert-subject"))
+            .and_then(|v| v.to_str().ok())
+            .filter(|s| !s.is_empty())
+            .map(|s| s.to_string());
+        return Some((thumbprint.to_string(), subject_dn));
+    }
+    // Bridged path: the PROXY (the single ingress) terminates the suite's
+    // TLS and forwards the presented leaf certificate as
+    // `X-Sentin8-Client-Cert` (base64 DER, PROXY-4). The thumbprint is
+    // computed HERE from the forwarded DER - identical to what
+    // sentin8-tls would hash (the same bytes), so both ingress postures
+    // resolve to the same identity. No CA/subject trust is implied:
+    // the RFC 8705 client-auth decision stays in authenticate_client
+    // (registered-thumbprint / registered-DN equality).
+    let cert_b64 = headers
+        .get("x-sentin8-client-cert")
+        .and_then(|v| v.to_str().ok())
+        .filter(|s| !s.is_empty())?;
+    use base64::Engine;
+    let der = base64::engine::general_purpose::STANDARD
+        .decode(cert_b64.trim())
+        .ok()?;
+    if der.is_empty() {
+        return None;
+    }
+    let thumbprint = cert_thumbprint_sha256(&der);
     let subject_dn = headers
-        .get("x-sentin8-client-cert-subject-dn")
+        .get("x-sentin8-client-cert-subject")
         .and_then(|v| v.to_str().ok())
         .filter(|s| !s.is_empty())
         .map(|s| s.to_string());

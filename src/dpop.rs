@@ -132,15 +132,19 @@ pub fn validate_dpop_proof(
     if proof.claims.htm.to_uppercase() != http_method.to_uppercase() {
         return Err("DPoP htm mismatch".into());
     }
-    // Check htu - compare without query/fragment.
-    let expected_htu = strip_query_fragment(http_uri);
-    let claimed_htu = strip_query_fragment(&proof.claims.htu);
+    // Check htu - compare without query/fragment. The suite's
+    // htu-normalization blocks (RFC 9449 §4.3): scheme+host compare is
+    // CASE-INDEPENDENT and the DEFAULT PORT is stripped from both sides
+    // (https default 443 / http default 80) - `HTTPS://H:443/P` matches
+    // `https://h/p`.
+    let expected_htu = normalize_htu(http_uri);
+    let claimed_htu = normalize_htu(&proof.claims.htu);
     if claimed_htu != expected_htu {
         return Err("DPoP htu mismatch".into());
     }
     // Check iat freshness (±60s).
     if (proof.claims.iat - now).abs() > 60 {
-        return Err("DPoP iat out of range (±60s)".into());
+        return Err("DPoP iat out of range (+/-60s)".into());
     }
     Ok(())
 }
@@ -153,6 +157,37 @@ fn strip_query_fragment(uri: &str) -> String {
         .next()
         .unwrap_or(without_fragment);
     without_query.to_string()
+}
+
+/// RFC 9449 §4.3 htu normalization: strip query/fragment, lowercase the
+/// scheme + host, and drop the SCHEME-DEFAULT port (https 443 / http 80).
+fn normalize_htu(uri: &str) -> String {
+    let base = strip_query_fragment(uri);
+    // Lowercase scheme (everything before the first ':') + host (between
+    // '://' and the next '/'); the path keeps its case.
+    let (scheme_rest, path) = match base.split_once("://") {
+        Some((s, p)) => (s, p),
+        None => return base,
+    };
+    let scheme = scheme_rest.to_ascii_lowercase();
+    let (hostport, path) = match path.find('/') {
+        Some(i) => (&path[..i], &path[i..]),
+        None => (path, ""),
+    };
+    let host = match hostport.rsplit_once(':') {
+        // Only treat as host:port when the tail after ':' is all digits
+        // (an IPv6 literal's colons are handled: the LAST colon with digits
+        // after it is the port).
+        Some((h, port)) if !port.is_empty() && port.chars().all(|c| c.is_ascii_digit()) => {
+            let is_default = (scheme == "https" && port == "443")
+                || (scheme == "http" && port == "80");
+            if is_default { h.to_ascii_lowercase() } else {
+                format!("{}:{}", h.to_ascii_lowercase(), port)
+            }
+        }
+        _ => hostport.to_ascii_lowercase(),
+    };
+    format!("{scheme}://{host}{path}")
 }
 
 /// Build the `cnf` claim for a DPoP-bound access token.
@@ -176,11 +211,19 @@ pub fn compute_ath(access_token: &str) -> String {
 /// Extract the DPoP proof from the `DPoP` header.
 /// Extract DPoP header.
 pub fn extract_dpop_header(headers: &axum::http::HeaderMap) -> Option<String> {
-    headers
-        .get("dpop")
-        .and_then(|v| v.to_str().ok())
-        .filter(|s| !s.is_empty())
-        .map(|s| s.to_string())
+    // RFC 9449 §4.1 - exactly ONE proof header: two `DPoP` entries (the
+    // suite's header-count negative) or a list-valued entry is a forged
+    // request shape - the caller rejects (None is indistinguishable from
+    // absent, so the cnf-gate answers 400/401 either way).
+    let mut values = headers.get_all("dpop").iter();
+    let first = values.next()?.to_str().ok()?;
+    if values.next().is_some() {
+        return None;
+    }
+    if first.contains(',') {
+        return None;
+    }
+    Some(first.to_string()).filter(|s| !s.is_empty())
 }
 
 /// Validate AND verify a DPoP proof for a request (SEC-).
@@ -214,6 +257,21 @@ pub async fn validate_and_verify_dpop(
 
     // Signature verification against the embedded JWK.
     let jwk = &decoded.header.jwk;
+    // RFC 9449 §4.2 - the `jwk` header carries the PUBLIC key only: any
+    // private-key member (`d` for EC, the CRT components `p`/`q`/`dp`/
+    // `dq`/`qi`, or `oth` for multiprime RSA) is a malformed proof - the
+    // suite's private-key-jwk negative (a signature over a private key
+    // must never validate).
+    let has_private = jwk.get("d").is_some()
+        || jwk.get("p").is_some()
+        || jwk.get("q").is_some()
+        || jwk.get("dp").is_some()
+        || jwk.get("dq").is_some()
+        || jwk.get("qi").is_some()
+        || jwk.get("oth").is_some();
+    if has_private {
+        return Err("DPoP proof jwk header must not contain private key material".into());
+    }
     let kty = jwk.get("kty").and_then(|v| v.as_str()).unwrap_or("");
     let header_alg = decoded.header.alg.as_str();
     match (kty, header_alg) {
@@ -385,6 +443,27 @@ mod tests {
         let mut headers = axum::http::HeaderMap::new();
         headers.insert("dpop", "eyJ...".parse().unwrap());
         assert_eq!(extract_dpop_header(&headers).as_deref(), Some("eyJ..."));
+    }
+
+    #[test]
+    fn extract_dpop_header_rejects_multiple_entries() {
+        let mut headers = axum::http::HeaderMap::new();
+        headers.insert("dpop", "p1".parse().unwrap());
+        headers.append("dpop", "p2".parse().unwrap());
+        assert!(
+            extract_dpop_header(&headers).is_none(),
+            "two DPoP header lines must yield no proof"
+        );
+    }
+
+    #[test]
+    fn extract_dpop_header_rejects_comma_list() {
+        let mut headers = axum::http::HeaderMap::new();
+        headers.insert("dpop", "p1, p2".parse().unwrap());
+        assert!(
+            extract_dpop_header(&headers).is_none(),
+            "a comma-joined proof list must yield no proof"
+        );
     }
 
     #[test]

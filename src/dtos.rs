@@ -104,12 +104,69 @@ pub struct OidcClaims {
     /// The user's email (absent when the subject is a client).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub email: Option<String>,
+    /// The email's verified flag (the `email` scope's second member,
+    /// OIDCC-5.4 - served with the email claim family).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub email_verified: Option<bool>,
     /// Given (first) name.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub given_name: Option<String>,
     /// Family (last) name.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub family_name: Option<String>,
+    /// Full name (OIDC Core §5.1 profile member; derived from the stored
+    /// name parts / `oidc_profile.name` - DESIGN §9a.11).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    /// Middle name (profile family, verbatim from `oidc_profile`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub middle_name: Option<String>,
+    /// Casual name (profile family, verbatim from `oidc_profile`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub nickname: Option<String>,
+    /// Shorthand the end-user wishes to be known as (profile family,
+    /// verbatim from `oidc_profile`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub preferred_username: Option<String>,
+    /// Profile page URL (profile family, verbatim from `oidc_profile`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub profile: Option<String>,
+    /// Avatar picture URL (profile family, verbatim from `oidc_profile`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub picture: Option<String>,
+    /// Web site URL (profile family, verbatim from `oidc_profile`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub website: Option<String>,
+    /// Gender (profile family, verbatim from `oidc_profile`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gender: Option<String>,
+    /// Birthdate (`YYYY-MM-DD`, profile family, verbatim from
+    /// `oidc_profile`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub birthdate: Option<String>,
+    /// Geodata / time zone string (profile family, verbatim from
+    /// `oidc_profile`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub zoneinfo: Option<String>,
+    /// Locale (BCP 47, profile family, verbatim from `oidc_profile`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub locale: Option<String>,
+    /// Last profile update time (profile family, derived from the users
+    /// row's `updated_at` - DESIGN §9a.11).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub updated_at: Option<i64>,
+    /// Phone number (`phone_number`, served when the token's scope
+    /// includes `phone`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub phone_number: Option<String>,
+    /// Phone verified flag (served with the phone claim family).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub phone_number_verified: Option<bool>,
+    /// OIDC address claim object (served when the token's scope includes
+    /// `address`): `{formatted, street_address, locality, region,
+    /// postal_code, country}` with absent columns omitted.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub address: Option<serde_json::Value>,
     /// Live-resolved role names.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub roles: Option<Vec<String>>,

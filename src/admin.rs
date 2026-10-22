@@ -107,6 +107,31 @@ pub struct CreateUserRequest {
     /// The last name.
     pub last_name: Option<String>,
     #[serde(default)]
+    /// Phone number (OIDC `phone` claim source, DESIGN §9a.4).
+    pub phone: Option<String>,
+    #[serde(default)]
+    /// Street address (OIDC `address` claim source, DESIGN §9a.4).
+    pub street_address: Option<String>,
+    #[serde(default)]
+    /// Locality / city.
+    pub locality: Option<String>,
+    #[serde(default)]
+    /// Region / state.
+    pub region: Option<String>,
+    #[serde(default)]
+    /// Postal code.
+    pub postal_code: Option<String>,
+    #[serde(default)]
+    /// Country.
+    pub country: Option<String>,
+    /// OIDC `profile`-scope standard members (nickname, name,
+    /// preferred_username, middle_name, profile, picture, website,
+    /// gender, birthdate, zoneinfo, locale) - minted verbatim at
+    /// userinfo/ID-token time (DESIGN §9a.11). Absent members stay
+    /// absent; `name`/`updated_at` are derived at mint.
+    #[serde(default)]
+    pub oidc_profile: Option<serde_json::Value>,
+    #[serde(default)]
     /// env identifier.
     pub env_id: Option<Uuid>,
     #[serde(default)]
@@ -130,6 +155,21 @@ pub struct UserResponse {
     pub first_name: Option<String>,
     /// The last name.
     pub last_name: Option<String>,
+    /// Phone number (OIDC `phone` claim source, DESIGN §9a.4).
+    pub phone: Option<String>,
+    /// Street address (OIDC `address` claim source, DESIGN §9a.4).
+    pub street_address: Option<String>,
+    /// Locality / city.
+    pub locality: Option<String>,
+    /// Region / state.
+    pub region: Option<String>,
+    /// Postal code.
+    pub postal_code: Option<String>,
+    /// Country.
+    pub country: Option<String>,
+    /// OIDC profile-family members (DESIGN §9a.11).
+    #[serde(default)]
+    pub oidc_profile: serde_json::Value,
     /// The status.
     pub status: String,
     /// The email verified.
@@ -200,7 +240,8 @@ pub async fn list_users(
         sqlx::query(
             r#"SELECT id, env_id, email,
                       first_name, last_name, status, email_verified, mfa_enabled,
-                      created_at, updated_at
+                      phone, street_address, locality, region, postal_code, country,
+                      oidc_profile, created_at, updated_at
                FROM users
                WHERE env_id = $1
                ORDER BY created_at DESC
@@ -233,6 +274,13 @@ pub async fn list_users(
                 email: r.get("email"),
                 first_name: r.get("first_name"),
                 last_name: r.get("last_name"),
+                phone: r.get("phone"),
+                street_address: r.get("street_address"),
+                locality: r.get("locality"),
+                region: r.get("region"),
+                postal_code: r.get("postal_code"),
+                country: r.get("country"),
+                oidc_profile: r.get("oidc_profile"),
                 status: r.get("status"),
                 email_verified: r.get("email_verified"),
                 mfa_enabled: r.get("mfa_enabled"),
@@ -316,18 +364,31 @@ pub async fn create_user(
     let row = sqlx::query!(
         r#"INSERT INTO users
                (env_id, email, password_hash,
-                first_name, last_name, status)
-           VALUES ($1, $2, $3, $4, $5, $6)
+                first_name, last_name, status,
+                phone, street_address, locality, region, postal_code, country,
+                oidc_profile)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
            RETURNING
                id, env_id, email,
                first_name, last_name, status, email_verified, mfa_enabled,
-               created_at, updated_at"#,
+               phone, street_address, locality, region, postal_code, country,
+               oidc_profile, created_at, updated_at"#,
         env_id,
         req.email.to_lowercase(),
         password_hash,
         req.first_name,
         req.last_name,
         status,
+        req.phone,
+        req.street_address,
+        req.locality,
+        req.region,
+        req.postal_code,
+        req.country,
+        req.oidc_profile
+            .clone()
+            .filter(|v| v.is_object())
+            .unwrap_or_else(|| serde_json::json!({})),
     )
     .fetch_one(&mut *conn)
     .await;
@@ -389,6 +450,13 @@ pub async fn create_user(
         email: row.email,
         first_name: row.first_name,
         last_name: row.last_name,
+        phone: row.phone,
+        street_address: row.street_address,
+        locality: row.locality,
+        region: row.region,
+        postal_code: row.postal_code,
+        country: row.country,
+        oidc_profile: row.oidc_profile,
         status: row.status,
         email_verified: row.email_verified,
         mfa_enabled: row.mfa_enabled,
@@ -437,7 +505,8 @@ pub async fn get_user(
         r#"SELECT
                id, env_id, email,
                first_name, last_name, status, email_verified, mfa_enabled,
-               created_at, updated_at
+               phone, street_address, locality, region, postal_code, country,
+               oidc_profile, created_at, updated_at
            FROM users WHERE id = $1"#,
         id,
     )
@@ -452,6 +521,13 @@ pub async fn get_user(
             email: r.email,
             first_name: r.first_name,
             last_name: r.last_name,
+            phone: r.phone,
+            street_address: r.street_address,
+            locality: r.locality,
+            region: r.region,
+            postal_code: r.postal_code,
+            country: r.country,
+            oidc_profile: r.oidc_profile,
             status: r.status,
             email_verified: r.email_verified,
             mfa_enabled: r.mfa_enabled,
@@ -480,6 +556,29 @@ pub struct UpdateUserRequest {
     #[serde(default)]
     /// The MFA enabled.
     pub mfa_enabled: Option<bool>,
+    #[serde(default)]
+    /// Phone number (OIDC `phone` claim source, DESIGN §9a.4).
+    pub phone: Option<String>,
+    #[serde(default)]
+    /// Street address (OIDC `address` claim source, DESIGN §9a.4).
+    pub street_address: Option<String>,
+    #[serde(default)]
+    /// Locality / city.
+    pub locality: Option<String>,
+    #[serde(default)]
+    /// Region / state.
+    pub region: Option<String>,
+    #[serde(default)]
+    /// Postal code.
+    pub postal_code: Option<String>,
+    #[serde(default)]
+    /// Country.
+    pub country: Option<String>,
+    /// OIDC `profile`-scope standard members (DESIGN §9a.11) - merged
+    /// into the user's `oidc_profile` JSONB (SHALLOW merge: the request's
+    /// non-empty members win).
+    #[serde(default)]
+    pub oidc_profile: Option<serde_json::Value>,
 }
 
 /// `PUT /v1/admin/users/{id}` - update a user.
@@ -517,6 +616,11 @@ pub async fn update_user(
         .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
     set_tenant_context(&mut conn, _auth.env_id).await;
+    let profile_merge: serde_json::Value = req
+        .oidc_profile
+        .clone()
+        .filter(|v| v.is_object())
+        .unwrap_or_else(|| serde_json::json!({}));
     let row = sqlx::query!(
         r#"UPDATE users SET
                first_name = COALESCE($2, first_name),
@@ -524,18 +628,36 @@ pub async fn update_user(
                status = COALESCE($4, status),
                email_verified = COALESCE($5, email_verified),
                mfa_enabled = COALESCE($6, mfa_enabled),
+               phone = COALESCE($7, phone),
+               street_address = COALESCE($8, street_address),
+               locality = COALESCE($9, locality),
+               region = COALESCE($10, region),
+               postal_code = COALESCE($11, postal_code),
+               country = COALESCE($12, country),
+               oidc_profile = CASE WHEN $13::text = '{}'::text
+                    THEN oidc_profile
+                    ELSE COALESCE(oidc_profile, '{}'::jsonb) || $13::jsonb END,
                updated_at = now()
            WHERE id = $1
            RETURNING
                id, env_id, email,
                first_name, last_name, status, email_verified, mfa_enabled,
-               created_at, updated_at"#,
+               phone, street_address, locality, region, postal_code, country,
+               oidc_profile, created_at, updated_at"#,
         id,
         req.first_name,
         req.last_name,
         req.status,
         req.email_verified,
         req.mfa_enabled,
+        req.phone,
+        req.street_address,
+        req.locality,
+        req.region,
+        req.postal_code,
+        req.country,
+        serde_json::to_string(&profile_merge)
+            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?,
     )
     .fetch_optional(&mut *conn)
     .await
@@ -559,6 +681,13 @@ pub async fn update_user(
                 email: r.email,
                 first_name: r.first_name,
                 last_name: r.last_name,
+                phone: r.phone,
+                street_address: r.street_address,
+                locality: r.locality,
+                region: r.region,
+                postal_code: r.postal_code,
+                country: r.country,
+                oidc_profile: r.oidc_profile,
                 status: r.status,
                 email_verified: r.email_verified,
                 mfa_enabled: r.mfa_enabled,

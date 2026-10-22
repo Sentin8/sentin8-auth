@@ -279,7 +279,13 @@ impl ProfileDefaults {
                 require_jwt_introspection: false,
                 require_iss: true,
                 max_token_lifetime: 900,
-                refresh_rotation: true,
+                // FAPI 2.0 Security Profile (final) 5.3.2.1-9 + Note 1:
+                // refresh token rotation is PROHIBITED (sender-constrained
+                // confidential tokens make rotation a pure failure mode -
+                // a lost new token bricks the grant; the lost-token retry
+                // exception the spec allows is an extraordinary procedure,
+                // not a standing posture).
+                refresh_rotation: false,
             },
             "fapi_2_message_signing" => Self {
                 require_par: true,
@@ -290,7 +296,8 @@ impl ProfileDefaults {
                 require_jwt_introspection: true,
                 require_iss: true,
                 max_token_lifetime: 900,
-                refresh_rotation: true,
+                // Same 5.3.2.1-9 prohibition (message signing is FAPI 2.0).
+                refresh_rotation: false,
             },
             "fapi_ciba" => Self {
                 require_par: false,

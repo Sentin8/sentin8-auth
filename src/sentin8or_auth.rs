@@ -255,6 +255,7 @@ async fn resolve_certificate_context(
         email: None,
         client_id: Some(workload.to_string()),
         grant_id: None,
+        userinfo_claims: None,
         act: None,
         cnf: None,
         vertical: Some(rec.vertical.clone()),

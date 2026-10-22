@@ -48,6 +48,15 @@ pub struct AuthClaims {
     /// `grants` row; revoking the grant revokes tokens carrying it.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub grant_id: Option<String>,
+    // OIDC Core 5.4/5.5 (DESIGN 9a.11): the USERINFO claim names the
+    // client's claims request selected (essential or voluntary) -
+    // stamped at exchange time so userinfo serves them without a
+    // matching scope (the selection IS the consent signal).
+    /// OIDC Core §5.4/§5.5 (DESIGN §9a.11): the USERINFO claim names the
+    /// client's claims request selected at login - stamped onto the
+    /// access token so userinfo serves them without the scope family.
+    #[serde(rename = "userinfo_claims", skip_serializing_if = "Option::is_none")]
+    pub userinfo_claims: Option<Vec<String>>,
     /// `act` claim (RFC 8693 ) - records the original actor for
     /// token-exchange / delegated tokens, or the external IdP `iss`/`sub`
     /// for federated-credential M2M tokens. See.
@@ -94,6 +103,7 @@ impl AuthClaims {
             act: None,
             cnf: None,
             grant_id: None,
+            userinfo_claims: None,
             vertical: None,
             service_type: None,
         }
@@ -153,6 +163,7 @@ impl AuthClaims {
             act: Some(act.clone()),
             cnf,
             grant_id: None,
+            userinfo_claims: None,
             vertical: None,
             service_type: None,
         }
@@ -198,6 +209,7 @@ impl AuthClaims {
             act: None,
             cnf: None,
             grant_id: None,
+            userinfo_claims: None,
             vertical: None,
             service_type: None,
         }
@@ -210,12 +222,20 @@ impl AuthClaims {
     /// (requested ∪ role). Without this, a refresh would lose app-specific
     /// scopes (e.g. `fdx:recipient:read`) that were requested at login but
     /// are not granted by any role.
+    ///
+    /// `client_id` binds the token to its issuing client (OIDC/SEC-):
+    /// the refresh grant rejects a token presented by ANY other client
+    /// (the suite's refresh-token client-binding check depends on it -
+    /// a client-2 token used by client 1 MUST read invalid_grant).
+    /// `client_id` is None only for legacy/platform-internal refresh
+    /// paths that never present the token to the grant (none in-tree).
     pub fn refresh(
         issuer: &str,
         user_id: uuid::Uuid,
         scope: &str,
         env_id: uuid::Uuid,
         ttl: Duration,
+        client_id: Option<&str>,
     ) -> Self {
         let now = Utc::now();
         Self {
@@ -229,10 +249,11 @@ impl AuthClaims {
             scope: scope.to_string(),
             env_id: Some(env_id.to_string()),
             email: None,
-            client_id: None,
+            client_id: client_id.map(str::to_string),
             act: None,
             cnf: None,
             grant_id: None,
+            userinfo_claims: None,
             vertical: None,
             service_type: None,
         }
@@ -252,7 +273,8 @@ impl AuthClaims {
     /// base64url - binds the ID token to its access token).
     ///
     /// Email/profile claims are added conditionally by the caller based on
-    /// the granted scopes (`email`, `profile`).
+    /// the granted scopes (`email`, `profile`); phone/address follow the
+    /// same gating (DESIGN §9a.4).
     pub fn id_token(
         issuer: &str,
         user_id: uuid::Uuid,
@@ -264,6 +286,10 @@ impl AuthClaims {
         include_email_claims: bool,
         name: Option<&str>,
         include_profile_claims: bool,
+        phone: Option<&str>,
+        include_phone_claims: bool,
+        address: Option<&serde_json::Value>,
+        include_address_claims: bool,
         ttl: Duration,
     ) -> serde_json::Value {
         Self::id_token_with_details(
@@ -277,7 +303,13 @@ impl AuthClaims {
             include_email_claims,
             name,
             include_profile_claims,
+            phone,
+            include_phone_claims,
+            address,
+            include_address_claims,
             ttl,
+            None,
+            None,
             None,
         )
     }
@@ -324,12 +356,20 @@ impl AuthClaims {
             act: Some(act),
             cnf,
             grant_id: None,
+            userinfo_claims: None,
             vertical: None,
             service_type: None,
         }
     }
 
     /// `id_token` + RFC 9396 authorization_details echo.
+    ///
+    /// The phone/address claim families (auth DESIGN §9a.4) follow the
+    /// email/profile pattern: each is included ONLY when the consented
+    /// scope granted it (`phone` → `phone_number`/`phone_number_verified`,
+    /// `address` → the OIDC address JSON object via
+    /// [`build_address_claim`]).
+    #[allow(clippy::too_many_arguments)]
     pub fn id_token_with_details(
         issuer: &str,
         user_id: uuid::Uuid,
@@ -341,8 +381,14 @@ impl AuthClaims {
         include_email_claims: bool,
         name: Option<&str>,
         include_profile_claims: bool,
+        phone: Option<&str>,
+        include_phone_claims: bool,
+        address: Option<&serde_json::Value>,
+        include_address_claims: bool,
         ttl: Duration,
         authorization_details: Option<&serde_json::Value>,
+        extra_claims: Option<&serde_json::Map<String, serde_json::Value>>,
+        acr: Option<&str>,
     ) -> serde_json::Value {
         let now = Utc::now();
         let mut claims = serde_json::json!({
@@ -368,6 +414,32 @@ impl AuthClaims {
             if let Some(n) = name {
                 claims["name"] = serde_json::json!(n);
             }
+        }
+        if include_phone_claims {
+            if let Some(p) = phone {
+                claims["phone_number"] = serde_json::json!(p);
+            }
+            claims["phone_number_verified"] = serde_json::json!(true);
+        }
+        if include_address_claims {
+            if let Some(a) = address {
+                claims["address"] = a.clone();
+            }
+        }
+        // DESIGN §9a.11 - the extra claim payload overlays HERE for the
+        // profile family (the mint site passes the scope-gated map, so
+        // the overlay never widens beyond the consented scope).
+        if let Some(extra) = extra_claims {
+            if let Some(o) = claims.as_object_mut() {
+                for (k, v) in extra {
+                    o.insert(k.clone(), v.clone());
+                }
+            }
+        }
+        // DESIGN §9a.11 - the `acr` claim echoes the authorize request's
+        // first `acr_values` entry (OIDC Core §3.1.2.1).
+        if let Some(a) = acr.filter(|s| !s.is_empty()) {
+            claims["acr"] = serde_json::json!(a);
         }
         // RFC 9396 - the ID token carries the granted
         // authorization_details so the client can verify what it asked for.
@@ -402,6 +474,130 @@ pub fn c_hash(code: &str) -> String {
 /// the at_hash construction (DESIGN §9a.3).
 pub fn s_hash(state: &str) -> String {
     at_hash(state)
+}
+
+/// Build the OIDC `address` claim JSON object (OIDC Core §5.2.2, auth
+/// DESIGN §9a.4) from the users table's postal columns. The spec shape:
+/// `{formatted, street_address, locality, region, postal_code, country}` -
+/// absent columns are omitted; a fully empty address yields `None` (the
+/// claim is only meaningful when the user has address data).
+/// Derived `name` claim: `oidc_profile.name` first, then the
+/// name parts joined (DESIGN §9a.11). Empty parts drop out; a fully
+/// empty profile yields `None`.
+pub fn derive_profile_name(
+    profile_name: Option<&str>,
+    first_name: Option<&str>,
+    last_name: Option<&str>,
+) -> Option<String> {
+    if let Some(n) = profile_name.map(str::trim).filter(|s| !s.is_empty()) {
+        return Some(n.to_string());
+    }
+    let joined = [first_name, last_name]
+        .iter()
+        .filter_map(|s| *s)
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .collect::<Vec<_>>()
+        .join(" ");
+    (!joined.is_empty()).then_some(joined)
+}
+
+/// The OIDC Core §5.1 standard members of the `profile` claim family
+/// (the §5.5 standard-mapped set): every member the userinfo response /
+/// ID token can mint. `name` and `updated_at` are derived (§9a.11);
+/// the rest come from the users table's `oidc_profile` JSONB verbatim.
+pub(crate) const PROFILE_FAMILY_MEMBERS: [&str; 11] = [
+    "name",
+    "middle_name",
+    "nickname",
+    "preferred_username",
+    "profile",
+    "picture",
+    "website",
+    "gender",
+    "birthdate",
+    "zoneinfo",
+    "locale",
+];
+
+/// Build the `profile`-scope claim payload (OAuth params as JSON):
+/// every populated member, keyed by OIDC claim name. Callers gate this
+/// on the consented `profile` scope and map the shape onto their mint
+/// (userinfo serializes it into the response; the ID-token mint merges
+/// it into the claims object). `updated_at` rides `extras` (the unix
+/// epoch of the users row's updated_at, mint-site derived).
+pub fn build_profile_claims(
+    name: Option<&str>,
+    oidc_profile: &serde_json::Value,
+    updated_at_epoch: Option<i64>,
+) -> serde_json::Map<String, serde_json::Value> {
+    let mut out = serde_json::Map::new();
+    if let Some(n) = name.filter(|s| !s.is_empty()) {
+        out.insert("name".into(), serde_json::Value::String(n.into()));
+    }
+    if let Some(obj) = oidc_profile.as_object() {
+        for member in PROFILE_FAMILY_MEMBERS.iter().skip(1) {
+            if let Some(v) = obj.get(*member) {
+                // Only populated, non-empty members are minted - an
+                // absent member stays absent (never null).
+                match v {
+                    serde_json::Value::String(sv) if !sv.is_empty() => {
+                        out.insert((*member).into(), v.clone());
+                    }
+                    other @ (serde_json::Value::Bool(_)
+                    | serde_json::Value::Number(_)) => {
+                        out.insert((*member).into(), other.clone());
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
+    if let Some(at) = updated_at_epoch {
+        out.insert("updated_at".into(), serde_json::Value::from(at));
+    }
+    out
+}
+
+/// Build the OIDC `address` claim object (OIDC Core §5.1.1) from the
+/// users row's postal columns: `formatted` joins the populated parts;
+/// absent parts stay absent. Returns `None` when NO part is populated
+/// (an empty address stays out of the token).
+pub fn build_address_claim(
+    street_address: Option<&str>,
+    locality: Option<&str>,
+    region: Option<&str>,
+    postal_code: Option<&str>,
+    country: Option<&str>,
+) -> Option<serde_json::Value> {
+    let parts: Vec<String> = [street_address, locality, region, postal_code, country]
+        .iter()
+        .filter_map(|s| s.map(|v| v.to_string()).filter(|v| !v.is_empty()))
+        .collect();
+    if parts.is_empty() {
+        return None;
+    }
+    let mut obj = serde_json::Map::new();
+    obj.insert(
+        "formatted".into(),
+        serde_json::Value::String(parts.join(", ")),
+    );
+    if let Some(v) = street_address.filter(|s| !s.is_empty()) {
+        obj.insert("street_address".into(), serde_json::Value::String(v.into()));
+    }
+    if let Some(v) = locality.filter(|s| !s.is_empty()) {
+        obj.insert("locality".into(), serde_json::Value::String(v.into()));
+    }
+    if let Some(v) = region.filter(|s| !s.is_empty()) {
+        obj.insert("region".into(), serde_json::Value::String(v.into()));
+    }
+    if let Some(v) = postal_code.filter(|s| !s.is_empty()) {
+        obj.insert("postal_code".into(), serde_json::Value::String(v.into()));
+    }
+    if let Some(v) = country.filter(|s| !s.is_empty()) {
+        obj.insert("country".into(), serde_json::Value::String(v.into()));
+    }
+    Some(serde_json::Value::Object(obj))
 }
 
 /// Build the eKYC-IDA `verified_claims` object (OIDC eKYC-IDA §5,
@@ -486,6 +682,17 @@ mod tests {
             true,
             Some("Alice Smith"),
             true,
+            Some("+15551234567"),
+            true,
+            Some(&serde_json::json!({
+                "formatted": "1 Main St, Springfield, IL 62701, US",
+                "street_address": "1 Main St",
+                "locality": "Springfield",
+                "region": "IL",
+                "postal_code": "62701",
+                "country": "US"
+            })),
+            true,
             Duration::seconds(900),
         );
         assert_eq!(claims["aud"], "client_123");
@@ -494,6 +701,10 @@ mod tests {
         assert!(claims.get("at_hash").is_some());
         assert_eq!(claims["email"], "user@example.com");
         assert_eq!(claims["name"], "Alice Smith");
+        assert_eq!(claims["phone_number"], "+15551234567");
+        assert_eq!(claims["phone_number_verified"], true);
+        assert_eq!(claims["address"]["postal_code"], "62701");
+        assert_eq!(claims["address"]["country"], "US");
     }
 
     #[test]
@@ -509,10 +720,72 @@ mod tests {
             false,
             None,
             false,
+            None,
+            false,
+            None,
+            false,
             Duration::seconds(900),
         );
         assert!(claims.get("email").is_none());
         assert!(claims.get("name").is_none());
         assert!(claims.get("nonce").is_none());
+        assert!(claims.get("phone_number").is_none());
+        assert!(claims.get("phone_number_verified").is_none());
+        assert!(claims.get("address").is_none());
+    }
+
+    #[test]
+    fn id_token_omits_ungranted_phone_address_even_with_data() {
+        // DESIGN §9a.4: the scope gate - not data presence - decides.
+        let claims = AuthClaims::id_token(
+            "https://auth.test.local.sentin8.dev",
+            uuid::Uuid::nil(),
+            "client_123",
+            None,
+            1700000000,
+            "at",
+            None,
+            false,
+            None,
+            false,
+            Some("+15551234567"),
+            false,
+            Some(&serde_json::json!({"country": "US"})),
+            false,
+            Duration::seconds(900),
+        );
+        assert!(claims.get("phone_number").is_none());
+        assert!(claims.get("address").is_none());
+    }
+
+    #[test]
+    fn address_claim_object_shape() {
+        let a = build_address_claim(
+            Some("1 Main St"),
+            Some("Springfield"),
+            Some("IL"),
+            Some("62701"),
+            Some("US"),
+        )
+        .expect("full address builds");
+        assert_eq!(a["formatted"], "1 Main St, Springfield, IL, 62701, US");
+        assert_eq!(a["street_address"], "1 Main St");
+        assert_eq!(a["locality"], "Springfield");
+        assert_eq!(a["region"], "IL");
+        assert_eq!(a["postal_code"], "62701");
+        assert_eq!(a["country"], "US");
+    }
+
+    #[test]
+    fn address_claim_empty_yields_none() {
+        assert!(build_address_claim(None, None, None, None, None).is_none());
+        assert!(build_address_claim(
+            Some(""),
+            Some(""),
+            Some(""),
+            Some(""),
+            Some("")
+        )
+        .is_none());
     }
 }

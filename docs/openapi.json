@@ -54,6 +54,100 @@
         "security": []
       }
     },
+    "/.well-known/openid-credential-issuer": {
+      "get": {
+        "tags": [
+          "wallet"
+        ],
+        "summary": "`GET /.well-known/openid-credential-issuer` - OID4VCI issuer metadata\n(DESIGN §9a.7). Issuer-resolved like OIDC discovery (host context).",
+        "operationId": "credential_issuer_metadata",
+        "responses": {
+          "200": {
+            "description": "OID4VCI issuer metadata",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CredentialIssuerMetadata"
+                }
+              }
+            }
+          }
+        },
+        "security": []
+      }
+    },
+    "/.well-known/openid-credential-verifier": {
+      "get": {
+        "tags": [
+          "wallet"
+        ],
+        "summary": "`GET /.well-known/openid-credential-verifier` - OID4VP verifier\nmetadata (DESIGN §9a.7): the client id, the response endpoints, and\nthe vp formats this verifier accepts. Mirrors the wallet_metadata\nconnection config (the same presentation definition the platform\nrequires) in the standard OID4VP metadata shape.",
+        "operationId": "credential_verifier_metadata",
+        "responses": {
+          "200": {
+            "description": "OID4VP verifier metadata",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        },
+        "security": []
+      }
+    },
+    "/.well-known/webfinger": {
+      "get": {
+        "tags": [
+          "oauth"
+        ],
+        "summary": "Serve WebFinger (OIDC Discovery §2.1, DESIGN §9a).",
+        "description": "# Errors\n- `400` when `resource` is missing or unparsable.\n- `404` when a `rel` filter names something other than the issuer rel.\n\nThe response never reveals whether the user exists: the same issuer\nlink is returned for any syntactically valid identifier at this\ntenant's host.",
+        "operationId": "webfinger",
+        "parameters": [
+          {
+            "name": "resource",
+            "in": "path",
+            "description": "The resource identifier - `acct:user@domain`, a bare email, or any\nabsolute URI. Only its shape is validated; the user is NOT\nresolved (WebFinger must not become an account-existence oracle).\nThe resource.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "rel",
+            "in": "path",
+            "description": "Optional `rel` filter (RFC 7033). When present, only links with a\nmatching `rel` are returned; auth serves exactly one rel.\nThe rel.",
+            "required": true,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "JRD linking the identifier to this issuer",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WebFingerResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Missing or unparsable resource parameter"
+          },
+          "404": {
+            "description": "Unknown rel requested"
+          }
+        },
+        "security": []
+      }
+    },
     "/delegate/access-token": {
       "post": {
         "tags": [
@@ -338,6 +432,18 @@
             }
           },
           {
+            "name": "dpop_jkt",
+            "in": "path",
+            "description": "RFC 9449 dpop_jkt - the DPoP key thumbprint pre-bound on the\nauthorize request (rides the PAR record for pushed requests).\nThe dpop jkt.",
+            "required": true,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          {
             "name": "response_mode",
             "in": "path",
             "description": "OAuth response mode - `query` (default) or `jwt` (JARM, SEC-).\nThe response mode.",
@@ -379,6 +485,67 @@
             "description": "RFC 9396 Rich Authorization Requests - JSON array of\n`authorization_details` objects. Validated against the client's\nregistered `authorization_details_types`; stored in the code record\nand echoed into the ID token.\nThe authorization details.",
             "required": true,
             "schema": {}
+          },
+          {
+            "name": "prompt",
+            "in": "path",
+            "description": "OIDC Core §3.1.2.1 `prompt` - space-delimited values. `none`\nrequires silent authentication (error=login_required without a\nvalid session); `login` forces re-authentication even when a\nsession exists. `consent` is accepted and treated as the default\n(the consent screen is shown when the client requires consent).\nDESIGN §9a.3.\nThe prompt.",
+            "required": true,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          {
+            "name": "max_age",
+            "in": "path",
+            "description": "OIDC Core §3.1.2.1 `max_age` - maximum allowable elapsed time\nsince the user last authenticated. When the existing session is\nolder, the user must re-authenticate before the code is issued.\nDESIGN §9a.3.\nThe max age.",
+            "required": true,
+            "schema": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "format": "int64"
+            }
+          },
+          {
+            "name": "claims",
+            "in": "path",
+            "description": "OIDC Core §5.5 `claims` - JSON object with `id_token` and/or\n`userinfo` sub-objects selecting claims the client needs. The\nselection NARROWS scope-granted claims; it can never widen them\n(an essential claim the user never consented to is still refused\nby the scope gate). DESIGN §9a.3.\nThe claims.",
+            "required": true,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          {
+            "name": "acr_values",
+            "in": "path",
+            "description": "OIDC Core §3.1.2.1 `acr_values` - space-delimited requested\nassurance levels. Echoed as the ID token's `acr` claim (first\nrequested value wins - the platform issues one effective\nassurance level per session, DESIGN §9a.11).\nThe acr values.",
+            "required": true,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          {
+            "name": "ui_login_page",
+            "in": "path",
+            "description": "Escape hatch: force the JS-free `/oauth/login` form instead of\nthe Flutter auth-ui (DESIGN §9a.11 - the non-JS client surface).\nThe ui login page.",
+            "required": true,
+            "schema": {
+              "type": [
+                "boolean",
+                "null"
+              ]
+            }
           }
         ],
         "responses": {
@@ -495,6 +662,51 @@
           },
           "401": {
             "description": "Client authentication failed"
+          }
+        },
+        "security": []
+      }
+    },
+    "/oauth/credential": {
+      "post": {
+        "tags": [
+          "wallet"
+        ],
+        "summary": "`POST /oauth/credential` - issuance request (OID4VCI §7.2, DESIGN\n§9a.7). Authorized by an access token whose scope carries the\ncredential type; the proof JWT binds the wallet key.",
+        "description": "# Errors\n- `400` unknown configuration or malformed proof.\n- `401` missing/invalid access token or proof verification failed.",
+        "operationId": "credential",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CredentialRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Credential issued (sd-jwt)",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "202": {
+            "description": "Deferred - poll transaction_id at deferred_credential_endpoint",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "400": {
+            "description": "Unknown configuration / malformed proof"
+          },
+          "401": {
+            "description": "Access token or proof verification failed"
           }
         },
         "security": []
@@ -652,6 +864,39 @@
           },
           "404": {
             "description": "Unknown status list"
+          }
+        },
+        "security": []
+      }
+    },
+    "/oauth/deferred_credential": {
+      "post": {
+        "tags": [
+          "wallet"
+        ],
+        "summary": "`POST /oauth/deferred_credential` - poll a deferred transaction\n(OID4VCI §8.2, DESIGN §9a.7). Transactions mint on the same store;\na `pending` record answers the prescribed `error: issuance_pending`.",
+        "operationId": "deferred_credential",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DeferredCredentialRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Credential issued (sd-jwt)",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "400": {
+            "description": "Unknown transaction"
           }
         },
         "security": []
@@ -921,6 +1166,159 @@
         "security": []
       }
     },
+    "/oauth/login": {
+      "get": {
+        "tags": [
+          "oauth"
+        ],
+        "summary": "`GET /oauth/login` - render the HTML login form (DESIGN §9a.8).\nThe authorize handler redirects here with the OAuth context in the\nquery string; it is signed into the hidden field.",
+        "operationId": "login_page",
+        "parameters": [
+          {
+            "name": "client_id",
+            "in": "path",
+            "description": "The client id.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "redirect_uri",
+            "in": "path",
+            "description": "The redirect URI.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "scope",
+            "in": "path",
+            "description": "The scope.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "state",
+            "in": "path",
+            "description": "The state.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "code_challenge",
+            "in": "path",
+            "description": "The code challenge.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "code_challenge_method",
+            "in": "path",
+            "description": "The PKCE method (S256).",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "nonce",
+            "in": "path",
+            "description": "The OIDC nonce.",
+            "required": true,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          {
+            "name": "resource",
+            "in": "path",
+            "description": "The RFC 8707 resource indicator.",
+            "required": true,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          {
+            "name": "response_mode",
+            "in": "path",
+            "description": "The OAuth response mode (query default, jwt for JARM).",
+            "required": true,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          {
+            "name": "acr_values",
+            "in": "path",
+            "description": "OIDC Core §3.1.2.1 acr_values - carried into the code record for\nthe ID-token acr echo (DESIGN §9a.11).",
+            "required": true,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "HTML login form (JS-free, automation-friendly)",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        "security": []
+      },
+      "post": {
+        "tags": [
+          "oauth"
+        ],
+        "summary": "`POST /oauth/login` - the form handler (DESIGN §9a.8). Verifies the\nsigned context, authenticates through the SAME password path as\n`/v1/sign-in` (rate limit + lockout + timing-safe rejection), creates\nthe session, and completes the authorization directly (code mint +\n302 to the redirect_uri).",
+        "description": "Invalid credentials re-render the page with `#error_message` (200 -\na login failure is not a protocol error, and the suite's DOM driver\nmust read the message).",
+        "operationId": "login_submit",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/LoginForm"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Re-rendered form on login failure (#error_message visible)"
+          },
+          "302": {
+            "description": "Signed in - redirect to the client's redirect_uri with the code"
+          }
+        },
+        "security": []
+      }
+    },
     "/oauth/logout": {
       "get": {
         "tags": [
@@ -964,11 +1362,51 @@
                 "null"
               ]
             }
+          },
+          {
+            "name": "state",
+            "in": "path",
+            "description": "DESIGN §9a.3 - the RP's opaque state, echoed on the\npost_logout_redirect_uri redirect (OIDC RP-Initiated Logout\n§2.1).\nThe state.",
+            "required": true,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
           }
         ],
         "responses": {
           "302": {
             "description": "Redirect to the registered post_logout_redirect_uri (or the local sign-in page when unregistered)"
+          }
+        },
+        "security": []
+      }
+    },
+    "/oauth/notifications": {
+      "post": {
+        "tags": [
+          "wallet"
+        ],
+        "summary": "`POST /oauth/notifications` - wallet event recording (OID4VCI §11.1).\nThe event lands in the credential row's `credential_data.notifications`\narray; failures never cascade (best-effort acknowledgment).",
+        "operationId": "notifications",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/NotificationRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Event acknowledged"
+          },
+          "400": {
+            "description": "Unknown event type"
           }
         },
         "security": []
@@ -1406,6 +1844,29 @@
     },
     "/oauth/userinfo": {
       "get": {
+        "tags": [
+          "oauth"
+        ],
+        "summary": "Handle userinfo.",
+        "operationId": "userinfo",
+        "responses": {
+          "200": {
+            "description": "OIDC Standard Claims for the bearer subject",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OidcClaims"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing/invalid/expired bearer token"
+          }
+        },
+        "security": []
+      },
+      "post": {
         "tags": [
           "oauth"
         ],
@@ -8567,8 +9028,18 @@
           "session_token"
         ],
         "properties": {
+          "acr_values": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "OIDC Core §3.1.2.1 acr_values - carried from the authorize step\n(or the login form context) into the code record for the ID-token\n`acr` echo (DESIGN §9a.11).\nThe acr values."
+          },
           "authorization_details": {
             "description": "RFC 9396 authorization_details - validated against the\nclient's registered types; stored in the code record and echoed\ninto the ID token.\nThe authorization details."
+          },
+          "claims": {
+            "description": "OIDC Core §5.5 claims request - carried from the authorize step\nand applied at ID-token mint as a claim selection (DESIGN §9a.3).\nAccepts the JSON object OR the object-as-STRING (the hosted UI\nforwards the authorize request's claims parameter verbatim).\nThe claims."
           },
           "client_id": {
             "type": "string",
@@ -8580,6 +9051,20 @@
               "null"
             ],
             "description": "The code challenge."
+          },
+          "deny": {
+            "type": [
+              "boolean",
+              "null"
+            ],
+            "description": "The USER DENIED the request (the hosted UI's cancel/deny\ncontrol): the continuation redirects to the client with\n`error=access_denied` + state (RFC 6749 SS4.1.2.1; OIDC Core\nSS3.1.2.6) - no code is minted. The certification rig's\nuser-rejects-authentication module drives exactly this path.\nThe user denied."
+          },
+          "dpop_jkt": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "RFC 9449 dpop_jkt carried from the authorize step (the SPA\nforwards the pre-bound DPoP thumbprint into the code record).\nThe dpop jkt."
           },
           "nonce": {
             "type": [
@@ -8639,8 +9124,22 @@
           "client_id"
         ],
         "properties": {
+          "acr_values": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "OIDC Core §3.1.2.1 `acr_values` - space-delimited requested\nassurance levels. Echoed as the ID token's `acr` claim (first\nrequested value wins - the platform issues one effective\nassurance level per session, DESIGN §9a.11).\nThe acr values."
+          },
           "authorization_details": {
             "description": "RFC 9396 Rich Authorization Requests - JSON array of\n`authorization_details` objects. Validated against the client's\nregistered `authorization_details_types`; stored in the code record\nand echoed into the ID token.\nThe authorization details."
+          },
+          "claims": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "OIDC Core §5.5 `claims` - JSON object with `id_token` and/or\n`userinfo` sub-objects selecting claims the client needs. The\nselection NARROWS scope-granted claims; it can never widen them\n(an essential claim the user never consented to is still refused\nby the scope gate). DESIGN §9a.3.\nThe claims."
           },
           "client_id": {
             "type": "string",
@@ -8660,12 +9159,34 @@
             ],
             "description": "The code challenge method."
           },
+          "dpop_jkt": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "RFC 9449 dpop_jkt - the DPoP key thumbprint pre-bound on the\nauthorize request (rides the PAR record for pushed requests).\nThe dpop jkt."
+          },
+          "max_age": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "OIDC Core §3.1.2.1 `max_age` - maximum allowable elapsed time\nsince the user last authenticated. When the existing session is\nolder, the user must re-authenticate before the code is issued.\nDESIGN §9a.3.\nThe max age."
+          },
           "nonce": {
             "type": [
               "string",
               "null"
             ],
             "description": "OIDC `nonce` - echoed into the ID token (SEC-).\nThe nonce."
+          },
+          "prompt": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "OIDC Core §3.1.2.1 `prompt` - space-delimited values. `none`\nrequires silent authentication (error=login_required without a\nvalid session); `login` forces re-authentication even when a\nsession exists. `consent` is accepted and treated as the default\n(the consent screen is shown when the client requires consent).\nDESIGN §9a.3.\nThe prompt."
           },
           "redirect_uri": {
             "type": [
@@ -8723,6 +9244,13 @@
           "state": {
             "type": "string",
             "description": "The state."
+          },
+          "ui_login_page": {
+            "type": [
+              "boolean",
+              "null"
+            ],
+            "description": "Escape hatch: force the JS-free `/oauth/login` form instead of\nthe Flutter auth-ui (DESIGN §9a.11 - the non-JS client surface).\nThe ui login page."
           }
         }
       },
@@ -9039,12 +9567,26 @@
             ],
             "description": "The login hint token."
           },
+          "request": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "CIBA §7.1 signed request object (DESIGN §9a.7) - a JWT signed\nby the client's registered keys carrying the CIBA parameters.\nWhen present (or fetched via `request_uri`), its parameters\nREPLACE the unsigned form parameters.\nThe request."
+          },
           "request_mode": {
             "type": [
               "string",
               "null"
             ],
             "description": "Notification mode: `ping` or `poll` (default).\nThe request mode."
+          },
+          "request_uri": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "CIBA §7.1 - https URI hosting the signed request object (same\nfetch mechanics as JAR `request_uri`).\nThe request URI."
           },
           "requested_expiry": {
             "type": [
@@ -9946,6 +10488,13 @@
           "email"
         ],
         "properties": {
+          "country": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Country."
+          },
           "email": {
             "type": "string",
             "description": "The email."
@@ -9979,6 +10528,16 @@
             ],
             "description": "The last name."
           },
+          "locality": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Locality / city."
+          },
+          "oidc_profile": {
+            "description": "OIDC `profile`-scope standard members (nickname, name,\npreferred_username, middle_name, profile, picture, website,\ngender, birthdate, zoneinfo, locale) - minted verbatim at\nuserinfo/ID-token time (DESIGN §9a.11). Absent members stay\nabsent; `name`/`updated_at` are derived at mint."
+          },
           "password": {
             "type": [
               "string",
@@ -9986,12 +10545,40 @@
             ],
             "description": "The password."
           },
+          "phone": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Phone number (OIDC `phone` claim source, DESIGN §9a.4)."
+          },
+          "postal_code": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Postal code."
+          },
+          "region": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Region / state."
+          },
           "status": {
             "type": [
               "string",
               "null"
             ],
             "description": "The status."
+          },
+          "street_address": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Street address (OIDC `address` claim source, DESIGN §9a.4)."
           }
         }
       },
@@ -10032,6 +10619,46 @@
           },
           "status_list": {
             "description": "Status List envelope the credential enrolls in."
+          }
+        }
+      },
+      "CredentialIssuerMetadata": {
+        "type": "object",
+        "description": "OID4VCI issuer metadata document.\nThe credentialissuermetadata type.",
+        "required": [
+          "credential_issuer",
+          "authorization_servers",
+          "credential_endpoint",
+          "deferred_credential_endpoint",
+          "notification_endpoint",
+          "credential_configurations_supported"
+        ],
+        "properties": {
+          "authorization_servers": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Authorization servers accepting the credential scopes - this\nissuer is also its own AS (the standard authorize/token surface)."
+          },
+          "credential_configurations_supported": {
+            "description": "One entry per credential type auth mints (SD-JWT VC profile)."
+          },
+          "credential_endpoint": {
+            "type": "string",
+            "description": "`POST /oauth/credential` - the issuance endpoint."
+          },
+          "credential_issuer": {
+            "type": "string",
+            "description": "The credential issuer identifier (this auth instance)."
+          },
+          "deferred_credential_endpoint": {
+            "type": "string",
+            "description": "`POST /oauth/deferred_credential` - deferred polling endpoint."
+          },
+          "notification_endpoint": {
+            "type": "string",
+            "description": "`POST /oauth/notifications` - wallet event endpoint."
           }
         }
       },
@@ -10088,6 +10715,30 @@
           }
         }
       },
+      "CredentialRequest": {
+        "type": "object",
+        "description": "`POST /oauth/credential` request (OID4VCI §7.2).\nRequest body for credential.",
+        "required": [
+          "credential_configuration_id"
+        ],
+        "properties": {
+          "credential_configuration_id": {
+            "type": "string",
+            "description": "The configuration id being requested (a key of\n`credential_configurations_supported`)."
+          },
+          "proof": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/Proof",
+                "description": "Proof of possession JWT (`proof_type: jwt`) binding the wallet's\nkey: `iss` = client_id, `aud` = issuer, fresh `exp`, and the\nkey JWK embedded as `cnf.jwk`. Optional when the access token's\ngrant already carries the wallet key (pre-authorized flow)."
+              }
+            ]
+          }
+        }
+      },
       "Decision": {
         "oneOf": [
           {
@@ -10123,6 +10774,19 @@
             }
           }
         ]
+      },
+      "DeferredCredentialRequest": {
+        "type": "object",
+        "description": "`POST /oauth/deferred_credential` request.\nRequest body for deferredcredential.",
+        "required": [
+          "transaction_id"
+        ],
+        "properties": {
+          "transaction_id": {
+            "type": "string",
+            "description": "The transaction id returned by a 202 issuance response."
+          }
+        }
       },
       "DelegateAccessTokenRequest": {
         "type": "object",
@@ -10347,7 +11011,14 @@
           "request_object_signing_alg_values_supported",
           "request_parameter_supported",
           "request_uri_parameter_supported",
-          "software_statement_supported"
+          "software_statement_supported",
+          "token_endpoint_auth_signing_alg_values_supported",
+          "claims_parameter_supported",
+          "claims_supported",
+          "backchannel_logout_supported",
+          "backchannel_logout_session_supported",
+          "revocation_endpoint_auth_methods_supported",
+          "introspection_endpoint_auth_methods_supported"
         ],
         "properties": {
           "authorization_details_types_supported": {
@@ -10367,6 +11038,52 @@
           "authorization_response_iss_parameter_supported": {
             "type": "boolean",
             "description": "The authorization response iss parameter supported."
+          },
+          "backchannel_authentication_endpoint": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "CIBA (OIDC CIBA §4) - the backchannel authentication endpoint.\nPresent when the caller's profile enables CIBA (DESIGN §9a.4).\nThe backchannel authentication endpoint."
+          },
+          "backchannel_authentication_request_signing_alg_values_supported": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "string"
+            },
+            "description": "Signing algorithms accepted for signed CIBA request objects\n(CIBA §7.1; DESIGN §9a.4). Present when CIBA is enabled.\nThe backchannel authentication request signing alg values supported."
+          },
+          "backchannel_logout_session_supported": {
+            "type": "boolean",
+            "description": "Whether back-channel logout tokens carry `sid` (sessions are\nfirst-class in auth - logout tokens include the session id).\nThe backchannel logout session supported."
+          },
+          "backchannel_logout_supported": {
+            "type": "boolean",
+            "description": "OIDC Back-Channel Logout 1.0 §4 advertisement (DESIGN §9a.4).\nThe backchannel logout supported."
+          },
+          "backchannel_token_delivery_modes_supported": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "string"
+            },
+            "description": "CIBA token delivery modes the AS serves (poll + ping, DESIGN\n§9a.4). Present when CIBA is enabled.\nThe backchannel token delivery modes supported."
+          },
+          "claims_parameter_supported": {
+            "type": "boolean",
+            "description": "OIDC Core §5.5 `claims` request parameter support (eKYC-IDA\nsurface, DESIGN §9a.3).\nThe claims parameter supported."
+          },
+          "claims_supported": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "The claim names the ID token / userinfo can carry (OIDC\nDiscovery §3 recommended list; DESIGN §9a.4).\nThe claims supported."
           },
           "code_challenge_methods_supported": {
             "type": "array",
@@ -10410,6 +11127,13 @@
           "introspection_endpoint": {
             "type": "string",
             "description": "The introspection endpoint."
+          },
+          "introspection_endpoint_auth_methods_supported": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Client-auth methods the introspection endpoint accepts (RFC 7662;\nDESIGN §9a.4) - same method set as the token endpoint.\nThe introspection endpoint auth methods supported."
           },
           "issuer": {
             "type": "string",
@@ -10470,6 +11194,13 @@
             "type": "string",
             "description": "The revocation endpoint."
           },
+          "revocation_endpoint_auth_methods_supported": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Client-auth methods the revocation endpoint accepts (RFC 7009 §2;\nDESIGN §9a.4) - same method set as the token endpoint.\nThe revocation endpoint auth methods supported."
+          },
           "scopes_supported": {
             "type": "array",
             "items": {
@@ -10498,6 +11229,13 @@
               "type": "string"
             },
             "description": "The token endpoint auth methods supported."
+          },
+          "token_endpoint_auth_signing_alg_values_supported": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Signing algorithms the token endpoint accepts for\n`private_key_jwt` client assertions (required-when-advertised by\nOIDC Discovery §3; DESIGN §9a.4).\nThe token endpoint auth signing alg values supported."
           },
           "userinfo_endpoint": {
             "type": "string",
@@ -11407,6 +12145,13 @@
               "null"
             ],
             "description": "The x."
+          },
+          "y": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The y (EC keys - P-256 point second coordinate)."
           }
         }
       },
@@ -11544,6 +12289,95 @@
           }
         }
       },
+      "LoginContextQuery": {
+        "type": "object",
+        "description": "The query shape the authorize handler forwards: the full OAuth\ncontext (it re-validated everything before redirecting here).\nThe logincontextquery type.",
+        "required": [
+          "client_id",
+          "redirect_uri",
+          "scope",
+          "state",
+          "code_challenge",
+          "code_challenge_method"
+        ],
+        "properties": {
+          "acr_values": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "OIDC Core §3.1.2.1 acr_values - carried into the code record for\nthe ID-token acr echo (DESIGN §9a.11)."
+          },
+          "client_id": {
+            "type": "string",
+            "description": "The client id."
+          },
+          "code_challenge": {
+            "type": "string",
+            "description": "The code challenge."
+          },
+          "code_challenge_method": {
+            "type": "string",
+            "description": "The PKCE method (S256)."
+          },
+          "nonce": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The OIDC nonce."
+          },
+          "redirect_uri": {
+            "type": "string",
+            "description": "The redirect URI."
+          },
+          "resource": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The RFC 8707 resource indicator."
+          },
+          "response_mode": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The OAuth response mode (query default, jwt for JARM)."
+          },
+          "scope": {
+            "type": "string",
+            "description": "The scope."
+          },
+          "state": {
+            "type": "string",
+            "description": "The state."
+          }
+        }
+      },
+      "LoginForm": {
+        "type": "object",
+        "description": "The form body POSTed by the browser.",
+        "required": [
+          "ctx",
+          "username",
+          "password"
+        ],
+        "properties": {
+          "ctx": {
+            "type": "string",
+            "description": "The HMAC-signed OAuth context blob."
+          },
+          "password": {
+            "type": "string",
+            "description": "The password field (`#password`)."
+          },
+          "username": {
+            "type": "string",
+            "description": "The email/username field (`#username`)."
+          }
+        }
+      },
       "LogoutQuery": {
         "type": "object",
         "description": "The logoutquery type.",
@@ -11568,6 +12402,13 @@
               "null"
             ],
             "description": "The post logout redirect URI."
+          },
+          "state": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "DESIGN §9a.3 - the RP's opaque state, echoed on the\npost_logout_redirect_uri redirect (OIDC RP-Initiated Logout\n§2.1).\nThe state."
           }
         }
       },
@@ -11623,6 +12464,32 @@
           "token_endpoint": {
             "type": "string",
             "description": "The token endpoint."
+          }
+        }
+      },
+      "NotificationRequest": {
+        "type": "object",
+        "description": "`POST /oauth/notifications` request (OID4VCI §11.1).\nRequest body for notification.",
+        "required": [
+          "event_id",
+          "event"
+        ],
+        "properties": {
+          "event": {
+            "type": "string",
+            "description": "The event type - `credential_received` / `credential_failed`."
+          },
+          "event_id": {
+            "type": "string",
+            "description": "The event id (server checks event semantics, not the value)."
+          },
+          "transaction_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uuid",
+            "description": "The issuance this event refers to."
           }
         }
       },
@@ -11739,6 +12606,16 @@
           "sub"
         ],
         "properties": {
+          "address": {
+            "description": "OIDC address claim object (served when the token's scope includes\n`address`): `{formatted, street_address, locality, region,\npostal_code, country}` with absent columns omitted."
+          },
+          "birthdate": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Birthdate (`YYYY-MM-DD`, profile family, verbatim from\n`oidc_profile`)."
+          },
           "client_id": {
             "type": [
               "string",
@@ -11753,12 +12630,26 @@
             ],
             "description": "The user's email (absent when the subject is a client)."
           },
+          "email_verified": {
+            "type": [
+              "boolean",
+              "null"
+            ],
+            "description": "The email's verified flag (the `email` scope's second member,\nOIDCC-5.4 - served with the email claim family)."
+          },
           "family_name": {
             "type": [
               "string",
               "null"
             ],
             "description": "Family (last) name."
+          },
+          "gender": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Gender (profile family, verbatim from `oidc_profile`)."
           },
           "given_name": {
             "type": [
@@ -11776,6 +12667,69 @@
               "type": "string"
             },
             "description": "Live-resolved group names (user tokens only)."
+          },
+          "locale": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Locale (BCP 47, profile family, verbatim from `oidc_profile`)."
+          },
+          "middle_name": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Middle name (profile family, verbatim from `oidc_profile`)."
+          },
+          "name": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Full name (OIDC Core §5.1 profile member; derived from the stored\nname parts / `oidc_profile.name` - DESIGN §9a.11)."
+          },
+          "nickname": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Casual name (profile family, verbatim from `oidc_profile`)."
+          },
+          "phone_number": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Phone number (`phone_number`, served when the token's scope\nincludes `phone`)."
+          },
+          "phone_number_verified": {
+            "type": [
+              "boolean",
+              "null"
+            ],
+            "description": "Phone verified flag (served with the phone claim family)."
+          },
+          "picture": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Avatar picture URL (profile family, verbatim from `oidc_profile`)."
+          },
+          "preferred_username": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Shorthand the end-user wishes to be known as (profile family,\nverbatim from `oidc_profile`)."
+          },
+          "profile": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Profile page URL (profile family, verbatim from `oidc_profile`)."
           },
           "roles": {
             "type": [
@@ -11807,6 +12761,28 @@
               "null"
             ],
             "description": "The token type (`access`/`delegated`/`m2m`; delegated only)."
+          },
+          "updated_at": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "Last profile update time (profile family, derived from the users\nrow's `updated_at` - DESIGN §9a.11)."
+          },
+          "website": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Web site URL (profile family, verbatim from `oidc_profile`)."
+          },
+          "zoneinfo": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Geodata / time zone string (profile family, verbatim from\n`oidc_profile`)."
           }
         }
       },
@@ -11888,8 +12864,7 @@
         "description": "PAR endpoint (RFC 9126) - accepts a pushed authorization request.\nRequest body for par.",
         "required": [
           "response_type",
-          "client_id",
-          "redirect_uri"
+          "client_id"
         ],
         "properties": {
           "authorization_details": {
@@ -11927,6 +12902,13 @@
             ],
             "description": "The code challenge method."
           },
+          "dpop_jkt": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "RFC 9449 dpop_jkt - the DPoP key thumbprint the suite\npre-binds on the push (the request object's parameter).\nThe dpop jkt."
+          },
           "nonce": {
             "type": [
               "string",
@@ -11935,8 +12917,18 @@
             "description": "OIDC nonce (SEC-).\nThe nonce."
           },
           "redirect_uri": {
-            "type": "string",
-            "description": "The redirect URI."
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The redirect URI (optional at the FORM layer: a miss reaches the\nhandler and answers the OAUTH JSON error shape - RFC 9126's\n`invalid_request` - instead of a text 422 from the deserializer)."
+          },
+          "request": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The pushed request object (RFC 9126 + JAR RFC 9101): FAPI 2.0\npushes the authorization request's parameters as a JWT on the\nPAR call - its params are AUTHORITATIVE over any inline ones.\nThe request."
           },
           "resource": {
             "type": [
@@ -12245,6 +13237,24 @@
           }
         }
       },
+      "Proof": {
+        "type": "object",
+        "description": "The `proof` container.\nThe proof type.",
+        "required": [
+          "proof_type",
+          "jwt"
+        ],
+        "properties": {
+          "jwt": {
+            "type": "string",
+            "description": "The JWT text."
+          },
+          "proof_type": {
+            "type": "string",
+            "description": "Must be `jwt`."
+          }
+        }
+      },
       "ProvisionGroupMemberRequest": {
         "type": "object",
         "description": "`POST /v1/admin/provision/group_member` - add a user to a group\n(idempotent; returns the post-state membership count - 0 when the group\nis absent, which the caller treats as an error, fail-closed).\nRequest body for provisiongroupmember.",
@@ -12496,6 +13506,13 @@
               "null"
             ],
             "description": "The application type."
+          },
+          "backchannel_client_notification_endpoint": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The client's ping-mode notification callback. Absent = the\nclient uses poll delivery only.\nThe backchannel client notification endpoint."
           },
           "client_name": {
             "type": [
@@ -14094,7 +15111,8 @@
           "require_jwt_introspection",
           "require_iss",
           "max_token_lifetime",
-          "refresh_rotation"
+          "refresh_rotation",
+          "signing_alg"
         ],
         "properties": {
           "env_id": {
@@ -14157,6 +15175,10 @@
           "scope": {
             "type": "string",
             "description": "The scope."
+          },
+          "signing_alg": {
+            "type": "string",
+            "description": "Per-tenant JWT signing family (`MLDSA65` | `RS256`) - DESIGN §9a.9."
           }
         }
       },
@@ -15070,6 +16092,13 @@
           "scope": {
             "type": "string",
             "description": "The scope."
+          },
+          "signing_alg": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Per-tenant JWT signing family (`MLDSA65` | `RS256`) - DESIGN §9a.9."
           }
         }
       },
@@ -15077,6 +16106,13 @@
         "type": "object",
         "description": "Request body for updateuser.",
         "properties": {
+          "country": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Country."
+          },
           "email_verified": {
             "type": [
               "boolean",
@@ -15098,6 +16134,13 @@
             ],
             "description": "The last name."
           },
+          "locality": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Locality / city."
+          },
           "mfa_enabled": {
             "type": [
               "boolean",
@@ -15105,12 +16148,43 @@
             ],
             "description": "The MFA enabled."
           },
+          "oidc_profile": {
+            "description": "OIDC `profile`-scope standard members (DESIGN §9a.11) - merged\ninto the user's `oidc_profile` JSONB (SHALLOW merge: the request's\nnon-empty members win)."
+          },
+          "phone": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Phone number (OIDC `phone` claim source, DESIGN §9a.4)."
+          },
+          "postal_code": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Postal code."
+          },
+          "region": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Region / state."
+          },
           "status": {
             "type": [
               "string",
               "null"
             ],
             "description": "The status."
+          },
+          "street_address": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Street address (OIDC `address` claim source, DESIGN §9a.4)."
           }
         }
       },
@@ -15162,6 +16236,13 @@
           "updated_at"
         ],
         "properties": {
+          "country": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Country."
+          },
           "created_at": {
             "type": "string",
             "format": "date-time",
@@ -15199,13 +16280,51 @@
             ],
             "description": "The last name."
           },
+          "locality": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Locality / city."
+          },
           "mfa_enabled": {
             "type": "boolean",
             "description": "The MFA enabled."
           },
+          "oidc_profile": {
+            "description": "OIDC profile-family members (DESIGN §9a.11)."
+          },
+          "phone": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Phone number (OIDC `phone` claim source, DESIGN §9a.4)."
+          },
+          "postal_code": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Postal code."
+          },
+          "region": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Region / state."
+          },
           "status": {
             "type": "string",
             "description": "The status."
+          },
+          "street_address": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Street address (OIDC `address` claim source, DESIGN §9a.4)."
           },
           "updated_at": {
             "type": "string",
@@ -15538,6 +16657,65 @@
           "vp_response_endpoint": {
             "type": "string",
             "description": "The VP response endpoint."
+          }
+        }
+      },
+      "WebFingerLink": {
+        "type": "object",
+        "description": "One JRD link entry.\nThe webfingerlink type.",
+        "required": [
+          "rel",
+          "href"
+        ],
+        "properties": {
+          "href": {
+            "type": "string",
+            "description": "The target - this tenant's issuer URL.\nThe href."
+          },
+          "rel": {
+            "type": "string",
+            "description": "The link relation type.\nThe rel."
+          }
+        }
+      },
+      "WebFingerQuery": {
+        "type": "object",
+        "description": "WebFinger query parameters (RFC 7033 §4.1).\nThe webfingerquery type.",
+        "required": [
+          "resource"
+        ],
+        "properties": {
+          "rel": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Optional `rel` filter (RFC 7033). When present, only links with a\nmatching `rel` are returned; auth serves exactly one rel.\nThe rel."
+          },
+          "resource": {
+            "type": "string",
+            "description": "The resource identifier - `acct:user@domain`, a bare email, or any\nabsolute URI. Only its shape is validated; the user is NOT\nresolved (WebFinger must not become an account-existence oracle).\nThe resource."
+          }
+        }
+      },
+      "WebFingerResponse": {
+        "type": "object",
+        "description": "RFC 7033 §4.4 JSON Resource Descriptor (JRD).\nThe webfingerresponse type.",
+        "required": [
+          "subject",
+          "links"
+        ],
+        "properties": {
+          "links": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/WebFingerLink"
+            },
+            "description": "Links to the issuer for each requested rel.\nThe links."
+          },
+          "subject": {
+            "type": "string",
+            "description": "The subject echoed back (`acct:…` form).\nThe subject."
           }
         }
       },

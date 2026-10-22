@@ -327,6 +327,73 @@ pub async fn patch_grant(
     Ok(Json(g))
 }
 
+/// Revoke a grant BY ID without caller authorization checks - the
+/// internal service path (RFC 6749 §4.1.2 code-reuse detection,
+/// DESIGN §9a.11: the token handler itself is the trusted caller). Same
+/// cascade as `delete_grant`: status flip + Valkey denylist + the
+/// `grant.revoked` domain event.
+///
+/// # Errors
+/// - Unknown grant id (no row) or a database failure.
+pub async fn revoke_by_id(
+    state: &AppState,
+    env_id: uuid::Uuid,
+    grant_id: &str,
+) -> Result<(), String> {
+    let id = uuid::Uuid::parse_str(grant_id).map_err(|e| e.to_string())?;
+    // RLS (§4.3d): grants is FORCE-RLS'd - the bare pool hides the row.
+    // The caller passes the exchange's env (the grant's env - the code
+    // record carries it); the context is set on the SAME connection the
+    // update runs on.
+    let mut tx = state
+        .pool
+        .begin()
+        .await
+        .map_err(|e| e.to_string())?;
+    let _ = sqlx::query("SELECT sentin8_set_tenant_context($1)")
+        .bind(env_id)
+        .execute(&mut *tx)
+        .await;
+    let client_id: Option<String> = sqlx::query_scalar(
+        r#"SELECT client_id FROM auth.grants WHERE id = $1"#,
+    )
+    .bind(id)
+    .fetch_optional(&mut *tx)
+    .await
+    .map_err(|e| e.to_string())?;
+    let Some(client_id) = client_id else {
+        return Err(format!("grant {grant_id} not found"));
+    };
+
+    sqlx::query(r#"UPDATE auth.grants SET status = 'revoked', updated_at = now() WHERE id = $1"#)
+        .bind(id)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| e.to_string())?;
+
+    // Cascade: denylist the grant for the remaining token lifetimes
+    // (`is_grant_revoked` read path - no DB on the hot path).
+    let remaining = state.config.access_token_ttl_secs as i64 * 2;
+    if let Ok(conn) =
+        sentin8::middleware::valkey_client(&state.config.valkey_url, "sentin8:auth").await
+    {
+        let _: Result<(), _> = conn
+            .set_ex(format!("auth:grant:revoked:{id}"), "1", remaining.max(1) as u64)
+            .await;
+    }
+
+    tx.commit().await.map_err(|e| e.to_string())?;
+
+    crate::events::emit_event(
+        &state.pool,
+        env_id,
+        "sentin8:auth:grant:revoked",
+        serde_json::json!({ "grant_id": id.to_string(), "client_id": client_id }),
+    )
+    .await;
+    Ok(())
+}
+
 /// `DELETE /oauth/grants/{id}` - revoke the grant and cascade-revoke the
 /// dependent tokens. Tokens carry `grant_id`; the token-endpoint verify
 /// path treats a revoked grant as a hard 401 (checked via the Valkey

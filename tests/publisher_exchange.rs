@@ -90,6 +90,7 @@ fn publisher_access_claims(sub: &str, scope: &str, exp: i64) -> AuthClaims {
         act: None,
         cnf: None,
         grant_id: None,
+    userinfo_claims: None,
         // User access tokens carry no vertical/service_type - those stamp
         // M2M produce workloads only (VDC-2/4).
         vertical: None,

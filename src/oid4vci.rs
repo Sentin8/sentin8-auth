@@ -257,8 +257,11 @@ pub async fn credential(
             .get("exp")
             .and_then(|v| v.as_i64())
             .ok_or((StatusCode::BAD_REQUEST, "proof must carry exp".into()))?;
-        if exp < Utc::now().timestamp() - 300 || exp > Utc::now().timestamp() + 300 {
-            return Err((StatusCode::BAD_REQUEST, "proof exp out of range (±5min)".into()));
+        // Closed-window boundary (same shape as the client assertion):
+        // exp == now-300 IS already expired - the boundary instant must
+        // not pass.
+        if exp <= Utc::now().timestamp() - 300 || exp > Utc::now().timestamp() + 300 {
+            return Err((StatusCode::BAD_REQUEST, "proof exp out of range (+/-5min)".into()));
         }
         let aud = payload
             .get("aud")

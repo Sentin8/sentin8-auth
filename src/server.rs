@@ -323,7 +323,13 @@ pub fn build_router(state: AppState) -> Router {
             post(crate::wallet::credential_revoke),
         )
         .route("/oauth/revoke", post(oauth::revoke))
-        .route("/oauth/userinfo", get(oauth::userinfo))
+        // OIDC Core §5.3.1: userinfo accepts BOTH GET and POST (the
+        // bearer token rides the Authorization header on either method;
+        // the suite's post-header/post-body variants exercise POST).
+        .route(
+            "/oauth/userinfo",
+            get(oauth::userinfo).post(oauth::userinfo),
+        )
         .route("/oauth/logout", get(oauth::logout))
         // Back-Channel Logout (OIDC BCN )
         .route(
@@ -634,6 +640,36 @@ pub fn build_router(state: AppState) -> Router {
     // resolve tenant context and apply finer-grained scope checks. This
     // layer makes "new module forgot the guard" structurally impossible.
     app.layer(axum::middleware::from_fn_with_state(state, route_guard))
+        // RFC 6749 §5.1 / RFC 7662 §4: OAuth token, revoke, and
+        // introspection responses MUST carry `Cache-Control: no-store` +
+        // `Pragma: no-cache` (the suite's refresh-token cache-header check
+        // enforces it on the token endpoint; browsers/proxies must never
+        // retain token material). Applied at the edge so every grant
+        // handler's response shape is covered without touching each one.
+        .layer(axum::middleware::from_fn(token_no_store_middleware))
+}
+
+/// The `/oauth/{token,introspect,revoke}` no-store middleware - the RFC
+/// 6749 §5.1 response-hygiene headers on OAuth token-bearing surfaces.
+async fn token_no_store_middleware(
+    req: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> axum::response::Response {
+    let path = req.uri().path().to_string();
+    let resp = next.run(req).await;
+    if path == "/oauth/token" || path == "/oauth/introspect" || path == "/oauth/revoke" {
+        let (mut parts, body) = resp.into_parts();
+        parts.headers.insert(
+            axum::http::header::CACHE_CONTROL,
+            axum::http::HeaderValue::from_static("no-store"),
+        );
+        parts.headers.insert(
+            axum::http::header::PRAGMA,
+            axum::http::HeaderValue::from_static("no-cache"),
+        );
+        return axum::response::Response::from_parts(parts, body);
+    }
+    resp
 }
 
 /// SEC- - route guard backstop.
@@ -816,8 +852,28 @@ async fn internal_keys_rotate(
     security(),
     tag = "oauth",
 )]
-async fn jwks_endpoint(State(state): State<AppState>) -> Json<JwksResponse> {
-    Json(JwksResponse::from_keys(&state.keys))
+async fn jwks_endpoint(State(state): State<AppState>, headers: HeaderMap) -> Json<JwksResponse> {
+    // Tenant-plane filtered JWKS (DESIGN §9a.9/§9a.11): the keys served
+    // are the caller's env-resolved signing FAMILY only. An RS256 rig
+    // tenant sees RSA keys (the suite's Java JOSE stack cannot parse
+    // ML-DSA); an ML-DSA tenant sees ML-DSA keys. Resolution failure
+    // (no pool row / headerless caller) keeps EVERYTHING published -
+    // the platform-wide verification surface is the honest fallback.
+    let family = crate::oauth::resolve_security_profile(&state.pool, &headers, "env")
+        .await
+        .signing_alg;
+    if family.is_empty() || !sentin8_families().iter().any(|f| f == &family) {
+        // No resolvable family - platform-neutral: both families stay
+        // published (a verifier never fetches JWKS without a kid to
+        // match, and rotation overlap needs the full set).
+        return Json(JwksResponse::from_keys(&state.keys));
+    }
+    Json(JwksResponse::from_keys_family(&state.keys, &family))
+}
+
+/// The JWT signing families the service understands (DESIGN §9a.9).
+fn sentin8_families() -> [&'static str; 3] {
+    ["MLDSA65", "RS256", "ES256"]
 }
 
 /// Shared policy-admin surface accessor.

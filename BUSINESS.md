@@ -88,6 +88,7 @@ tokens or publish signing keys. The business value it delivers:
 | Device flow | CLI and device-based sign-in with verification page |
 | Token exchange | OAuth token exchange grant |
 | Introspection | Honest introspection - `none`-auth clients hard-rejected; signed JWT responses per profile |
+| OIDC claim scopes | All four OIDC claim scopes (`email`, `profile`, `phone`, `address`) are advertised and served: the consented scope selects the claim family at the ID-token and userinfo mint (`phone` → `phone_number`/`phone_number_verified`, `address` → the OIDC address object); the certification user carries a phone number and postal address so every advertised scope is demonstrable end-to-end |
 | Revocation | OAuth refresh/access revocation with family cascade |
 | Token binding | DPoP proof validation with jti replay protection; mTLS cert thumbprint binding; HTTP message signatures (RFC 9421) |
 | Wallet/SD-JWT | SD-JWT issuance, selective disclosure, key binding (embedded jwk + sd_hash), status-list revocation enforcement |
@@ -96,7 +97,7 @@ tokens or publish signing keys. The business value it delivers:
 
 | Capability | Business rule |
 |---|---|
-| Users | Full CRUD, status (active/suspended/archived/locked), role and group assignment |
+| Users | Full CRUD, status (active/suspended/archived/locked), role and group assignment, phone + postal-address profile data (feeds the OIDC `phone`/`address` claim scopes) |
 | Roles | Full CRUD, nesting (hierarchy), platform role catalog seeding |
 | Groups | Full CRUD, membership + role binding |
 | OAuth clients | Full CRUD, authentication method, grant types, TLS subject DN/thumbprint, consent requirement, DPoP exemption |
@@ -195,9 +196,10 @@ Event family `auth`; names follow `sentin8:auth:{resource}:{operation}`.
 3. A backend workload can register via DCR with a certificate and source cert-bound tokens; a stolen token alone grants nothing.
 4. Revoking a session kills cached downstream access immediately (BFF session-reaper via `sentin8:auth:session:revoked`).
 5. Every OAuth/OIDC flow works per profile: PKCE, refresh rotation with replay detection, device, CIBA, introspection, revocation, userinfo, back-channel logout.
-6. Wallet credential issuance + SD-JWT verification with key binding and status-list revocation works end-to-end.
-7. SCIM directory sync provisions users/groups without bespoke connectors.
-8. Enterprise SSO works via OIDC federation (SAML beyond metadata/ACS is a declared non-goal).
+6. Every OIDC claim scope advertised in discovery (`email`, `profile`, `phone`, `address`) delivers its claim family in the ID token and userinfo when consented - and delivers nothing when not consented; the conformance suite runs zero SKIPPED tests against the platform (no-skip rule).
+7. Wallet credential issuance + SD-JWT verification with key binding and status-list revocation works end-to-end.
+8. SCIM directory sync provisions users/groups without bespoke connectors.
+9. Enterprise SSO works via OIDC federation (SAML beyond metadata/ACS is a declared non-goal).
 9. Every lifecycle change emits a payload-complete domain event; a Bus outage never loses events (outbox durability).
 10. Emails (verification/reset/MFA) arrive via Sentin8:Post.
 11. All admin surfaces are exposed via RFW admin UI pages.

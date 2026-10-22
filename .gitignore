@@ -12,3 +12,4 @@
 
 # Scratch output (AGENTS: temp files always under .tmp/)
 /.tmp/
+/.sqlx/
