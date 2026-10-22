@@ -1062,7 +1062,18 @@ pub async fn discovery(
         revocation_endpoint: format!("{issuer}/oauth/revoke"),
         introspection_endpoint: format!("{issuer}/oauth/introspect"),
         end_session_endpoint: format!("{issuer}/oauth/logout"),
-        response_types_supported: vec!["code".into()],
+        // The standard five (OIDC Core §3.1.2.1 family + DESIGN §9a.13):
+        // the certification family runs variant cells per response_type.
+        response_types_supported: [
+                "code",
+                "id_token",
+                "code id_token",
+                "id_token token",
+                "code id_token token",
+            ]
+            .iter()
+            .map(|s| s.to_string())
+            .collect(),
         // JARM is advertised when require_jarm is true.
         response_modes_supported: if profile.require_jarm {
             vec!["query".into(), "jwt".into()]
@@ -2181,11 +2192,11 @@ pub async fn pushed_authorization_request(
         )
             .into_response()
     };
-    if req.response_type != "code" {
+    if !crate::oauth::is_supported_response_type(&req.response_type) {
         return Err(json_error(
             StatusCode::BAD_REQUEST,
             "unsupported_response_type",
-            "only 'code' response_type is supported".into(),
+            "unsupported response_type (the standard five per OIDC Core)".into(),
         ));
     }
     // RFC 9126 §2 - `request_uri` is the PAR RESPONSE payload, never a
@@ -2714,7 +2725,11 @@ pub async fn authorize(
     // an inline 400 stalls every browser-driven RP). The check is
     // therefore DEFERRED until the client/redirect_uri validation has
     // passed; see the redirect-error helper after that block.
-    let response_type_invalid = params.response_type != "code";
+    // The standard FIVE (DESIGN §9a.13): `code` continues into the
+    // exchange; the id_token/token members make the response a FRAGMENT
+    // response (OAuth-RT-5) - the redirect encoding picks the channel
+    // downstream (is_fragment_response).
+    let response_type_invalid = !is_supported_response_type(&params.response_type);
 
     // Validate PKCE if code_challenge is present.
     if let Some(ref method) = params.code_challenge_method {
@@ -2932,10 +2947,15 @@ pub async fn authorize(
     // (OIDC Core §3.1.2.1 - error goes back to redirect_uri, code never
     // reaches the client).
     if silent_only {
+        // DESIGN §9a.13 - the fragment cells encode the response (SUCCESS
+        // and ERROR alike) in the URL FRAGMENT (OAuth-RT-5); the query
+        // channel is only for the `code`-only cell.
+        let fragment_mode = crate::oauth::is_fragment_response(&params.response_type);
         let error_redirect = |err: &str, desc: &str, mode: Option<&str>| -> Response {
             let mut url = format!(
-                "{}?error={}&error_description={}",
+                "{}{}error={}&error_description={}",
                 params.redirect_uri,
+                if fragment_mode { "#" } else { "?" },
                 urlencode(err),
                 urlencode(desc)
             );
@@ -3008,6 +3028,10 @@ pub async fn authorize(
             // wall-clock-check it - the Valkey TTL alone is only the
             // 600s upper bound, never the RFC 6749 short-lived posture.
             "iat": chrono::Utc::now().timestamp(),
+            // DESIGN §9a.13 - the CELL's response_type (the fragment
+            // cells deliver id_token/token in the fragment even on the
+            // silent path).
+            "response_type": params.response_type,
         });
         let valkey_conn =
             match sentin8::middleware::valkey_client(&state.config.valkey_url, "sentin8:auth").await
@@ -3036,6 +3060,137 @@ pub async fn authorize(
                 })),
             )
                 .into_response();
+        }
+        // DESIGN §9a.13 - the fragment cells: the silent response
+        // encodes id_token/token + code members in the FRAGMENT
+        // (OAuth-RT-5). The code-only cell keeps the query encoding.
+        if crate::oauth::is_fragment_response(&params.response_type) {
+            let wants_id_token = params.response_type.split_whitespace().any(|p| p == "id_token");
+            let wants_token = params.response_type.split_whitespace().any(|p| p == "token");
+            let wants_code = params.response_type.split_whitespace().any(|p| p == "code");
+            let issuer2 = resolve_issuer(&state.config, &headers);
+            let access_token_for_hash = if wants_token {
+                let scope = params.scope.clone();
+                let merged = crate::handlers::merge_scopes(
+                    &scope,
+                    &crate::handlers::fetch_role_scopes(&state.pool, user_id).await.unwrap_or_default(),
+                );
+                let access_claims = {
+                    let mut c = AuthClaims::access_with_client(
+                        &issuer2,
+                        user_id,
+                        &scope,
+                        env_id,
+                        None,
+                        Some(&params.client_id),
+                        Duration::seconds(state.config.access_token_ttl_secs as i64),
+                    );
+                    c.token_tp = "access".into();
+                    c
+                };
+                let _ = merged;
+                let claims_json = serde_json::to_value(&access_claims).unwrap_or(serde_json::json!({}));
+                match state.keys.sign_value_alg(&claims_json, &profile.signing_alg) {
+                    Ok(t) => t,
+                    Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+                }
+            } else {
+                String::new()
+            };
+            let Ok(mut tx) = state.pool.begin().await else {
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(serde_json::json!({"error": "server_error",
+                        "error_description": "pool unavailable"})),
+                )
+                    .into_response();
+            };
+            let _ = sqlx::query("SELECT sentin8_set_tenant_context($1)")
+                .bind(env_id)
+                .execute(&mut *tx)
+                .await;
+            let user_row = sqlx::query!(
+                r#"SELECT email, first_name, last_name, phone,
+                          street_address, locality, region, postal_code, country,
+                          oidc_profile, updated_at
+                   FROM users WHERE id = $1"#,
+                user_id,
+            )
+            .fetch_optional(&mut *tx)
+            .await
+            .unwrap_or(None);
+            let _ = tx.commit().await;
+            let email = user_row.as_ref().map(|r| r.email.clone());
+            let name = user_row.as_ref().map(|r| {
+                crate::jwt::derive_profile_name(
+                    r.oidc_profile.get("name").and_then(|v| v.as_str()),
+                    r.first_name.as_deref().map(str::trim).filter(|s| !s.is_empty()),
+                    r.last_name.as_deref().map(str::trim).filter(|s| !s.is_empty()),
+                )
+                .unwrap_or_default()
+            });
+            let phone = user_row.as_ref().and_then(|r| r.phone.clone());
+            let address = user_row.as_ref().and_then(|r| {
+                crate::jwt::build_address_claim(
+                    r.street_address.as_deref(),
+                    r.locality.as_deref(),
+                    r.region.as_deref(),
+                    r.postal_code.as_deref(),
+                    r.country.as_deref(),
+                )
+            });
+            let id_claims = crate::jwt::AuthClaims::id_token_with_details(
+                &issuer2,
+                user_id,
+                &params.client_id,
+                params.nonce.as_deref(),
+                session_auth_time.unwrap_or_else(|| chrono::Utc::now().timestamp()),
+                &access_token_for_hash,
+                email.as_deref(),
+                params.scope.split_whitespace().any(|s| s == "email"),
+                name.as_deref(),
+                params.scope.split_whitespace().any(|s| s == "profile"),
+                phone.as_deref(),
+                params.scope.split_whitespace().any(|s| s == "phone"),
+                address.as_ref(),
+                params.scope.split_whitespace().any(|s| s == "address"),
+                Duration::seconds(state.config.access_token_ttl_secs as i64),
+                params.authorization_details.as_ref(),
+                None,
+                params.acr.as_deref(),
+            );
+            let mut id_claims = id_claims;
+            if wants_code {
+                id_claims["c_hash"] = serde_json::json!(crate::jwt::c_hash(&code));
+            }
+            let id_token = match state.keys.sign_value_alg(&id_claims, &profile.signing_alg) {
+                Ok(t) => t,
+                Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+            };
+            let mut fragment_params: Vec<(&str, String)> = Vec::new();
+            if wants_token {
+                fragment_params.push(("access_token", access_token_for_hash.clone()));
+                fragment_params.push(("token_type", "Bearer".to_string()));
+                fragment_params.push(("expires_in", state.config.access_token_ttl_secs.to_string()));
+            }
+            if wants_code {
+                fragment_params.push(("code", urlencode(&code)));
+            }
+            if wants_id_token {
+                fragment_params.push(("id_token", id_token));
+            }
+            fragment_params.push(("state", urlencode(&params.state)));
+            if profile.require_iss {
+                fragment_params.push(("iss", urlencode(&issuer2)));
+            }
+            let mut url = params.redirect_uri.clone();
+            let pairs: Vec<String> = fragment_params
+                .iter()
+                .map(|(k, v)| format!("{k}={v}"))
+                .collect();
+            url.push('#');
+            url.push_str(&pairs.join("&"));
+            return (StatusCode::FOUND, [("location", url)]).into_response();
         }
         let mut url = build_callback_url(
             &params.redirect_uri,
@@ -3195,6 +3350,13 @@ pub async fn authorize(
     }
     // Forward the response mode so authorize/continue can honor a JARM
     // (`response_mode=jwt`) request (SEC-).
+    // DESIGN §9a.13 - forward the CELL's response_type so the continue
+    // request serves the fragment cells (the id_token/token members)
+    // and stamps the record.
+    ui_url.push_str(&format!(
+        "&response_type={}",
+        urlencode(&params.response_type)
+    ));
     if let Some(rm) = params.response_mode.as_deref().filter(|s| !s.is_empty()) {
         ui_url.push_str(&format!("&response_mode={}", urlencode(rm)));
     }
@@ -3294,6 +3456,12 @@ pub struct AuthorizeContinueRequest {
     #[serde(default)]
     /// The dpop jkt.
     pub dpop_jkt: Option<String>,
+    /// The authorize CELL's response_type (DESIGN §9a.13): the code/"
+    /// id_token hybrid cells deliver the id_token member in the
+    /// FRAGMENT response; the record stamps it for the exchange check.
+    #[serde(default)]
+    /// The response type.
+    pub response_type: Option<String>,
 }
 
 /// Accept the claims request as the JSON object or as the object-encoded
@@ -3432,6 +3600,9 @@ pub async fn authorize_continue(
     // §9a.11 code-lifetime gate: the record's ISSUE TIME - the exchange
     // enforces the RFC 6749 short-lived posture against it.
            "iat": chrono::Utc::now().timestamp(),
+    // DESIGN §9a.13 - the CELL's response_type: the fragment response
+    // cells deliver id_token/token members + the exchange validates.
+           "response_type": req.response_type.clone().unwrap_or_else(|| "code".to_string()),
        });
 
     let conn = state
@@ -3490,6 +3661,155 @@ pub async fn authorize_continue(
         crate::jarm::build_jarm_redirect_url(&req.redirect_uri, &jarm_jwt)
     } else {
         redirect_url
+    };
+
+    // DESIGN §9a.13 - the hybrid/implicit cells: a response_type carrying
+    // an id_token/token member delivers its members in the URL FRAGMENT
+    // (OAuth-RT-5). The id_token mints NOW (not at an exchange - there
+    // is none for members without `code`); the access_token member (the
+    // `token` cells) mints a bearer token bound to this grant.
+    let cell_response_type = req.response_type.clone().unwrap_or_else(|| "code".to_string());
+    let response_url = if crate::oauth::is_fragment_response(&cell_response_type) {
+        let wants_id_token = cell_response_type.split_whitespace().any(|p| p == "id_token");
+        let wants_token = cell_response_type.split_whitespace().any(|p| p == "token");
+        let wants_code = cell_response_type.split_whitespace().any(|p| p == "code");
+        let issuer = resolve_issuer(&state.config, &headers);
+        // The user's claim data (the same RLS-scoped read the exchange
+        // uses - the fragment id_token is a REAL ID token).
+        let user_row = {
+            let mut tx = state
+                .pool
+                .begin()
+                .await
+                .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+            let _ = sqlx::query("SELECT sentin8_set_tenant_context($1)")
+                .bind(session.env_id)
+                .execute(&mut *tx)
+                .await;
+            let row = sqlx::query!(
+                r#"SELECT email, first_name, last_name, phone,
+                          street_address, locality, region, postal_code, country,
+                          oidc_profile, updated_at
+                   FROM users WHERE id = $1"#,
+                req.user_id,
+            )
+            .fetch_optional(&mut *tx)
+            .await
+            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+            let _ = tx.commit().await;
+            row
+        };
+        let email = user_row.as_ref().map(|r| r.email.clone());
+        let name = user_row.as_ref().map(|r| {
+            crate::jwt::derive_profile_name(
+                r.oidc_profile.get("name").and_then(|v| v.as_str()),
+                r.first_name.as_deref().map(str::trim).filter(|s| !s.is_empty()),
+                r.last_name.as_deref().map(str::trim).filter(|s| !s.is_empty()),
+            )
+            .unwrap_or_default()
+        });
+        let phone = user_row.as_ref().and_then(|r| r.phone.clone());
+        let address = user_row.as_ref().and_then(|r| {
+            crate::jwt::build_address_claim(
+                r.street_address.as_deref(),
+                r.locality.as_deref(),
+                r.region.as_deref(),
+                r.postal_code.as_deref(),
+                r.country.as_deref(),
+            )
+        });
+        // The `token` cells: the authorize-time access token (bearer,
+        // grant-bound). The `code` members mint no access token here.
+        let access_token_for_hash = if wants_token {
+            let scope = req.scope.clone();
+            let merged = crate::handlers::merge_scopes(
+                &scope,
+                &crate::handlers::fetch_role_scopes(&state.pool, req.user_id)
+                    .await
+                    .unwrap_or_default(),
+            );
+            let mut access_claims = AuthClaims::access_with_client(
+                &issuer,
+                req.user_id,
+                &scope,
+                session.env_id,
+                None,
+                Some(&req.client_id),
+                Duration::seconds(state.config.access_token_ttl_secs as i64),
+            );
+            let _ = merged;
+            access_claims.token_tp = "access".into();
+            match state.keys.sign_value_alg(
+                &serde_json::to_value(&access_claims).unwrap_or(serde_json::json!({})),
+                &profile.signing_alg,
+            ) {
+                Ok(t) => t,
+                Err(e) => {
+                    return Err((StatusCode::INTERNAL_SERVER_ERROR, e.to_string()));
+                }
+            }
+        } else {
+            String::new()
+        };
+        // The id_token mint (c_hash binds the CODE when the cell carries
+        // one; at_hash binds the access token when present).
+        let id_claims = crate::jwt::AuthClaims::id_token_with_details(
+            &issuer,
+            req.user_id,
+            &req.client_id,
+            req.nonce.as_deref(),
+            session.created_at.timestamp(),
+            &access_token_for_hash,
+            email.as_deref(),
+            req.scope.split_whitespace().any(|s| s == "email"),
+            name.as_deref(),
+            req.scope.split_whitespace().any(|s| s == "profile"),
+            phone.as_deref(),
+            req.scope.split_whitespace().any(|s| s == "phone"),
+            address.as_ref(),
+            req.scope.split_whitespace().any(|s| s == "address"),
+            Duration::seconds(state.config.access_token_ttl_secs as i64),
+            req.authorization_details.as_ref(),
+            None,
+            req.acr_values.as_deref(),
+        );
+        let mut id_claims = id_claims;
+        if wants_code {
+            id_claims["c_hash"] = serde_json::json!(crate::jwt::c_hash(&code));
+        }
+        let id_token = state
+            .keys
+            .sign_value_alg(&id_claims, &profile.signing_alg)
+            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+        // The FRAGMENT members (order per OIDC Core §3.1.2.5 examples):
+        let mut fragment_params: Vec<(&str, String)> = Vec::new();
+        if wants_token {
+            fragment_params.push(("access_token", access_token_for_hash.clone()));
+            fragment_params.push(("token_type", "Bearer".to_string()));
+            fragment_params.push(("expires_in", state.config.access_token_ttl_secs.to_string()));
+        }
+        if wants_code {
+            fragment_params.push(("code", urlencode(&code)));
+        }
+        if wants_id_token {
+            fragment_params.push(("id_token", id_token));
+        }
+        fragment_params.push(("state", urlencode(&req.state)));
+        if profile.require_iss {
+            fragment_params.push(("iss", urlencode(&issuer)));
+        }
+        let mut url = req.redirect_uri.clone();
+        if !fragment_params.is_empty() {
+            let pairs: Vec<String> = fragment_params
+                .iter()
+                .map(|(k, v)| format!("{k}={v}"))
+                .collect();
+            url.push('#');
+            url.push_str(&pairs.join("&"));
+        }
+        url
+    } else {
+        response_url
     };
 
     // Return JSON with the redirect URL instead of a 302 redirect.
@@ -6299,29 +6619,60 @@ pub async fn logout(
             let client_row: Option<(String, Vec<String>)> = if let Some(hint) =
                 q.id_token_hint.as_deref()
             {
-                let aud: Option<String> =
-                    crate::enterprise_connections::decode_jwt_unverified(hint)
+                // OIDC RP-Initiated Logout - the hint must be a token THIS
+                // OP issued: the signature verifies against our own keys
+                // (a modified/hint-forged token refuses the registered-URI
+                // redirect and falls back to /sign-in).
+                let aud: Option<String> = state
+                    .keys
+                    .verify_raw(hint)
+                    .ok()
+                    .and_then(|c| c.get("aud").and_then(|v| v.as_str()).map(|s| s.to_string()));
+                // RLS: the handler is an unauthenticated browser redirect -
+                // there is no tenant context; `oauth_clients` reads go
+                // through the platform-plane transaction (the same
+                // `with_client_env` pattern the authorize flow uses).
+                match state.pool.begin().await {
+                    Ok(mut tx) => {
+                        let _ = sqlx::query("SELECT sentin8_set_tenant_context($1)")
+                            .bind(crate::config::SYSTEM_ENV_ID)
+                            .execute(&mut *tx)
+                            .await;
+                        let row = sqlx::query_as(
+                            r#"SELECT client_id, post_logout_redirect_uris FROM oauth_clients
+                               WHERE client_id = $1"#,
+                        )
+                        .bind(aud)
+                        .fetch_optional(&mut *tx)
+                        .await
                         .ok()
-                        .and_then(|c| c.get("aud").and_then(|v| v.as_str()).map(|s| s.to_string()));
-                sqlx::query_as(
-                    r#"SELECT client_id, post_logout_redirect_uris FROM oauth_clients
-                       WHERE client_id = $1"#,
-                )
-                .bind(aud)
-                .fetch_optional(&state.pool)
-                .await
-                .ok()
-                .flatten()
+                        .flatten();
+                        let _ = tx.commit().await;
+                        row
+                    }
+                    Err(_) => None,
+                }
             } else if let Some(cid) = q.client_id.as_deref() {
-                sqlx::query_as(
-                    r#"SELECT client_id, post_logout_redirect_uris FROM oauth_clients
-                       WHERE client_id = $1"#,
-                )
-                .bind(cid)
-                .fetch_optional(&state.pool)
-                .await
-                .ok()
-                .flatten()
+                match state.pool.begin().await {
+                    Ok(mut tx) => {
+                        let _ = sqlx::query("SELECT sentin8_set_tenant_context($1)")
+                            .bind(crate::config::SYSTEM_ENV_ID)
+                            .execute(&mut *tx)
+                            .await;
+                        let row = sqlx::query_as(
+                            r#"SELECT client_id, post_logout_redirect_uris FROM oauth_clients
+                               WHERE client_id = $1"#,
+                        )
+                        .bind(cid)
+                        .fetch_optional(&mut *tx)
+                        .await
+                        .ok()
+                        .flatten();
+                        let _ = tx.commit().await;
+                        row
+                    }
+                    Err(_) => None,
+                }
             } else {
                 None
             };
@@ -6591,6 +6942,24 @@ fn extract_bearer_token(headers: &HeaderMap) -> Option<String> {
         return None;
     }
     Some(rest.trim().to_string())
+}
+
+/// The standard five OIDC response types (DESIGN §9a.13).
+pub fn is_supported_response_type(rt: &str) -> bool {
+    matches!(
+        rt,
+        "code"
+            | "id_token"
+            | "code id_token"
+            | "id_token token"
+            | "code id_token token"
+    )
+}
+
+/// Whether the response_type encodes its response in the URL FRAGMENT
+/// (OAuth-RT-5): any type carrying a token/id_token member.
+pub fn is_fragment_response(response_type: &str) -> bool {
+    response_type.split_whitespace().any(|p| p == "id_token" || p == "token")
 }
 
 /// PKCE S256 challenge computation.

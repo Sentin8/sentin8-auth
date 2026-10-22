@@ -1396,6 +1396,39 @@ with zero warnings. LIVE RESULT: both FAPI2-SP cells terminal-green
 suite JVM collapse; server negative proven at the wire) - zero
 warnings, zero interrupts).
 
+### 9a.13 Hybrid + implicit response types (the OIDC family)
+
+The certification family runs variant cells per `response_type`: the
+Basic plan's `code` cell, the RP-Initiated-Logout plan's `code` AND
+`id_token` cells, and the form-post/hybrid plans (the same five). The
+target state:
+1. discovery advertises the standard five
+   (`code`, `id_token`, `code id_token`, `id_token token`,
+   `code id_token token`) - the advertised set answers the suite's
+   metadata allow-list per plan cell.
+2. The authorize handler validates the five (space-split, exact
+   membership) and encodes EVERY response carrying a `token`/`id_token`
+   member in the URL FRAGMENT (OAuth-RT-5 - an error under an implicit
+   cell also redirects to the fragment).
+3. The hybrid id_token mint rides the standard
+   `id_token_with_details` (c_hash + s_hash exist, §9a.3); the
+   code-record stamps the cell's response_type (the exchange validates
+   the presented type against the stamped one). PAR + JAR overlay the
+   same validation (the request object's `response_type` follows the
+   same five).
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant RP as suite client
+    participant OP as sentin8:auth
+    Note over RP,OP: the id_token logout cell (fragment encoding)
+    RP->>OP: GET /oauth/authorize (response_type=id_token)
+    OP->>OP: login/consent (same as code)
+    OP-->>RP: 302 /callback#id_token=...&state=...&iss=... (FRAGMENT - OAuth-RT-5)
+    RP->>OP: POST /oauth/token (none - no code)
+```
+
 ## 10. Open Questions
 
 - SAML flows beyond metadata/ACS are a declared non-goal for the platform IdP

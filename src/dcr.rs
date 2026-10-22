@@ -43,6 +43,11 @@ pub struct RegisterRequest {
     #[serde(default)]
     /// The redirect uris.
     pub redirect_uris: Vec<String>,
+    /// OIDC RP-Initiated Logout (§2) - the URIs the client may be
+    /// redirected to after logout; the OP validates the
+    /// end-session request's URI against this allow-list.
+    #[serde(default)]
+    pub post_logout_redirect_uris: Vec<String>,
     #[serde(default)]
     /// The grant types.
     pub grant_types: Vec<String>,
@@ -138,6 +143,9 @@ pub struct RegisterResponse {
     pub client_name: Option<String>,
     /// The redirect uris.
     pub redirect_uris: Vec<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty", default)]
+    /// The post-logout redirect uris (OIDC RP-Initiated Logout).
+    pub post_logout_redirect_uris: Vec<String>,
     /// The grant types.
     pub grant_types: Vec<String>,
     /// The response types.
@@ -596,18 +604,20 @@ pub async fn register(
                 jwks_uri, jwks, sector_identifier_uri, application_type,
                 registration_access_token_hash, dcr_protected,
                 tls_client_auth_subject_dn, self_signed_tls_client_auth_thumbprint,
-                consent_required, backchannel_client_notification_endpoint)
+                consent_required, backchannel_client_notification_endpoint,
+                post_logout_redirect_uris)
            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9,
                    $10, $11, $12, $13, $14, $15, $16, $17, $18,
                    $19, $20, $21, $22, $23, true,
-                   $24, $25, $26, $27)
+                   $24, $25, $26, $27,
+                   $28)
            RETURNING
                client_id, client_id_issued_at, client_secret_expires_at,
                client_name, redirect_uris, grant_types, response_types,
                token_endpoint_auth_method, scopes,
                software_id, software_statement,
                logo_uri, client_uri, policy_uri, tos_uri, contacts,
-               application_type, consent_required"#,
+               application_type, consent_required, post_logout_redirect_uris"#,
         env_id,
         &client_id,
         &client_name,
@@ -641,6 +651,7 @@ pub async fn register(
         // CIBA (DESIGN §9a.7) - the ping-mode notification callback,
         // registered through DCR exactly like the suite does.
         req.backchannel_client_notification_endpoint.as_deref(),
+        &req.post_logout_redirect_uris,
     )
     .fetch_one(&mut *tx)
     .await
@@ -670,6 +681,7 @@ pub async fn register(
             registration_client_uri,
             client_name: Some(row.client_name),
             redirect_uris: row.redirect_uris,
+            post_logout_redirect_uris: row.post_logout_redirect_uris,
             grant_types: row.grant_types,
             response_types: row.response_types,
             token_endpoint_auth_method: row.token_endpoint_auth_method,
