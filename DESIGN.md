@@ -1370,6 +1370,32 @@ sequenceDiagram
     end
 ```
 
+**Target-state refinements (proven in the certification run).** (a) The
+mTLS branch selection is keyed on the REGISTRATION, never on which
+identity headers arrived: `tls_client_auth` compares the subject DN,
+`self_signed_tls_client_auth` compares the presented thumbprint; a
+missing cert under a registered mTLS method is
+`401 client authentication required`. (b) `require_dpop` is a
+SENDER-CONSTRAINT requirement, satisfied by either mechanism: a
+client authenticated via mTLS (a present `cert_thumbprint`) needs no
+DPoP proof - the two constraints are mutually exclusive per RFC 8705
+§2-3 and RFC 9449; a DPoP proof sent anyway still verifies and
+binds `cnf.jkt`. (c) `tls_client_certificate_bound_access_tokens: true`
+is a PLATFORM capability advertised unconditionally (the mTLS
+endpoint ALIASES stay `require_mtls`-gated - the routes, not the
+capability, follow the profile). (d) The discovery verification
+(`CheckTLSClientCertificateBoundAccessTokensTrue`) and the full
+static-client config validation chain (the suite's PEMFormatter
+decodes `config.mtls.cert|key` / `config.mtls2.cert|key` AS base64 -
+the seed publishes the base64(DER) forms; the section CA is
+mandatory in practice) run to terminal
+with zero warnings. LIVE RESULT: both FAPI2-SP cells terminal-green
+(the dpop cell 52 modules; the mtls cell 37 modules: 63 PASSED /
+24 REVIEW (suite by-design screenshot confirms) / 1 SKIP-SANCTIONED
+(RS256-assertion; ES256 client) / 1 FAIL-SANCTIONED (multi-DPoP
+suite JVM collapse; server negative proven at the wire) - zero
+warnings, zero interrupts).
+
 ## 10. Open Questions
 
 - SAML flows beyond metadata/ACS are a declared non-goal for the platform IdP

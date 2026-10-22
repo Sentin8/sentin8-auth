@@ -561,51 +561,73 @@ pub async fn authenticate_client(
         }
         verify_client_assertion(state, headers, &client_id, &row, assertion).await?;
         auth_method = "private_key_jwt";
-    } else if let (Some(_), Some(presented)) = (&mtls_presented_thumb, &mtls_presented_dn) {
-        // tls_client_auth - DN match required.
-        let registered_dn = mtls_dn.as_deref().ok_or_else(|| {
-            tracing::warn!(
-                client_id = %client_id,
-                "client authentication rejected: client not registered for tls_client_auth"
-            );
-            (
-                StatusCode::UNAUTHORIZED,
-                "client not registered for tls_client_auth".into(),
-            )
-        })?;
-        if presented != registered_dn {
-            tracing::warn!(
-                client_id = %client_id,
-                "client authentication rejected: certificate DN does not match the registered DN"
-            );
+    } else if auth_method_registered == "tls_client_auth"
+        || auth_method_registered == "self_signed_tls_client_auth"
+    {
+        // RFC 8705 - the PRESENCE of a certificate is not the method
+        // selector; the REGISTRATION is. `tls_client_auth` compares the
+        // presented subject DN; `self_signed_tls_client_auth` compares
+        // the presented cert's RFC 8705 thumbprint (a mismatched DN
+        // header - the proxy's bridge path carries the subject best-
+        // effort only when it exists - must not flip the method).
+        if !crate::mtls::is_mtls_auth_method(&auth_method_registered) {
             return Err((StatusCode::UNAUTHORIZED, "invalid client".into()));
         }
-        auth_method = "tls_client_auth";
-        cert_thumbprint = mtls_presented_thumb.clone();
-    } else if let Some(presented) = &mtls_presented_thumb {
-        // self_signed_tls_client_auth - thumbprint match required.
-        let registered = mtls_thumb.as_deref().ok_or_else(|| {
+        let Some(presented_thumb) = mtls_presented_thumb.as_deref().filter(|s| !s.is_empty()) else {
             tracing::warn!(
                 client_id = %client_id,
-                "client authentication rejected: client not registered for self_signed_tls_client_auth"
+                "client authentication rejected: no client certificate presented for the registered mTLS method"
             );
-            (
-                StatusCode::UNAUTHORIZED,
-                "client not registered for self_signed_tls_client_auth".into(),
-            )
-        })?;
-        if presented != registered {
-            // Thumbprint mismatch: the cert was re-issued (rotation) or the
-            // cached record points at a client re-registered by another
-            // holder of the workload name.
-            tracing::warn!(
-                client_id = %client_id,
-                "client authentication rejected: certificate thumbprint does not match the registered thumbprint"
-            );
-            return Err((StatusCode::UNAUTHORIZED, "invalid client".into()));
+            return Err((StatusCode::UNAUTHORIZED, "client authentication required".into()));
+        };
+        if auth_method_registered == "tls_client_auth" {
+            let registered_dn = mtls_dn.as_deref().ok_or_else(|| {
+                tracing::warn!(
+                    client_id = %client_id,
+                    "client authentication rejected: client not registered for tls_client_auth"
+                );
+                (
+                    StatusCode::UNAUTHORIZED,
+                    "client not registered for tls_client_auth".into(),
+                )
+            })?;
+            let presented_dn = mtls_presented_dn.clone().unwrap_or_default();
+            if presented_dn != registered_dn {
+                tracing::warn!(
+                    client_id = %client_id,
+                    "client authentication rejected: certificate DN does not match the registered DN"
+                );
+                return Err((StatusCode::UNAUTHORIZED, "invalid client".into()));
+            }
+        } else {
+            // self_signed_tls_client_auth - thumbprint match.
+            let registered_thumb = mtls_thumb.as_deref().ok_or_else(|| {
+                tracing::warn!(
+                    client_id = %client_id,
+                    "client authentication rejected: client not registered for self_signed_tls_client_auth"
+                );
+                (
+                    StatusCode::UNAUTHORIZED,
+                    "client not registered for self_signed_tls_client_auth".into(),
+                )
+            })?;
+            if presented_thumb != registered_thumb {
+                // Thumbprint mismatch: the cert was re-issued (rotation)
+                // or the cached record points at a client re-registered by
+                // another holder of the workload name.
+                tracing::warn!(
+                    client_id = %client_id,
+                    "client authentication rejected: certificate thumbprint does not match the registered thumbprint"
+                );
+                return Err((StatusCode::UNAUTHORIZED, "invalid client".into()));
+            }
         }
-        auth_method = "self_signed_tls_client_auth";
-        cert_thumbprint = Some(presented.clone());
+        auth_method = if auth_method_registered == "tls_client_auth" {
+            "tls_client_auth"
+        } else {
+            "self_signed_tls_client_auth"
+        };
+        cert_thumbprint = Some(presented_thumb.to_string());
     } else if let Some(secret) = form_client_secret.or(basic_secret.as_deref()) {
         // client_secret_post / client_secret_basic.
         let stored = secret_hash
@@ -1118,7 +1140,12 @@ pub async fn discovery(
         } else {
             None
         },
-        tls_client_certificate_bound_access_tokens: profile.require_mtls,
+        // RFC 8705 §2 - certificate-bound access tokens are a PLATFORM
+        // capability (every env's client machinery supports the mtls
+        // methods - §9a.12): advertised unconditionally. The mTLS ENDPOINT
+        // ALIASES above stay per-profile (require_mtls) - the capability
+        // is always present, the profile gates the alias ROUTES.
+        tls_client_certificate_bound_access_tokens: true,
         // - discovery honesty: advertise the RAR types the AS
         // actually enforces (union of client-registered
         // authorization_details_types) and the grants API.
@@ -3687,6 +3714,7 @@ pub async fn token(
             })?;
         dpop_jkt = Some(jkt);
     } else if profile.require_dpop
+        && client.cert_thumbprint.is_none()
         && req.grant_type != "client_credentials"
  // RFC 8693 token exchange is an M2M delegation grant: the
  // subscriber authenticates as a service client and sender-
