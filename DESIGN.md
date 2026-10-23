@@ -1605,6 +1605,19 @@ the test client), so the RS legitimately answers 200 to the
 single-valid-proof request that actually arrives. The OP behavior is correct;
 the client cannot send the negative shape.
 
+**PS256 (RSASSA-PSS) acceptance.** RFC 7518 §3.5 makes PS256 the
+FAPI-mandated RSA signing form, and the discovery documents already advertised
+it for request objects - so the verify set MUST make every advertised member
+verifiable (§9a.10 honesty). `SigningKeys::verify_with_jwk` gains the
+`("RSA", "PS256")` arm (jsonwebtoken `Algorithm::PS256` - PSS, salt = the
+SHA-256 digest size) alongside RS256; `verify_raw_with_jwk` gains the PSS
+arm for signature-base artifacts (`rsa::pss::VerifyingKey`); and
+`token_endpoint_auth_signing_alg_values_supported` now advertises
+`{active_signing_alg, PS256, ES256}`. An RSA-keyed client may sign client
+assertions, request objects, and HTTP-signature bases with PS256; the ES-keyed
+RS256 negatives still reject (unsupported key/alg combination). A
+PS256 round-trip unit test proves the path.
+
 **Certification status.** dpop cell terminal: 77 PASSED, 36 REVIEW
 (failures=0, warnings=0 - the suite's by-design manual-review states:
 PAR-reuse family, PKCE-required family, expired-request_uri family), 3

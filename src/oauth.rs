@@ -1260,6 +1260,10 @@ pub async fn discovery(
         // client-assertion verifier accepts.
         token_endpoint_auth_signing_alg_values_supported: vec![
             crate::jwks::active_signing_alg().into(),
+            // RFC 7518 §3.5 - PS256 (RSASSA-PSS): the FAPI-mandated RSA
+            // signing form; the verify set (RSA JWK + Algorithm::PS256)
+            // makes every advertised member verifiable (§9a.10 honesty).
+            "PS256".into(),
             "ES256".into(),
         ],
         // DESIGN §9a.3 - the claims request parameter is
