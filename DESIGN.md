@@ -1478,6 +1478,76 @@ wire-level deltas beyond §9a.11-§9a.13:
   redirect already carries a query. The mtls-aliased token/introspect/
   revoke responses carry `Cache-Control: no-store` (RFC 6749 §5.1).
 
+### 9a.15 FAPI CIBA ID1 (poll + ping, static_client / private_key_jwt)
+
+The full `fapi-ciba-id1-test-plan` runs in TWO cells (ciba_mode poll | ping) -
+34 + 39 modules, every module terminal (PASSED | sanctioned SKIPPED | by-design
+REVIEW with the screenshot uploaded) at zero warnings.
+
+**Contract (bc-authorize, CIBA §7.1).** FAPI-CIBA pushes carry ONLY
+`request` + `client_assertion` + `client_assertion_type` - the form client_id is
+OPTIONAL and resolves from the first of: the form value, the verified client
+assertion's `iss`, the request object's `client_id` claim. The **signed request
+object is mandatory**; its claims are authoritative:
+
+- `iss` == the authenticated client_id (REQUIRED);
+- `aud` includes the AS: issuer | `{issuer}/oauth/token` |
+  `{issuer}/oauth/bc-authorize` (REQUIRED);
+- `exp` in (-5min, +1h), `iat` in (-1d, +5min), `nbf` in (-10min, +5min)
+  (REQUIRED each; the suite's negative modules bound these windows);
+- `jti` a non-empty string.
+  Every defect answers HTTP 400 with an RFC 6749 JSON body
+  (`{"error": "invalid_request"[, "error_description"]}`) - rendered by
+  `CibaAuthzError`, which splits the `"{code}: {description}"` payload.
+  Client-authentication failures (401) render `invalid_client`; the
+  `client_assertion_type` MUST be exactly
+  `urn:ietf:params:oauth:client-assertion-type:jwt-bearer` when an assertion
+  is presented; exactly ONE hint parameter
+  (login_hint | login_hint_token | id_token_hint | sub) is accepted; the
+  header `alg` must not be `none`, HS*, or RS256 (FAPI's PS/ES-only rule).
+
+**Grant semantics (handle_ciba_token, CIBA §11).** The poll's gate order:
+valkey record lookup (missing key = TTL-expired = `expired_token`) -> client
+match (polling client == the grant's client; foreign clients answer
+`invalid_grant` BEFORE any status answer) -> holder-of-key certificate check
+(below) -> status gates: `pending` -> `authorization_pending`, `denied` ->
+`access_denied`, `consumed` -> `invalid_grant` (single-use). After a successful
+mint the record flips to `consumed` (kept 90s) - a reuse poll answers
+`invalid_grant`, a genuinely TTL-ed-out one answers `expired_token`.
+`auth_req_id` concatenates two UUIDs (256 bits - the suite's recommended
+>=160).
+
+**Holder-of-key (CIBA §11.2).** When the client authenticated with a client
+certificate, `bc_authorize` binds the presented thumbprint to the grant
+(`mtls_thumb` in the valkey record); every poll must present the SAME
+certificate - a certless (or different-cert) poll rejects `invalid_grant`
+before any status answer. The minted access token also carries the `cnf`
+binding (9a.14 (19)).
+
+**Ping delivery (CIBA §5.2).** Ping vs poll is signaled by the CLIENT: a
+request carrying `client_notification_token` (and no explicit `request_mode`)
+is a PING request. At approval time the OP POSTs `{"auth_req_id": ...}` with
+the token as Bearer to the client's registered
+`backchannel_client_notification_endpoint` - the ping response's redirect
+(3xx) is NOT followed (CIBA-10.2: `reqwest::redirect::Policy::none()`). The
+registration's backchannel endpoint is read under the SYSTEM env RLS context
+(the `with_client_env` pattern - a bare pool query sees zero rows because
+`auth.oauth_clients` is env-RLS gated; the same context the authorize/PAR paths
+use). Certification: the registered endpoint is the suite's
+`/test/a/{alias}/ciba-notification-endpoint` (NOT the callback path - the
+suite's ping receiver resolves the WAITING module from the request).
+
+**Harness (sentin8-auth-oidf).** The runner's CIBA hook drives the out-of-band
+user approval: sign-in with the cert user -> `POST /v1/ciba/approve`
+(`{auth_req_id, approved: true|false}`) per observed auth_req_id - the
+dedicated approval endpoint resolves the ping delivery
+(`assisted/{id}/complete` would always approve without notifying). Two DISTINCT
+seed clients (ciba | ciba2, each with its own P-256 jwks) satisfy the
+multiple-client family (signed-by-other-client / bad-iss). The seed's fapi_ciba
+profile registers both CIBA clients with the suite's ping URL.
+
+---
+
 ---
 
 **Design attribution:** sentin8:auth and its underlying concepts were designed by Hamid Jahanzad <Hamid@Jahanzad.com>.
