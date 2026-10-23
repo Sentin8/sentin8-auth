@@ -52,8 +52,11 @@ use crate::sessions::Session;
 #[derive(Debug, Deserialize, utoipa::ToSchema)]
 /// Request body for CIBA.
 pub struct CibaRequest {
-    /// client identifier.
-    pub client_id: String,
+    /// client identifier - OPTIONAL on the wire: the FAPI-CIBA push may
+    /// carry ONLY the signed request object (client identity comes from
+    /// the verified assertion's iss / the object's client_id claim).
+    #[serde(default)]
+    pub client_id: Option<String>,
     /// SEC- - client authentication (client_secret_post). Public
     /// clients omit it.
     #[serde(default)]
@@ -63,6 +66,11 @@ pub struct CibaRequest {
     #[serde(default)]
     /// The client assertion.
     pub client_assertion: Option<String>,
+    /// CIBA §7.1 - the assertion type accompanying `client_assertion`
+    /// (MUST be urn:ietf:params:oauth:client-assertion-type:jwt-bearer
+    /// when the assertion is present).
+    #[serde(default)]
+    pub client_assertion_type: Option<String>,
     /// User identifier - one of: login_hint, login_hint_token, id_token_hint, sub.
     #[serde(default)]
     /// The login hint.
@@ -205,7 +213,7 @@ pub async fn bc_authorize(
     State(state): State<AppState>,
     headers: axum::http::HeaderMap,
     payload: axum::extract::Request,
-) -> Result<Json<CibaResponse>, (StatusCode, String)> {
+) -> Result<Json<CibaResponse>, CibaAuthzError> {
     // CIBA §7.2 - the endpoint accepts application/x-www-form-urlencoded
     // (the wire format the conformance suite and every standard CIBA
     // client uses). JSON stays supported for platform-internal callers
@@ -235,27 +243,125 @@ pub async fn bc_authorize(
     // REPLACE the unsigned ones (signed wins). `request` and
     // `request_uri` are mutually exclusive per spec.
     let mut req = req;
-    let signed = match (req.request.as_deref(), req.request_uri.as_deref()) {
+    // CIBA §7.1: resolve the signed object (may be the ONLY identity
+    // carrier) before the client_id resolution.
+    let signed_raw = match (req.request.as_deref(), req.request_uri.as_deref()) {
         (Some(_), Some(_)) => {
-            return Err((
+            return Err(CibaAuthzError(
                 StatusCode::BAD_REQUEST,
-                "request and request_uri are mutually exclusive".into(),
+                "invalid_request: request and request_uri are mutually exclusive"
+                    .into(),
             ));
         }
         (Some(jwt), None) => Some(jwt.to_string()),
         (None, Some(uri)) => Some(
             crate::oauth::fetch_request_object(uri)
                 .await
-                .map_err(|e| (StatusCode::BAD_REQUEST, format!("request_uri: {e}")))?,
+                .map_err(|e| {
+                    CibaAuthzError(
+                        StatusCode::BAD_REQUEST,
+                        format!("invalid_request: request_uri: {e}"),
+                    )
+                })?,
         ),
         (None, None) => None,
     };
+    // The FAPI-CIBA push may omit the FORM client_id - identity resolves
+    // from the client_assertion's (verified later) iss or the request
+    // object's client_id claim (CIBA §7.1).
+    let form_client_id = req
+        .client_id
+        .clone()
+        .or_else(|| {
+            req.client_assertion
+                .as_deref()
+                .map(sentin8::auth::jwt::decode_payload)
+                .and_then(|r| r.ok())
+                .and_then(|c| {
+                    c.get("iss").and_then(|v| v.as_str()).map(|s| s.to_string())
+                })
+        })
+        .or_else(|| {
+            signed_raw
+                .as_deref()
+                .map(sentin8::auth::jwt::decode_payload)
+                .and_then(|r| r.ok())
+                .and_then(|c| {
+                    c.get("client_id")
+                        .and_then(|v| v.as_str())
+                        .map(|s| s.to_string())
+                })
+        });
+    let Some(form_client_id) = form_client_id else {
+        return Err(CibaAuthzError(
+            StatusCode::BAD_REQUEST,
+            "invalid_request: client_id is required (form, request object, or client assertion)"
+                .into(),
+        ));
+    };
+    let signed = signed_raw;
+    // FAPI-CIBA (CIBA-7.1): the signed request object is MANDATORY - a
+    // push with NO `request`/`request_uri` (the suite's unsigned
+    // backchannel request) rejects `invalid_request`.
+    if signed.is_none() {
+        return Err(CibaAuthzError(
+            StatusCode::BAD_REQUEST,
+            "invalid_request: a signed request object is required"
+                .into(),
+        ));
+    }
     if let Some(jwt) = signed {
-        let claims = sentin8::auth::jwt::decode_payload(&jwt)
-            .map_err(|e| (StatusCode::BAD_REQUEST, format!("signed request decode: {e}")))?;
-        crate::oauth::verify_client_signed_jwt(&state, &req.client_id, &jwt)
+        let claims = sentin8::auth::jwt::decode_payload(&jwt).map_err(|e| {
+            CibaAuthzError(
+                StatusCode::BAD_REQUEST,
+                format!("invalid_request: signed request decode: {e}"),
+            )
+        })?;
+        // FAPI-CIBA request-object validation (CIBA-7.1/7.1.1): claims,
+        // then the alg policy, then the signature - a defective object
+        // rejects 400 `invalid_request` (CIBA-13). See
+        // validate_backchannel_request_object (bottom of this module).
+        if let Err(e) = validate_backchannel_request_object(
+            &claims,
+            &form_client_id,
+            &state,
+            &headers,
+        ) {
+            return Err(CibaAuthzError(e.0, e.1));
+        }
+        // CIBA-7.1.1 alg policy: `none` (unsigned) and symmetric algs are
+        // not legal signing algs for a backchannel request object; RS256
+        // is excluded by the FAPI profile's PS/ES-only rule (the suite's
+        // RS256 negative module).
+        let alg = sentin8::auth::jwt::decode_header_typed::<serde_json::Value>(&jwt)
+            .ok()
+            .and_then(|h| h.get("alg").and_then(|a| a.as_str()).map(str::to_string));
+        match alg.as_deref() {
+            Some("none") => {
+                return Err(CibaAuthzError(
+                    StatusCode::BAD_REQUEST,
+                    "invalid_request: request object signing alg 'none' is not permitted"
+                        .into(),
+                ));
+            }
+            Some(a) if a.starts_with("HS") || a == "RS256" => {
+                return Err(CibaAuthzError(
+                    StatusCode::BAD_REQUEST,
+                    format!(
+                        "invalid_request: request object signing alg {a} is not permitted"
+                    ),
+                ));
+            }
+            _ => {}
+        }
+        crate::oauth::verify_client_signed_jwt(&state, &form_client_id, &jwt)
             .await
-            .map_err(|e| (StatusCode::UNAUTHORIZED, e))?;
+            .map_err(|e| {
+                CibaAuthzError(
+                    StatusCode::BAD_REQUEST,
+                    format!("invalid_request: {e}"),
+                )
+            })?;
         // Signed parameters REPLACE the unsigned ones (CIBA §7.1). Only
         // CIBA parameters are overlaid - client identity comes from the
         // authenticated client, never from the JWT alone.
@@ -291,19 +397,38 @@ pub async fn bc_authorize(
         }
     }
 
+    // CIBA-8: when a client_assertion is presented, the request MUST
+    // carry the exact assertion type
+    // (urn:ietf:params:oauth:client-assertion-type:jwt-bearer) - absent,
+    // misspelled, or different → invalid_request.
+    if req.client_assertion.is_some() {
+        const JWT_BEARER: &str = "urn:ietf:params:oauth:client-assertion-type:jwt-bearer";
+        match req.client_assertion_type.as_deref() {
+            Some(t) if t == JWT_BEARER => {}
+            _ => {
+                return Err(CibaAuthzError(
+                    StatusCode::BAD_REQUEST,
+                    "invalid_request: client_assertion_type must be urn:ietf:params:oauth:client-assertion-type:jwt-bearer"
+                        .into(),
+                ));
+            }
+        }
+    }
+
     // Client auth on the backchannel authorize
     // endpoint: confidential clients MUST authenticate; public clients are
     // resolved by client_id (bound to the polling client).
     let client = crate::oauth::authenticate_client(
         &state,
         &headers,
-        Some(req.client_id.as_str()),
+        Some(form_client_id.as_str()),
         req.client_secret.as_deref(),
         req.client_assertion.as_deref(),
         true,
         true,
     )
-    .await?;
+    .await
+    .map_err(CibaAuthzError::from)?;
 
     // - fapi_ciba profile constraints: under the FAPI-CIBA
     // profile the binding_message is MANDATORY (the user must be able to
@@ -324,10 +449,10 @@ pub async fn bc_authorize(
                         "private_key_jwt" | "tls_client_auth" | "self_signed_tls_client_auth"
                     )))
         {
-            return Err((
+            return Err(CibaAuthzError(
                 StatusCode::UNAUTHORIZED,
                 format!(
-                    "client authentication method '{}' is not permitted under the fapi_ciba profile",
+                    "invalid_client: client authentication method '{}' is not permitted under the fapi_ciba profile",
                     client.auth_method
                 ),
             ));
@@ -340,11 +465,33 @@ pub async fn bc_authorize(
                 // request-time constraint.
                 true,
             ) {
-                return Err((StatusCode::BAD_REQUEST, e));
+                return Err(CibaAuthzError(
+                    StatusCode::BAD_REQUEST,
+                    format!("invalid_request: {e}"),
+                ));
             }
         }
     }
 
+    // CIBA §7.1 - exactly ONE hint parameter per request: multiple
+    // hints (the suite's multiple-hints negative) reject
+    // `invalid_request` - the user identifier would be ambiguous.
+    let hint_count = [
+        req.login_hint.is_some(),
+        req.login_hint_token.is_some(),
+        req.id_token_hint.is_some(),
+        req.sub.is_some(),
+    ]
+    .iter()
+    .filter(|x| **x)
+    .count();
+    if hint_count > 1 {
+        return Err(CibaAuthzError(
+            StatusCode::BAD_REQUEST,
+            "invalid_request: exactly one of login_hint, login_hint_token, id_token_hint, or sub is required"
+                .into(),
+        ));
+    }
     // Validate that a user identifier is present.
     let user_identifier = req
         .login_hint
@@ -355,7 +502,7 @@ pub async fn bc_authorize(
         .ok_or_else(|| {
             (
                 StatusCode::BAD_REQUEST,
-                "one of login_hint, login_hint_token, id_token_hint, or sub is required".into(),
+                "invalid_request: one of login_hint, login_hint_token, id_token_hint, or sub is required".into(),
             )
         })?;
 
@@ -365,38 +512,66 @@ pub async fn bc_authorize(
     // stored with the request; the endpoint is resolved at approval time
     // (registration is server-side truth - a request-body URL would be
     // an SSRF surface).
-    let request_mode = req.request_mode.as_deref().unwrap_or("poll").to_string();
+    // CIBA §5.2/§7.1: ping vs poll is signaled by the CLIENT - a
+    // request carrying `client_notification_token` (and no explicit
+    // request_mode) is a PING request: the AS notifies the client's
+    // backchannel endpoint at approval time.
+    let request_mode = req
+        .request_mode
+        .clone()
+        .or_else(|| {
+            (req.client_notification_token.is_some()).then(|| "ping".to_string())
+        })
+        .unwrap_or_else(|| "poll".to_string());
     if request_mode == "ping" {
         if req.client_notification_token.as_deref().unwrap_or("").is_empty() {
-            return Err((
+            return Err(CibaAuthzError(
                 StatusCode::BAD_REQUEST,
-                "client_notification_token is required for ping mode".into(),
+                "invalid_request: client_notification_token is required for ping mode".into(),
             ));
         }
+        // The client row is env-RLS gated - the authorize/PAR paths
+        // read it under the SYSTEM env context (`with_client_env`
+        // pattern); a bare pool query sees zero rows.
+        let mut tx = state
+            .pool
+            .begin()
+            .await
+            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+        let _ = sqlx::query("SELECT sentin8_set_tenant_context($1)")
+            .bind(crate::config::SYSTEM_ENV_ID)
+            .execute(&mut *tx)
+            .await;
         let has_endpoint = sqlx::query_scalar::<_, Option<String>>(
             r#"SELECT backchannel_client_notification_endpoint
                  FROM oauth_clients WHERE client_id = $1"#,
         )
-        .bind(&req.client_id)
-        .fetch_optional(&state.pool)
+        .bind(&form_client_id)
+        .fetch_optional(&mut *tx)
         .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
         .flatten()
         .is_some();
+        tx.commit()
+            .await
+            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
         if !has_endpoint {
-            return Err((
+            return Err(CibaAuthzError(
                 StatusCode::BAD_REQUEST,
-                "client has no backchannel_client_notification_endpoint registered - ping mode is unavailable, use poll".into(),
+                "invalid_request: no backchannel_client_notification_endpoint registered - use poll".into(),
             ));
         }
     } else if request_mode != "poll" {
-        return Err((
+        return Err(CibaAuthzError(
             StatusCode::BAD_REQUEST,
-            format!("unsupported request_mode: {request_mode}"),
+            format!("invalid_request: unsupported request_mode {request_mode}"),
         ));
     }
 
-    let auth_req_id = Uuid::new_v4().to_string();
+    // Two UUIDs concatenate to a 256-bit auth_req_id - the suite's
+    // EnsureRecommendedAuthenticationRequestIdEntropy expects >= 160
+    // bits of entropy (CIBA §6.2).
+    let auth_req_id = format!("{}-{}", Uuid::new_v4(), Uuid::new_v4());
     let expires_in = req
         .requested_expiry
         .unwrap_or(DEFAULT_EXPIRY)
@@ -406,9 +581,12 @@ pub async fn bc_authorize(
     // : staff identity is stored as the `act` chain - used by the CIBA
     // token grant to attribute the delegated token to the initiating staff
     // member. Only the platform BFF sends these fields.
-    let request_data = serde_json::json!({
+    // Holder-of-key (CIBA §11.2 / FAPI): when the client authenticated
+    // with a client certificate, bind the cert thumbprint to the grant -
+    // the TOKEN POLL must present the SAME certificate.
+    let mut request_data = serde_json::json!({
         "auth_req_id": auth_req_id,
-        "client_id": req.client_id,
+        "client_id": form_client_id,
         "user_identifier": user_identifier,
         "scope": req.scope,
         "binding_message": req.binding_message,
@@ -422,7 +600,14 @@ pub async fn bc_authorize(
         // DESIGN §9a.3 - ping-mode delivery state.
         "request_mode": request_mode,
         "client_notification_token": req.client_notification_token,
-    });
+    });    if let Some((thumb, _)) = crate::mtls::extract_mtls_identity(&headers) {
+        if !thumb.is_empty() {
+            if let Some(o) = request_data.as_object_mut() {
+                o.insert("mtls_thumb".into(), serde_json::json!(thumb));
+            }
+        }
+    }
+
 
     let client = sentin8::middleware::valkey_client(&state.config.valkey_url, "sentin8:auth")
         .await
@@ -780,20 +965,42 @@ pub async fn ciba_approve(
             .as_str()
             .unwrap_or_default()
             .to_string();
-        if let Ok(Some(endpoint)) = sqlx::query_scalar::<_, Option<String>>(
-            r#"SELECT backchannel_client_notification_endpoint
-                 FROM oauth_clients WHERE client_id = $1"#,
-        )
-        .bind(&client_id)
-        .fetch_optional(&state.pool)
-        .await
+        // The client row is env-RLS gated - read it under the SYSTEM
+        // env context (the `with_client_env` pattern); a bare pool
+        // query sees zero rows and the ping silently never fires.
+        let endpoint = if let Ok(mut tx) = state.pool.begin().await {
+            let _ = sqlx::query("SELECT sentin8_set_tenant_context($1)")
+                .bind(crate::config::SYSTEM_ENV_ID)
+                .execute(&mut *tx)
+                .await;
+            let ep = sqlx::query_scalar::<_, Option<String>>(
+                r#"SELECT backchannel_client_notification_endpoint
+                     FROM oauth_clients WHERE client_id = $1"#,
+            )
+            .bind(&client_id)
+            .fetch_optional(&mut *tx)
+            .await
+            .ok()
+            .flatten()
+            .flatten();
+            let _ = tx.commit().await;
+            ep
+        } else {
+            None
+        };
         {
             if let Some(url) = endpoint.filter(|u| !u.is_empty()) {
                 tokio::spawn(async move {
                     let payload = serde_json::json!({
                         "auth_req_id": req.auth_req_id,
                     });
-                    let client = reqwest::Client::new();
+                    // CIBA-10.2: the ping response's redirect (3xx) is
+                    // NOT followed - a redirect to a different URI is the
+                    // client misbehaving; following one would hide it.
+                    let client = reqwest::Client::builder()
+                        .redirect(reqwest::redirect::Policy::none())
+                        .build()
+                        .unwrap_or_else(|_| reqwest::Client::new());
                     match client
                         .post(&url)
                         .bearer_auth(&notification_token)
@@ -930,9 +1137,10 @@ mod tests {
     #[test]
     fn ciba_request_requires_user_identifier() {
         let req = CibaRequest {
-            client_id: "client_123".into(),
+            client_id: Some("client_123".to_string()),
             client_secret: None,
             client_assertion: None,
+            client_assertion_type: None,
             login_hint: None,
             login_hint_token: None,
             id_token_hint: None,
@@ -957,9 +1165,10 @@ mod tests {
     #[test]
     fn ciba_request_with_login_hint() {
         let req = CibaRequest {
-            client_id: "client_123".into(),
+            client_id: Some("client_123".to_string()),
             client_secret: None,
             client_assertion: None,
+            client_assertion_type: None,
             login_hint: Some("user@example.com".into()),
             login_hint_token: None,
             id_token_hint: None,
@@ -1078,4 +1287,137 @@ mod tests {
         let b = Uuid::new_v4().to_string();
         assert_ne!(a, b);
     }
+}
+
+/// bc-authorize rejection type - renders as an RFC 6749 §5.2 JSON body
+/// (`{"error": "...", "error_description": "..."}`). The suite's
+/// backchannel checkers parse the `error` field (CIBA-13); a plain-text
+/// body fails their JSON gate.
+///
+/// The string payload follows the `"{error_code}: {description}"`
+/// convention - the code prefix splits off on render.
+pub struct CibaAuthzError(pub StatusCode, pub String);
+
+impl axum::response::IntoResponse for CibaAuthzError {
+    fn into_response(self) -> axum::response::Response {
+        let (status, msg) = (self.0, self.1);
+        if status.is_client_error() {
+            let (code, desc) = match msg.split_once(": ") {
+                Some((c, d)) => (c.to_string(), d.to_string()),
+                None => (msg.clone(), String::new()),
+            };
+            let body = if desc.is_empty() {
+                serde_json::json!({ "error": code })
+            } else {
+                serde_json::json!({ "error": code, "error_description": desc })
+            };
+            (status, axum::Json(body)).into_response()
+        } else {
+            (status, msg).into_response()
+        }
+    }
+}
+
+impl From<(StatusCode, String)> for CibaAuthzError {
+    fn from((status, msg): (StatusCode, String)) -> Self {
+        if status == StatusCode::UNAUTHORIZED {
+            // Client-authentication failures answer `invalid_client`
+            // (CIBA-8) - authenticate_client's messages carry no OAuth
+            // code prefix, so the code is supplied here.
+            return Self(status, format!("invalid_client: {msg}"));
+        }
+        Self(status, msg)
+    }
+}
+
+/// FAPI-CIBA request-object claim validation (CIBA-7.1/7.1.1 - the
+/// suite's `ValidateBackchannelRequestObjectClaims` + the negative
+/// Ensure* modules): the signed members REPLACE the form ones, so the
+/// object's claims are authoritative. REQUIRED members: `iss` == the
+/// authenticated client_id, `aud` includes the AS (issuer |
+/// token_endpoint | backchannel_authentication_endpoint), `exp`
+/// within (-5min, +1h), `iat` within (-1d, +5min), `nbf` within
+/// (-10min, +5min), `jti` a non-empty string. Every defect answers
+/// 400 `invalid_request` (CIBA-13).
+fn validate_backchannel_request_object(
+    claims: &serde_json::Value,
+    client_id: &str,
+    state: &AppState,
+    headers: &axum::http::HeaderMap,
+) -> Result<(StatusCode, String), (StatusCode, String)> {
+    let issuer = crate::oauth::resolve_issuer(&state.config, headers);
+    let auds = [
+        issuer.clone(),
+        format!("{issuer}/oauth/token"),
+        format!("{issuer}/oauth/bc-authorize"),
+    ];
+    let bad = |desc: &str| (StatusCode::BAD_REQUEST, format!("invalid_request: {desc}"));
+
+    // iss (CIBA-7.1.1 REQUIRED): pins the client identity.
+    match claims.get("iss").and_then(|v| v.as_str()) {
+        Some(iss) if iss == client_id => {}
+        _ => return Err(bad("iss is missing or does not equal the client_id")),
+    }
+
+    // aud (REQUIRED): the AS must be among the audience members.
+    let aud_ok = match claims.get("aud") {
+        Some(serde_json::Value::String(a)) => auds.iter().any(|x| x == a),
+        Some(serde_json::Value::Array(items)) => items
+            .iter()
+            .any(|v| v.as_str().is_some_and(|s| auds.iter().any(|x| x == s))),
+        _ => false,
+    };
+    if !aud_ok {
+        return Err(bad("aud does not identify the authorization server"));
+    }
+
+    let now = chrono::Utc::now().timestamp();
+
+    // exp (REQUIRED): past-beyond-skew or future-beyond-1h rejects
+    // (the suite's expired-exp and 70-minutes-future negatives).
+    let exp = claims.get("exp").and_then(|v| v.as_i64()).ok_or_else(|| {
+        bad("exp is required on a backchannel request object")
+    })?;
+    if exp < now - 300 {
+        return Err(bad("exp is in the past"));
+    }
+    if exp > now + 3600 {
+        return Err(bad("exp is too far in the future"));
+    }
+
+    // iat (REQUIRED): future issuance or stale-by-more-than-a-day
+    // rejects.
+    let iat = claims.get("iat").and_then(|v| v.as_i64()).ok_or_else(|| {
+        bad("iat is required on a backchannel request object")
+    })?;
+    if iat > now + 300 {
+        return Err(bad("iat is in the future"));
+    }
+    if iat < now - 86_400 {
+        return Err(bad("iat is more than one day in the past"));
+    }
+
+    // nbf (REQUIRED): the 70-minutes-past and 10-minutes-future
+    // negatives bound the window.
+    let nbf = claims.get("nbf").and_then(|v| v.as_i64()).ok_or_else(|| {
+        bad("nbf is required on a backchannel request object")
+    })?;
+    if nbf < now - 600 {
+        return Err(bad("nbf is too far in the past"));
+    }
+    if nbf > now + 300 {
+        return Err(bad("nbf is in the future"));
+    }
+
+    // jti (REQUIRED): a non-empty string.
+    if claims
+        .get("jti")
+        .and_then(|v| v.as_str())
+        .map(|s| !s.trim().is_empty())
+        != Some(true)
+    {
+        return Err(bad("jti is required (non-empty string)"));
+    }
+
+    Ok((StatusCode::OK, String::new()))
 }

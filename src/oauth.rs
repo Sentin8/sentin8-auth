@@ -231,18 +231,23 @@ async fn verify_client_assertion(
     // The plain token endpoint as the named audience (the suite's
     // token-endpoint-as-audience module pushes with aud = token URL).
     let token_aud = format!("{issuer}/oauth/token");
+    // OpenID CIBA §7.1 - client assertions on the backchannel endpoint
+    // target `{issuer}/oauth/bc-authorize`.
+    let bc_aud = format!("{issuer}/oauth/bc-authorize");
     // RFC 7523 - the audience forms this OP accepts: a string naming
     // `issuer` (or one of the issuer's OAuth endpoints) OR an audience
     // ARRAY containing one of those values (the AS identifies itself
     // among the members).
     let aud_ok = match aud_json {
         Some(serde_json::Value::String(a)) =>
-            *a == issuer || *a == mtls_aud || *a == par_aud || *a == token_aud,
+            *a == issuer || *a == mtls_aud || *a == par_aud || *a == token_aud
+                || *a == bc_aud,
         Some(serde_json::Value::Array(items)) => items.iter().any(|v| {
             v.as_str() == Some(issuer.as_str())
                 || v.as_str() == Some(mtls_aud.as_str())
                 || v.as_str() == Some(par_aud.as_str())
                 || v.as_str() == Some(token_aud.as_str())
+                || v.as_str() == Some(bc_aud.as_str())
         }),
         _ => false,
     };
@@ -1209,7 +1214,11 @@ pub async fn discovery(
         // §9a.11 profile-honest discovery (warning #7): the DCR
         // software-statement platform capability is advertised only on
         // non-FAPI hosts (the FAPI final suite's allow-list rejects it).
-        software_statement_supported: !is_fapi,
+        // NOT advertised: the suite's RFC 8414 schema flags
+        // `software_statement_supported` as an unknown property - DCR
+        // software_statement processing stays server-side capability.
+        #[allow(dead_code)]
+        software_statement_supported: false,
         // DESIGN §9a.4 - required-when-advertised signing algs for
         // private_key_jwt client assertions. The same algorithm set the
         // client-assertion verifier accepts.
@@ -4231,17 +4240,11 @@ pub async fn token(
         "urn:ietf:params:oauth:grant-type:device_code" => {
             handle_device_code(&state, &client, &headers, req).await
         }
-        "urn:ietf:params:oauth:grant-type:ciba" => {
-            // - under the fapi_ciba profile, the polling request
-            // MUST carry a DPoP proof (verified above; here we require its
-            // presence - the proof was already validated and its jkt bound).
-            if profile.profile == "fapi_ciba" && dpop_jkt.is_none() && !is_dpop_exempt(&client) {
-                return Err(TokenError::OAuth(OAuthTokenError::with_desc(
-                    StatusCode::UNAUTHORIZED,
-                    "invalid_request",
-                    "fapi_ciba profile requires a DPoP proof on CIBA polling requests",
-                )));
-            }
+        // CIBA's grant type URN (OpenID CIBA §4): the suite (and our
+        // discovery) use `urn:openid:params:grant-type:ciba`. A proof
+        // attached to the poll (when present) was verified above; the
+        // plain_fapi CIBA profile does NOT mandate one.
+        "urn:openid:params:grant-type:ciba" => {
             handle_ciba_token(&state, &client, &headers, req).await
         }
         "urn:ietf:params:oauth:grant-type:token-exchange" => {
@@ -7506,6 +7509,8 @@ async fn handle_ciba_token(
         .get(&key)
         .await
         .map_err(|e| TokenError::Internal(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    // OpenID CIBA: a consumed/TTL'd auth_req_id = expired_token
+    // (CIBA-11's ExpectExpiredTokenErrorFromTokenEndpoint).
     let data = data.ok_or_else(|| {
         TokenError::OAuth(OAuthTokenError::new(
             StatusCode::BAD_REQUEST,
@@ -7514,6 +7519,39 @@ async fn handle_ciba_token(
     })?;
     let data: serde_json::Value = serde_json::from_str(&data)
         .map_err(|e| TokenError::Internal(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+    // CIBA-11 first: the polling client must match the client that
+    // started the request (stored by bc_authorize) - the suite polls a
+    // foreign client against client1's grant and expects invalid_grant
+    // BEFORE any status-specific answer.
+    let stored_client = data["client_id"].as_str().unwrap_or("");
+    if stored_client != client.client_id {
+        return Err(TokenError::OAuth(OAuthTokenError::with_desc(
+            StatusCode::BAD_REQUEST,
+            "invalid_grant",
+            "auth_req_id was issued to a different client",
+        )));
+    }
+
+    // Holder-of-key (CIBA §11.2): when the grant was bound to a client
+    // certificate at bc-authorize time, the poll must present the SAME
+    // certificate - a certless (or different-cert) poll rejects
+    // `invalid_grant` before any status answer.
+    if let Some(bound_thumb) = data["mtls_thumb"].as_str().filter(|t| !t.is_empty()) {
+        let presented = crate::mtls::extract_mtls_identity(&headers)
+            .map(|(t, _)| t)
+            .filter(|t| !t.is_empty());
+        match presented {
+            Some(t) if t == bound_thumb => {}
+            _ => {
+                return Err(TokenError::OAuth(OAuthTokenError::with_desc(
+                    StatusCode::BAD_REQUEST,
+                    "invalid_grant",
+                    "this grant requires the client certificate it was issued with",
+                )));
+            }
+        }
+    }
 
     let status = data["status"].as_str().unwrap_or("pending");
     if status == "pending" {
@@ -7528,15 +7566,11 @@ async fn handle_ciba_token(
             "access_denied",
         )));
     }
-
-    // .5 (design ) - the polling client must match the client
-    // that started the CIBA request (stored by bc_authorize).
-    let stored_client = data["client_id"].as_str().unwrap_or("");
-    if stored_client != client.client_id {
-        return Err(TokenError::OAuth(OAuthTokenError::with_desc(
+    if status == "consumed" {
+        // Single-use: the auth_req_id already minted once.
+        return Err(TokenError::OAuth(OAuthTokenError::new(
             StatusCode::BAD_REQUEST,
             "invalid_grant",
-            "auth_req_id was issued to a different client",
         )));
     }
 
@@ -7615,7 +7649,7 @@ async fn handle_ciba_token(
     let act_sub = data["act_sub"].as_str().filter(|s| !s.is_empty());
     let act_email = data["act_email"].as_str().filter(|s| !s.is_empty());
     let delegation_ttl_secs: u64 = 300;
-    let (access_claims, effective_ttl) = match act_sub {
+    let (mut access_claims, effective_ttl) = match act_sub {
         Some(staff_sub) => {
             let mut claims = AuthClaims::access(
                 &issuer,
@@ -7643,6 +7677,15 @@ async fn handle_ciba_token(
             state.config.access_token_ttl_secs,
         ),
     };
+    // RFC 8705 §3 - the CIBA polling connection's TLS client certificate
+    // binds the token (the FAPI1 plane's mTLS token endpoint; the
+    // proxy injects the presented cert's thumbprint). A token granted
+    // over a certificate-bearing poll plays only from the SAME cert.
+    if let Some((ciba_thumb, _)) = crate::mtls::extract_mtls_identity(&headers) {
+        if !ciba_thumb.is_empty() && act_sub.is_none() {
+            access_claims.cnf = Some(crate::mtls::build_cnf_claim(&ciba_thumb));
+        }
+    }
     let access_token = state
         .keys
         .sign_value_alg(
@@ -7674,8 +7717,22 @@ async fn handle_ciba_token(
             })?)
         };
 
-    // Delete the CIBA request from Valkey (one-time use).
-    let _: () = valkey_conn.del(&key).await.unwrap_or(());
+    // Single-use: keep the record but flip it to `consumed` so a reuse
+    // poll answers invalid_grant, while a genuinely expired (TTL'd-out)
+    // record answers expired_token (CIBA-11).
+    let _: Result<(), _> = valkey_conn
+        .set_ex(
+            &key,
+            {
+                let mut obj = data.clone();
+                if let Some(o) = obj.as_object_mut() {
+                    o.insert("status".into(), serde_json::json!("consumed"));
+                }
+                obj.to_string()
+            },
+            90,
+        )
+        .await;
 
     // SEC- - OIDC ID token for CIBA grants when `openid` was granted:
     // same claim set as the code-exchange ID token (iss/sub/aud/jti/iat/exp/

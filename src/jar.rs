@@ -234,6 +234,7 @@ mod tests {
             nonce: None,
             response_mode: None,
             max_age: None,
+            request_uri: None,
             resource: None,
         };
         assert!(validate_jar_claims(&claims, "https://auth.example.com").is_ok());
@@ -254,6 +255,7 @@ mod tests {
             nonce: None,
             response_mode: None,
             max_age: None,
+            request_uri: None,
             resource: None,
         };
         assert!(validate_jar_claims(&claims, "https://auth.example.com").is_err());
@@ -274,6 +276,7 @@ mod tests {
             nonce: None,
             response_mode: None,
             max_age: None,
+            request_uri: None,
             resource: None,
         };
         assert!(validate_jar_claims(&claims, "https://auth.example.com").is_err());
@@ -294,6 +297,7 @@ mod tests {
             nonce: None,
             response_mode: None,
             max_age: None,
+            request_uri: None,
             resource: None,
         };
         assert!(validate_jar_claims(&claims, "https://auth.example.com").is_err());
