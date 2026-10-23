@@ -833,15 +833,21 @@ recommended fields (advertised only when actually supported):
 
 ### 9a.5 Certification runbook (per profile)
 
-The rig lives in the platform group: `scripts/conformance/` (compose
-file, seed script, runbook) driven by `make conformance-up` /
-`conformance-down` / `conformance-purge` / `conformance-seed` from
-`sentin8/` (the group Makefile). The suite's Java runtime must trust the
-platform CA: import `.run/secrets/acme-ca/root-ca.crt` into the
-server container's truststore (runbook §1).
+The rig collateral lives in **`sentin8-auth-oidf/conformance/`** — the
+conformance automation repo owns its own provisioning surface (compose file,
+seed script, server Dockerfile, runbook) — while the group `sentin8/`
+Makefile exposes `make conformance-up / conformance-down / conformance-purge /
+conformance-seed`. The fleet side of a rig run is `make start-conformance`:
+it starts the platform in the rig posture (classical TLS, FAPI cipher
+profile, RFC 8705 self-signed client-cert surface) WITHOUT mutating
+`../.env` — `make start` remains the production-posture start. The suite's
+Java runtime must trust the platform CA: import
+`.run/secrets/acme-ca/root-ca.crt` into the server container's truststore
+(runbook §1).
 
-1. Start the platform in classical mode (`SENTIN8_TLS_PQ_MODE=classical`
-   in the root `.env` for rig runs) and `make conformance-up`.
+1. Start the platform in the rig posture (`make start-conformance` —
+   the classical profile ships from the target itself, not the root
+   `.env`) and `make conformance-up`.
 2. `make conformance-seed` - provisions the certification tenant
    (org `conformance-local`, env `cert`, test user, suite clients via
    DCR with the suite callback) through the platform API only
