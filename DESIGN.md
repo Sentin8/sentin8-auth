@@ -1678,18 +1678,24 @@ flow. Auth-side support:
    force-rotates, and resumes the manual module via POST /api/runner/<id>.
 
 **Certification status.** Config plan GREEN (1 module PASSED, zero
-warnings). Dynamic plan terminal: all 23 module-variants FINISHED - 4
-PASSED (discovery, rotate-keys, redirect-fragment, sector-bad), 7 REVIEW
-(zero failures - the suite's by-design manual-review states: registration
-uri-field family, redirect-query family, ensure-redirect/request-object
-family), 12 WARNING (all 12 sanctioned: entries carry
-src=UnregisterDynamicallyRegisteredClient + code=404 - the suite's
-unregister-on-alias-claim lifecycle against an already-deleted client,
-verified identical across 20/20 warning entries), zero plan violations;
-the plan-level acceptability gate PASSES. Harness fix: the suite
-occasionally answers empty-bodied responses on the racey post-settle
-GET /api/plan/<id> - the rig's request() parses empty bodies as absent
-instead of throwing.
+warnings). Dynamic plan fully GREEN: all 23 module-variants FINISHED -
+16 PASSED, 7 REVIEW (zero failures - the suite's by-design manual-review
+states: registration uri-field family, redirect-query family,
+ensure-redirect/request-object family), ZERO warnings. The interim
+"unregister-on-alias-claim" WARNING sanction (12 modules at first run)
+was resolved to its OP-side root cause: the live auth database was
+missing the `auth_oauth_clients_delete_policy` RLS policy (drift from an
+earlier manual table rebuild), so the suite's RFC 7592 post-flow
+cleanup `DELETE /oauth/register/{id}` affected zero rows and warned
+404 on every module; the policy is reconciled with `sql/init.sql`
+(verified: register -> DELETE answers 204 and the row is gone).
+Harness fixes: the suite occasionally answers empty-bodied responses on
+the racey post-settle GET /api/plan/<id> - the rig's request() parses
+empty bodies as absent instead of throwing; the rotate hook keys on the
+log instruction regardless of runner status (the plan's module status
+stays CONFIGURED while a manual module waits). The sanction is removed
+from the spec - the gate is strict warning-zero; any recurrence of the
+404-unregister class is a real defect.
 
 ---
 
