@@ -1446,6 +1446,38 @@ sequenceDiagram
 > no scheduler client and makes no cross-service calls (SDD §2.5, root
 > service rule).
 
+### 9a.14 FAPI 1 Advanced final (plain_fapi / private_key_jwt / pushed / JARM)
+
+The FAPI1-Advanced plan drives the JAR-only push shape end to end; the
+wire-level deltas beyond §9a.11-§9a.13:
+
+- **Cipher-profile gate** (`SENTIN8_TLS_CIPHER_PROFILE=fapi`, sentin8-tls
+  v0.6.13): the suite's FAPI_TLS_1_2_CIPHERS = TLS 1.2
+  {DHE_RSA_{128,256}, ECDHE_RSA_{128,256}} + TLS 1.3
+  {AES_256_GCM, CHACHA20}; the provider retains exactly the suites the
+  graviola EC-leaf can serve (ECDHE_RSA members + the TLS 1.3 pair).
+  Non-permitted suites (AES-128-GCM TLS 1.3, ECDHE_ECDSA, CBC/CCM) fail
+  at the handshake - FAPI1-ADV-8.5-1's `DisallowInsecureCipher` family.
+- **PAR JAR-only push**: the form layer is `request` +
+  `client_assertion`(+type) only; `response_type` / `client_id` /
+  `redirect_uri` / `response_mode` resolve FROM the verified request
+  object. Defect objects reject `invalid_request_object`: scope-less
+  (FAPI1-ADV 7.1), exp/nbf out of range (±10 min), wrong audience,
+  nested `request_uri` (RFC 9101 §6). Client assertion audiences
+  (RFC 7523): the issuer string, any OAuth endpoint URL, or an array
+  containing one of those.
+- **Presented-certificate binding (RFC 8705 §3)**: the token mint binds
+  `cnf.x5t#S256` from the TLS-presented client certificate regardless of
+  the registered auth method - an mTLS-connected request on the mtls
+  alias yields a certificate-bound token (the FAPI1 planes: the token
+  endpoint IS certificate-checked even for `private_key_jwt` clients).
+- **JARM response shape**: `iss` = the host-resolved issuer (§9a.4), the
+  JWT signed with the PROFILE's `signing_alg` (ES256 in the FAPI
+  postures), both success and the `access_denied` deny path wrapped, and
+  the `response` parameter appended with `&` when the registered
+  redirect already carries a query. The mtls-aliased token/introspect/
+  revoke responses carry `Cache-Control: no-store` (RFC 6749 §5.1).
+
 ---
 
 **Design attribution:** sentin8:auth and its underlying concepts were designed by Hamid Jahanzad <Hamid@Jahanzad.com>.
