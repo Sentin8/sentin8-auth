@@ -231,10 +231,21 @@ async fn verify_client_assertion(
     // The plain token endpoint as the named audience (the suite's
     // token-endpoint-as-audience module pushes with aud = token URL).
     let token_aud = format!("{issuer}/oauth/token");
-    let aud_ok = matches!(aud_json, Some(serde_json::Value::String(a)) if *a == issuer)
-        || matches!(aud_json, Some(serde_json::Value::String(a)) if *a == mtls_aud)
-        || matches!(aud_json, Some(serde_json::Value::String(a)) if *a == par_aud)
-        || matches!(aud_json, Some(serde_json::Value::String(a)) if *a == token_aud);
+    // RFC 7523 - the audience forms this OP accepts: a string naming
+    // `issuer` (or one of the issuer's OAuth endpoints) OR an audience
+    // ARRAY containing one of those values (the AS identifies itself
+    // among the members).
+    let aud_ok = match aud_json {
+        Some(serde_json::Value::String(a)) =>
+            *a == issuer || *a == mtls_aud || *a == par_aud || *a == token_aud,
+        Some(serde_json::Value::Array(items)) => items.iter().any(|v| {
+            v.as_str() == Some(issuer.as_str())
+                || v.as_str() == Some(mtls_aud.as_str())
+                || v.as_str() == Some(par_aud.as_str())
+                || v.as_str() == Some(token_aud.as_str())
+        }),
+        _ => false,
+    };
     if !aud_ok {
         return Err((
             StatusCode::UNAUTHORIZED,
