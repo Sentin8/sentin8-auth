@@ -91,6 +91,15 @@ pub struct JarClaims {
     /// malformed (the nested reference form is rejected).
     #[serde(default)]
     pub request_uri: Option<String>,
+    /// RFC 9449 §10.1 - a request object may PRE-BIND the DPoP key
+    /// thumbprint (`dpop_jkt`): the PAR's DPoP proof key MUST hash to
+    /// exactly this value (a mismatch is a sender-constraint violation).
+    #[serde(default)]
+    pub dpop_jkt: Option<String>,
+    /// Unknown members are tolerated (RFC 9101 allows extension claims);
+    /// the raw object for anything JarClaims does not model.
+    #[serde(flatten)]
+    pub raw: std::collections::BTreeMap<String, serde_json::Value>,
 }
 
 /// Decode a JAR request JWT WITHOUT signature verification.
@@ -236,6 +245,8 @@ mod tests {
             max_age: None,
             request_uri: None,
             resource: None,
+            dpop_jkt: None,
+            raw: Default::default(),
         };
         assert!(validate_jar_claims(&claims, "https://auth.example.com").is_ok());
     }
@@ -257,6 +268,8 @@ mod tests {
             max_age: None,
             request_uri: None,
             resource: None,
+            dpop_jkt: None,
+            raw: Default::default(),
         };
         assert!(validate_jar_claims(&claims, "https://auth.example.com").is_err());
     }
@@ -278,6 +291,8 @@ mod tests {
             max_age: None,
             request_uri: None,
             resource: None,
+            dpop_jkt: None,
+            raw: Default::default(),
         };
         assert!(validate_jar_claims(&claims, "https://auth.example.com").is_err());
     }
@@ -299,6 +314,8 @@ mod tests {
             max_age: None,
             request_uri: None,
             resource: None,
+            dpop_jkt: None,
+            raw: Default::default(),
         };
         assert!(validate_jar_claims(&claims, "https://auth.example.com").is_err());
     }

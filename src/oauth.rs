@@ -238,17 +238,53 @@ async fn verify_client_assertion(
     // `issuer` (or one of the issuer's OAuth endpoints) OR an audience
     // ARRAY containing one of those values (the AS identifies itself
     // among the members).
+    // The audience policy is PROFILE-SCOPED (DESIGN.md §9a.16): the FAPI 2.0
+    // postures (fapi_2 / fapi_2_message_signing) accept EXACTLY the issuer
+    // string - a single-member array naming the issuer is tolerated - while
+    // the permissive FAPI 1 Advanced posture keeps the RFC 7523/9126
+    // endpoint-form audiences (mtls token alias, PAR, plain token, CIBA).
+    let strict_aud = crate::fapi::FapiProfile::from_str(
+        &crate::oauth::resolve_security_profile(&state.pool, headers, "env")
+            .await
+            .profile,
+    )
+    .map(|p| {
+        matches!(
+            p,
+            crate::fapi::FapiProfile::Fapi20 | crate::fapi::FapiProfile::Fapi20MessageSigning
+        )
+    })
+    .unwrap_or(false);
     let aud_ok = match aud_json {
-        Some(serde_json::Value::String(a)) =>
-            *a == issuer || *a == mtls_aud || *a == par_aud || *a == token_aud
-                || *a == bc_aud,
-        Some(serde_json::Value::Array(items)) => items.iter().any(|v| {
-            v.as_str() == Some(issuer.as_str())
-                || v.as_str() == Some(mtls_aud.as_str())
-                || v.as_str() == Some(par_aud.as_str())
-                || v.as_str() == Some(token_aud.as_str())
-                || v.as_str() == Some(bc_aud.as_str())
-        }),
+        Some(serde_json::Value::String(a)) => {
+            if strict_aud {
+                *a == issuer
+            } else {
+                *a == issuer
+                    || *a == mtls_aud
+                    || *a == par_aud
+                    || *a == token_aud
+                    || *a == bc_aud
+            }
+        }
+        Some(serde_json::Value::Array(items)) => {
+            // Under strict_aud the array form is tolerated only as a
+            // SINGLE-member audience naming the issuer exactly (the suite's
+            // array-aud negative sends [issuer, token] - two members - and
+            // expects 400/401).
+            let contains = items.iter().any(|v| {
+                v.as_str() == Some(issuer.as_str())
+                    || v.as_str() == Some(mtls_aud.as_str())
+                    || v.as_str() == Some(par_aud.as_str())
+                    || v.as_str() == Some(token_aud.as_str())
+                    || v.as_str() == Some(bc_aud.as_str())
+            });
+            if strict_aud {
+                contains && items.len() == 1 && items[0].as_str() == Some(issuer.as_str())
+            } else {
+                contains
+            }
+        }
         _ => false,
     };
     if !aud_ok {
@@ -2359,6 +2395,21 @@ pub async fn pushed_authorization_request(
     // request pre-binds dpop_jkt, the proof's key thumbprint MUST equal
     // it (a mismatch is a sender-constraint violation -> 400).
     let mut params_dpop_jkt: Option<String> = None;
+    // RFC 9449 SS10.1: the pushed request object may pre-bind `dpop_jkt`;
+    // decode it here (unverified - the FULL JAR verification with signature
+    // happens after this gate) so the DPoP-vs-jkt equality check below sees
+    // the JAR's pre-bound value even when the FORM carries none.
+    let form_dpop_jkt: Option<String> = req
+        .request
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .and_then(|jwt| sentin8::auth::jwt::decode_payload(jwt).ok())
+        .and_then(|v| {
+            v.get("dpop_jkt")
+                .and_then(|x| x.as_str())
+                .map(|s| s.to_string())
+        });
     if let Some(proof) = crate::dpop::extract_dpop_header(&headers) {
         let htu = format!("{}/oauth/par", resolve_issuer(&state.config, &headers));
         let proof_jkt: Option<String> = crate::dpop::decode_dpop_proof_unverified(&proof)
@@ -2370,7 +2421,12 @@ pub async fn pushed_authorization_request(
                 }
                 crate::jar::jwk_thumbprint(&jwk).ok()
             });
-        if let Some(pre_bound) = req.dpop_jkt.as_deref().filter(|s| !s.is_empty()) {
+        let pre_bound = req
+            .dpop_jkt
+            .as_deref()
+            .filter(|s| !s.is_empty())
+            .or(form_dpop_jkt.as_deref().filter(|s| !s.is_empty()));
+        if let Some(pre_bound) = pre_bound {
             let jkt = crate::dpop::validate_and_verify_dpop(&state, &proof, "POST", &htu)
                 .await
                 .map_err(|e| {
@@ -2464,6 +2520,9 @@ pub async fn pushed_authorization_request(
             "code_challenge_method": jar.code_challenge_method,
             "nonce": jar.nonce,
             "response_mode": jar.response_mode,
+            // The JAR may pre-bind the DPoP key thumbprint (RFC 9449 §10.1)
+            // - the PAR's DPoP proof must hash to exactly this value.
+            "dpop_jkt": jar.dpop_jkt,
         });
         if let Some(obj) = stored.as_object() {
             for (k, v) in obj {
@@ -6369,6 +6428,16 @@ pub async fn userinfo(
             let Some(expected_jkt) = cnf.get("jkt").and_then(|v| v.as_str()) else {
                 return Err((StatusCode::UNAUTHORIZED, "token cnf missing jkt".into()));
             };
+            // Wire-level observability: count the DPoP header entries the
+            // handler ACTUALLY sees (DESIGN §9a.16 dpop-negative - the
+            // duplicate-header negative must reach this gate as TWO lines).
+            let dpop_seen = headers.get_all("dpop").iter().count();
+            if dpop_seen != 1 {
+                tracing::warn!(
+                    dpop_headers = dpop_seen,
+                    "userinfo DPoP header-count anomaly"
+                );
+            }
             let Some(proof) = crate::dpop::extract_dpop_header(&headers) else {
                 return Err((
                     StatusCode::UNAUTHORIZED,

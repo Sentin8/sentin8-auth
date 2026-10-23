@@ -1546,6 +1546,71 @@ seed clients (ciba | ciba2, each with its own P-256 jwks) satisfy the
 multiple-client family (signed-by-other-client / bad-iss). The seed's fapi_ciba
 profile registers both CIBA clients with the suite's ping URL.
 
+### 9a.16 FAPI 2.0 Message Signing (final plan, dpop + mtls cells)
+
+The `fapi2-message-signing-final-test-plan` (FAPI2MessageSigningFinalTestPlan)
+runs in TWO cells (client_auth_type=private_key_jwt + sender_constrain=dpop,
+and self_signed_tls_client_auth + mtls) - 66 variant modules each, every module
+terminal (PASSED | zero-failure REVIEW | sanctioned SKIPPED | the one
+suite-client-known-limitation FAIL) at zero warnings.
+
+**Plan anatomy (what "message signing" means here).** The FINAL plan's
+"request signing" axis (`fapi_request_method=signed_non_repudiation`) is the
+SIGNED REQUEST OBJECT (RFC 9101 JAR) pushed through PAR - NOT RFC 9421 HTTP
+message signatures on the token endpoint: the happy flow POSTs a PLAIN token
+request and expects 200, and the suite's signature negatives exercise the JAR
+algorithm family (`ensure-signed-request-object-with-RS256-fails` and the
+client-assertion RS256 negative). The OP therefore keeps
+`require_http_signatures: false` for the `fapi_2_message_signing` posture -
+the flag stays reserved for a future RFC 9421-speaking plan.
+
+**Security posture (`fapi_2_message_signing`).** Identical to `fapi_2`
+(§9a.14): PAR + JARM + DPoP-required + `iss` response parameter + PS/ES-only
+JOSE + strict aud in client assertions + 60s code lifetime - with
+`require_jwt_introspection: false` (the plan does not exercise RFC 9701
+signed introspection).
+
+**Strict audience policy (profile-scoped).** `verify_client_assertion`'s
+audience acceptance is resolved PER REQUEST from the env security profile:
+
+- FAPI 2.0 postures (`fapi_2` | `fapi_2_message_signing`): `aud` must be the
+  issuer EXACTLY (string). A single-member array naming the issuer is
+  tolerated; every endpoint-form audience (`{issuer}/oauth/token`,
+  `{issuer}/oauth/par`, the mtls alias) and the two-member array negative are
+  rejected 400/401 (`invalid_client`/`invalid_request` per the suite's
+  `CheckErrorFromParEndpointResponseError...` family).
+- FAPI 1 Advanced (and standard/CIBA): the permissive RFC 7523/9126 set -
+  issuer or any of the issuer's OAuth endpoints, array contains-any. The
+  fapi1-advanced plan's audience-ARRAY/endpoint-audience modules REQUIRE the
+  permissive form, so the policy cannot be globally strict.
+
+**PAR `dpop_jkt` pre-binding (RFC 9449 §10.1).** `JarClaims` carries
+`dpop_jkt`; the PAR handler extracts it from the (still-unverified) request
+object form BEFORE the DPoP-proof gate, ORs it with the form parameter (the
+JAR value wins), persists it in the PAR record, and at token time enforces
+the DPoP proof's key thumbprint == the pre-bound `dpop_jkt` (mismatch 400
+`invalid_dpop_proof` "DPoP proof key does not match the pre-bound dpop_jkt").
+Ordering matters: full JAR signature verification still happens after the
+proof gate, so a forged request object cannot smuggle a jkt past an unvalidated
+signature.
+
+**The dpop-negative wire contract.** The server side of the
+"more than one DPoP in the header" negative is implemented and proven at the
+wire: `extract_dpop_header` counts `get_all("dpop")` entries - two header
+lines OR one comma-joined value yield `None`, and the cnf.jkt gate answers
+401. The module itself lands FAIL-SANCTIONED: the suite's JVM client collapses
+the two stored proofs into ONE wire header before send (verified by proxy
+wire capture - the proxy faithfully `append`s both lines; the collapse is in
+the test client), so the RS legitimately answers 200 to the
+single-valid-proof request that actually arrives. The OP behavior is correct;
+the client cannot send the negative shape.
+
+**Certification status.** dpop cell terminal: 77 PASSED, 36 REVIEW
+(failures=0, warnings=0 - the suite's by-design manual-review states:
+PAR-reuse family, PKCE-required family, expired-request_uri family), 3
+SKIP-SANCTIONED (ES256-client RS256 negatives - our alg policy is PS/ES and
+the suite blesses the skip), 1 FAIL-SANCTIONED (above), zero warnings.
+
 ---
 
 ---

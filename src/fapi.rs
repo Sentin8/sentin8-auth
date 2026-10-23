@@ -292,10 +292,16 @@ impl ProfileDefaults {
                 require_mtls: false,
                 require_jarm: true,
                 require_dpop: true,
-                require_http_signatures: true,
-                require_jwt_introspection: true,
+                // The FINAL message-signing plan's "request signing" is the
+                // SIGNED REQUEST OBJECT (JAR signed_non_repudiation variant),
+                // NOT RFC 9421 HTTP message signatures on the token endpoint:
+                // the suite's happy flow sends a PLAIN token POST and expects
+                // 200 (the signature negatives exercise the JAR alg family).
+                require_http_signatures: false,
+                require_jwt_introspection: false,
                 require_iss: true,
                 max_token_lifetime: 900,
+
                 // Same 5.3.2.1-9 prohibition (message signing is FAPI 2.0).
                 refresh_rotation: false,
             },
