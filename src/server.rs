@@ -657,7 +657,13 @@ async fn token_no_store_middleware(
 ) -> axum::response::Response {
     let path = req.uri().path().to_string();
     let resp = next.run(req).await;
-    if path == "/oauth/token" || path == "/oauth/introspect" || path == "/oauth/revoke" {
+    // RFC 8705 §5 - the mTLS-alias forms (`/mtls/oauth/token`) carry the
+    // same response-hygiene obligations; the suffix match covers both.
+    let oauth_suffix = |p: &str| {
+        p == "/oauth/token" || p == "/oauth/introspect" || p == "/oauth/revoke" ||
+            p == "/mtls/oauth/token" || p == "/mtls/oauth/introspect" || p == "/mtls/oauth/revoke"
+    };
+    if oauth_suffix(&path) {
         let (mut parts, body) = resp.into_parts();
         parts.headers.insert(
             axum::http::header::CACHE_CONTROL,

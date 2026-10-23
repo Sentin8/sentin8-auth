@@ -222,8 +222,15 @@ async fn verify_client_assertion(
     // called. Both audiences are valid (the suite's FAPI1 modules push
     // through the alias).
     let mtls_aud = format!("{issuer}/mtls/oauth/token");
+    // RFC 9126 - the PAR audience form: client assertions pushed to the
+    // PAR endpoint target `{issuer}/oauth/par` (the suite's
+    // PAR-URL-as-audience module) - the assertion identifies the
+    // ENDPOINT it was issued for; every endpoint this OP receives client
+    // assertions on is an acceptable audience.
+    let par_aud = format!("{issuer}/oauth/par");
     let aud_ok = matches!(aud_json, Some(serde_json::Value::String(a)) if *a == issuer)
-        || matches!(aud_json, Some(serde_json::Value::String(a)) if *a == mtls_aud);
+        || matches!(aud_json, Some(serde_json::Value::String(a)) if *a == mtls_aud)
+        || matches!(aud_json, Some(serde_json::Value::String(a)) if *a == par_aud);
     if !aud_ok {
         return Err((
             StatusCode::UNAUTHORIZED,
@@ -2397,7 +2404,7 @@ pub async fn pushed_authorization_request(
             .map_err(|e| {
                     json_error(
                         StatusCode::BAD_REQUEST,
-                        "invalid_request",
+                        "invalid_request_object",
                         format!("pushed request object rejected: {e}"),
                     )
                 })?;
@@ -2411,6 +2418,16 @@ pub async fn pushed_authorization_request(
                 StatusCode::BAD_REQUEST,
                 "unsupported_response_type",
                 "unsupported response_type (the standard five per OIDC Core)".into(),
+            ));
+        }
+        // FAPI1-ADV 7.1 - the request object MUST carry `scope`; a
+        // scope-less push rejects `invalid_request_object` (the suite's
+        // without-scope module).
+        if jar.scope.trim().is_empty() {
+            return Err(json_error(
+                StatusCode::BAD_REQUEST,
+                "invalid_request_object",
+                "pushed request object carries no scope".into(),
             ));
         }
         let stored = serde_json::json!({
