@@ -100,6 +100,17 @@ pub struct AuthenticatedClient {
     /// . Empty = RAR not permitted for this client.
     /// The authorization details types.
     pub authorization_details_types: Vec<String>,
+    /// RFC 7591 - the registered ID-token signing preference
+    /// (`id_token_signed_response_alg`; `none` = the unsigned form the
+    /// OIDC family's Dynamic-OP cell drives).
+    pub id_token_signed_response_alg: Option<String>,
+    /// RFC 7591 - the registered userinfo signing preference (RS256 etc.
+    /// = the userinfo response is a signed JWT).
+    pub userinfo_signed_response_alg: Option<String>,
+    /// RFC 7591 - the registered subject type (public | pairwise).
+    pub subject_type: Option<String>,
+    /// RFC 7591 - the sector identifier (the pairwise salt input).
+    pub sector_identifier_uri: Option<String>,
 }
 
 /// A client is exempt from profile-level DPoP enforcement only when it is
@@ -352,6 +363,19 @@ async fn verify_client_assertion(
                     .iter()
                     .any(|k| crate::jwks::SigningKeys::verify_with_jwk(k, assertion).is_ok());
             }
+            // Client-key rotation (RFC 7592 update + the suite's
+            // rp-key-rotation family): when the cached jwks_uri set
+            // rejects the assertion, the client may have rotated -
+            // invalidate the 300s negative cache and retry the fetch
+            // ONCE before concluding the signature is bad.
+            if !verified {
+                invalidate_ext_jwks_cache(state, uri).await;
+                if let Some(keys) = fetch_external_jwks(state, uri).await {
+                    verified = keys
+                        .iter()
+                        .any(|k| crate::jwks::SigningKeys::verify_with_jwk(k, assertion).is_ok());
+                }
+            }
         }
     }
     if !verified {
@@ -365,6 +389,19 @@ async fn verify_client_assertion(
 
 /// Fetch + parse a JWKS document ("{\"keys\":[…]}") over HTTP with a
 /// short-lived Valkey cache (`auth:extjwks:{sha256(url)}`, TTL 300s).
+/// Drop the cached external-JWKS document for a client's `jwks_uri`
+/// (the client-key rotation retry in `verify_client_assertion`).
+async fn invalidate_ext_jwks_cache(state: &AppState, jwks_uri: &str) {
+    let digest = Sha256::digest(jwks_uri.as_bytes());
+    let cache_key = format!("auth:extjwks:{}", hex_encode(&digest));
+    if let Ok(conn) =
+        sentin8::middleware::valkey_client(&state.config.valkey_url, "sentin8:auth").await
+    {
+        use glide::AsyncCommands as _;
+        let _: Result<i64, _> = conn.del(cache_key).await;
+    }
+}
+
 async fn fetch_external_jwks(state: &AppState, jwks_uri: &str) -> Option<Vec<serde_json::Value>> {
     let cache_key = {
         let digest = Sha256::digest(jwks_uri.as_bytes());
@@ -520,7 +557,9 @@ pub async fn authenticate_client(
         r#"SELECT id, env_id, client_id, client_secret_hash, redirect_uris, scopes,
                   token_endpoint_auth_method, jwks, jwks_uri,
                   tls_client_auth_subject_dn, self_signed_tls_client_auth_thumbprint,
-                  post_logout_redirect_uris, dpop_exempt, authorization_details_types
+                  post_logout_redirect_uris, dpop_exempt, authorization_details_types,
+                  id_token_signed_response_alg, userinfo_signed_response_alg,
+                  subject_type, sector_identifier_uri
              FROM oauth_clients
             WHERE client_id = $1 AND status = 'active'"#,
     )
@@ -575,6 +614,13 @@ pub async fn authenticate_client(
 
     let software_id: Option<String> = row.try_get("software_id").ok().flatten();
     let software_statement: Option<String> = row.try_get("software_statement").ok().flatten();
+    let id_token_signed_response_alg: Option<String> =
+        row.try_get("id_token_signed_response_alg").ok().flatten();
+    let userinfo_signed_response_alg: Option<String> =
+        row.try_get("userinfo_signed_response_alg").ok().flatten();
+    let subject_type: Option<String> = row.try_get("subject_type").ok().flatten();
+    let sector_identifier_uri: Option<String> =
+        row.try_get("sector_identifier_uri").ok().flatten();
 
     let is_confidential = secret_hash.is_some()
         || mtls_dn.is_some()
@@ -609,6 +655,10 @@ pub async fn authenticate_client(
             dpop_jkt: None,
             dpop_exempt,
             authorization_details_types: authorization_details_types.clone(),
+            id_token_signed_response_alg: id_token_signed_response_alg.clone(),
+            userinfo_signed_response_alg: userinfo_signed_response_alg.clone(),
+            subject_type: subject_type.clone(),
+            sector_identifier_uri: sector_identifier_uri.clone(),
         },
         software_id.as_deref(),
         software_statement.as_deref(),
@@ -748,6 +798,10 @@ pub async fn authenticate_client(
         dpop_jkt: None,
         dpop_exempt,
         authorization_details_types,
+        id_token_signed_response_alg,
+        userinfo_signed_response_alg,
+        subject_type,
+        sector_identifier_uri,
     })
 }
 
@@ -958,6 +1012,9 @@ pub struct DiscoveryDocument {
     pub jwks_uri: String,
     /// The userinfo endpoint.
     pub userinfo_endpoint: String,
+    /// OIDC Core §5.3.2 - the signing algs a signed userinfo response may
+    /// use (advertised when the dynamic signed-userinfo form is served).
+    pub userinfo_signing_alg_values_supported: Option<Vec<String>>,
     /// The revocation endpoint.
     pub revocation_endpoint: String,
     /// The introspection endpoint.
@@ -996,7 +1053,17 @@ pub struct DiscoveryDocument {
     pub pushed_authorization_request_endpoint: Option<String>,
     /// mTLS endpoint aliases (RFC 8705) - present when mTLS is advertised.
     #[serde(skip_serializing_if = "Option::is_none")]
+    /// RFC 7591 §4 / OIDC Discovery §4.1 - the dynamic-registration
+    /// endpoint (anonymous for interactive clients; cert-gated for
+    /// client_credentials, DESIGN §4.3f). Advertised when the surface
+    /// is served (the §9a.10 no-skip honesty rule).
+    pub registration_endpoint: Option<String>,
+    /// RFC 7591 §4 - the registration endpoint's own auth methods
+    /// (the endpoint is unauthenticated for interactive clients).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub registration_endpoint_auth_methods_supported: Option<Vec<String>>,
     /// The mtls endpoint aliases.
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub mtls_endpoint_aliases: Option<MtlsEndpointAliases>,
     /// RFC 8705 §2 - the AS issues certificate-bound access tokens
     /// (advertised when the profile's require_mtls is on).
@@ -1129,6 +1196,22 @@ pub async fn discovery(
         token_endpoint: format!("{issuer}/oauth/token"),
         jwks_uri: format!("{issuer}/.well-known/jwks.json"),
         userinfo_endpoint: format!("{issuer}/oauth/userinfo"),
+        // The dynamic signed-userinfo family (§9a.10 honesty: the plan's
+        // oidcc-userinfo-rs256 module requires the advertisement). FAPI
+        // postures keep it off - the signed-userinfo form is not a FAPI
+        // surface.
+        userinfo_signing_alg_values_supported: if profile.require_par
+            || profile.require_mtls
+        {
+            None
+        } else {
+            Some(vec![
+                crate::jwks::active_signing_alg().into(),
+                "ES256".into(),
+                "PS256".into(),
+                "none".into(),
+            ])
+        },
         revocation_endpoint: format!("{issuer}/oauth/revoke"),
         introspection_endpoint: format!("{issuer}/oauth/introspect"),
         end_session_endpoint: format!("{issuer}/oauth/logout"),
@@ -1150,16 +1233,26 @@ pub async fn discovery(
         } else {
             vec!["query".into()]
         },
-        grant_types_supported: vec![
-            "authorization_code".into(),
-            "refresh_token".into(),
-            "client_credentials".into(),
-            "urn:ietf:params:oauth:grant-type:device_code".into(),
-            "urn:ietf:params:oauth:grant-type:token-exchange".into(),
-            // DESIGN §9a.4 - the CIBA poll grant served at the
-            // token endpoint (bc-authorize issues auth_req_id first).
-            "urn:openid:params:grant-type:ciba".into(),
-        ],
+        grant_types_supported: {
+            // The 'implicit' RESPONSE-TYPE form (§9a.13 - the OIDC family's
+            // implicit/hybrid cells are served) rides the non-FAPI
+            // postures' grant-type list (the Dynamic-OP certification
+            // profile requires it).
+            let mut v = vec![
+                "authorization_code".into(),
+                "refresh_token".into(),
+                "client_credentials".into(),
+                "urn:ietf:params:oauth:grant-type:device_code".into(),
+                "urn:ietf:params:oauth:grant-type:token-exchange".into(),
+                // DESIGN §9a.4 - the CIBA poll grant served at the
+                // token endpoint (bc-authorize issues auth_req_id first).
+                "urn:openid:params:grant-type:ciba".into(),
+            ];
+            if !(profile.require_par || profile.require_mtls) {
+                v.push("implicit".into());
+            }
+            v
+        },
         code_challenge_methods_supported: vec!["S256".into()],
         token_endpoint_auth_methods_supported: token_endpoint_auth_methods.clone(),
         scopes_supported: vec![
@@ -1172,16 +1265,31 @@ pub async fn discovery(
             "address".into(),
             "offline_access".into(),
         ],
-        subject_types_supported: vec!["public".into()],
+        subject_types_supported: vec!["public".into(), "pairwise".into()],
         // DESIGN §9a.9 - the ID-token signing family the CALLER'S env
         // will actually mint (per-tenant signing_alg). Both families
         // remain verifiable via JWKS (kid-routed), so clients may see a
         // token from the other family only across tenants - this
         // document describes this issuer-host's tenant.
-        id_token_signing_alg_values_supported: if profile.signing_alg.is_empty() {
-            vec![crate::jwks::active_signing_alg().into()]
-        } else {
-            vec![profile.signing_alg.clone()]
+        // The 'none' member (unsigned ID token - OIDC Core §3.1.3.7 with
+        // no signature) rides ONLY the non-FAPI postures: a FAPI discovery
+        // must never admit an unsigned ID token. The Dynamic-OP plan's
+        // oidcc-idtoken-unsigned module requires the advertisement (the
+        // no-skip rule §9a.10 - the suite SKIPPED the module otherwise).
+        id_token_signing_alg_values_supported: {
+            let base = if profile.signing_alg.is_empty() {
+                vec![crate::jwks::active_signing_alg().into()]
+            } else {
+                vec![profile.signing_alg.clone()]
+            };
+            let fapi_family = profile.require_par || profile.require_mtls;
+            if fapi_family {
+                base
+            } else {
+                let mut v = base;
+                v.push("none".into());
+                v
+            }
         },
         // DPoP signing algs - only advertised when DPoP is required or
         // supported; the FAMILY is the tenant's resolved signing family
@@ -1218,6 +1326,8 @@ pub async fn discovery(
         request_parameter_supported: true,
         request_uri_parameter_supported: true,
         // PAR endpoint - present when require_par is true .
+        registration_endpoint: Some(format!("{issuer}/oauth/register")),
+        registration_endpoint_auth_methods_supported: None,
         pushed_authorization_request_endpoint: if profile.require_par {
             Some(format!("{issuer}/oauth/par"))
         } else {
@@ -4330,6 +4440,21 @@ pub async fn token(
 /// the granted scope includes `openid`, an OIDC ID token is issued
 /// (SEC-) with `aud` = client_id, `nonce` from the authorize
 /// request, and `at_hash` binding it to the access token.
+/// The pairwise subject derivation (OIDC Core §8 - pairwise sub =
+/// the sector-identifier + client-pair salted hash, opaque to the RP).
+/// The salt is the client row's DB id (per-client stable), the sector =
+/// the registered sector_identifier_uri (or the redirect host).
+fn pairwise_sub(client_db_id: &Uuid, sector: Option<&str>, user_id: &Uuid) -> String {
+    use sha2::{Digest, Sha256};
+    let mut h = Sha256::new();
+    h.update(client_db_id.as_bytes());
+    h.update(user_id.as_bytes());
+    h.update(sector.unwrap_or("").as_bytes());
+    let d = h.finalize();
+    use base64::Engine;
+    base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(d[..16].to_vec())
+}
+
 async fn handle_code_exchange(
     state: &AppState,
     client: &AuthenticatedClient,
@@ -4801,6 +4926,13 @@ async fn handle_code_exchange(
         )
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
     let id_token = if scope.split_whitespace().any(|s| s == "openid") {
+        // RFC 7591 §2 - the DCR'd client's registered
+        // `id_token_signed_response_alg` preference governs the ID token's
+        // signing (none = the unsigned OIDC form; the Dynamic-OP plan's
+        // oidcc-idtoken-unsigned module drives it). Access/refresh tokens
+        // keep the profile family.
+        let id_signing_alg: String =
+            client.id_token_signed_response_alg.clone().unwrap_or_else(|| signing_alg.clone());
         // DESIGN §9a.11 - email rides the ID token ONLY when the §5.5
         // claims request selects it (the scope-consented copy lives in
         // userinfo); unknown-selection = no user claims in the token.
@@ -4863,6 +4995,16 @@ async fn handle_code_exchange(
         // (OIDC Core §3.1.3.6) - c_hash binds the ID token to the
         // authorization code being exchanged; (FAPI 1 §5.2.2.1) -
         // s_hash binds it to the client's state when one was sent.
+        // RFC 7591 subject_type=pairwise: the client-pair-salted
+        // derivation replaces the public sub (OIDC Core §8; the
+        // Dynamic-OP plan's sector-uri family drives it).
+        if client.subject_type.as_deref() == Some("pairwise") {
+            id_claims["sub"] = serde_json::json!(pairwise_sub(
+                &client.id,
+                client.sector_identifier_uri.as_deref(),
+                &user_id
+            ));
+        }
         id_claims["c_hash"] = serde_json::json!(crate::jwt::c_hash(&code));
         if let Some(st) = state_value.as_deref().filter(|s| !s.is_empty()) {
             id_claims["s_hash"] = serde_json::json!(crate::jwt::s_hash(st));
@@ -4947,7 +5089,7 @@ async fn handle_code_exchange(
         }
         state
             .keys
-            .sign_value_alg(&id_claims, &signing_alg)
+            .sign_value_alg(&id_claims, &id_signing_alg)
             .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
             .into()
     } else {
@@ -6339,9 +6481,46 @@ pub async fn revoke(
 /// `x-fapi-interaction-id` (echoing the request's value, or a fresh
 /// UUID when absent). Applies to the userinfo resource surface the
 /// FAPI plans exercise.
+/// The userinfo render: plain JSON by default; when the caller's client
+/// registered `userinfo_signed_response_alg` (RFC 7591), the response is
+/// a signed userinfo JWT with content-type `application/jwt`
+/// (OIDC Core §5.3.2 dynamic signed-response form; the Dynamic-OP
+/// plan's oidcc-userinfo-rs256 module drives it).
+/// The caller's registered userinfo signing algorithm (RFC 7591 lookup:
+/// the access token's `client_id` -> the client row's
+/// `userinfo_signed_response_alg`). RLS: runs under the row's env via
+/// the authenticate SELECT path - a lookup by client_id goes through
+/// the SYSTEM-env transaction (`with_client_env` parity).
+async fn client_userinfo_signed_alg(
+    state: &AppState,
+    client_id: &str,
+) -> Option<String> {
+    if client_id.is_empty() {
+        return None;
+    }
+    let mut conn = state.pool.begin().await.ok()?;
+    let _ = sqlx::query("SELECT sentin8_set_tenant_context($1)")
+        .bind(crate::config::SYSTEM_ENV_ID)
+        .execute(&mut *conn)
+        .await;
+    sqlx::query(
+        r#"SELECT userinfo_signed_response_alg FROM oauth_clients WHERE client_id = $1"#,
+    )
+    .bind(client_id)
+    .fetch_optional(&mut *conn)
+    .await
+    .ok()
+    .flatten()
+    .and_then(|r| r.try_get::<Option<String>, _>(0).ok().flatten())
+}
+
 fn userinfo_json(
     headers: &HeaderMap,
     claims: OidcClaims,
+    signed_alg: Option<&str>,
+    keys: Option<&crate::jwks::SigningKeys>,
+    issuer: &str,
+    client_id: &str,
 ) -> axum::response::Response {
     use axum::response::IntoResponse;
     let interaction = headers
@@ -6350,6 +6529,39 @@ fn userinfo_json(
         .filter(|v| !v.trim().is_empty())
         .map(str::to_string)
         .unwrap_or_else(|| Uuid::new_v4().to_string());
+    if let (Some(alg), Some(keys)) = (signed_alg, keys) {
+        // OIDC Core §5.3.2 (dynamic signed-response): the userinfo JWT
+        // carries the signed-JWT claim set - iss, aud = the client, iat,
+        // exp - on top of the standard claims, then the alg signing.
+        let mut jwt_claims =
+            serde_json::to_value(&claims).unwrap_or_default();
+        if let Some(obj) = jwt_claims.as_object_mut() {
+            obj.insert("iss".into(), serde_json::json!(issuer));
+            obj.insert("aud".into(), serde_json::json!(client_id));
+            obj.insert(
+                "iat".into(),
+                serde_json::json!(chrono::Utc::now().timestamp()),
+            );
+            obj.insert(
+                "exp".into(),
+                serde_json::json!(
+                    chrono::Utc::now().timestamp()
+                        + state_userinfo_ttl()
+                ),
+            );
+        }
+        let body = keys
+            .sign_value_alg(&jwt_claims, alg)
+            .unwrap_or_default();
+        return (
+            [
+                ("x-fapi-interaction-id", interaction),
+                ("content-type", "application/jwt".to_string()),
+            ],
+            body,
+        )
+            .into_response();
+    }
     (
         [("x-fapi-interaction-id", interaction)],
         Json(claims),
@@ -6357,6 +6569,12 @@ fn userinfo_json(
         .into_response()
 }
 
+
+/// The signed-userinfo JWT's lifetime (5 minutes - a short-lived response
+/// artifact; the verifier validates it before reading claims).
+fn state_userinfo_ttl() -> i64 {
+    300
+}
 // ── UserInfo ────────────────────────────────────────────────────────────
 
 /// Handle userinfo.
@@ -6404,6 +6622,15 @@ pub async fn userinfo(
     {
         return Err((StatusCode::UNAUTHORIZED, "token has been revoked".into()));
     }
+
+    // RFC 7591 - the caller's registered userinfo signing preference
+    // (one lookup shared by the render sites; delegated tokens keep
+    // plain JSON).
+    let user_alg = client_userinfo_signed_alg(
+        &state,
+        claims.client_id.as_deref().unwrap_or(""),
+    )
+    .await;
 
     // SEC- - DPoP sender-constraint (RFC 9449, FAPI2): a cnf.jkt-bound
     // access token presents a DPoP proof whose key EXACTLY matches the
@@ -6621,7 +6848,7 @@ pub async fn userinfo(
             scopes: platform_claims.then_some(scopes),
             client_id: platform_claims.then_some(claims.sub.clone()),
             token_tp: platform_claims.then_some(claims.token_tp),
-        }));
+        }, None, None, &resolve_issuer(&state.config, &headers), ""));
     }
 
     if claims.token_tp != "access" && claims.token_tp != "m2m" {
@@ -6782,7 +7009,7 @@ pub async fn userinfo(
                 scopes: platform_claims.then_some(scopes),
                 client_id: platform_claims.then_some(claims.client_id.clone()).flatten(),
                 token_tp: None,
-            }));
+            }, user_alg.as_deref(), Some(&state.keys), &resolve_issuer(&state.config, &headers), claims.client_id.as_deref().unwrap_or("")));
         }
     }
 
@@ -6812,8 +7039,15 @@ pub async fn userinfo(
     } else {
         (vec![], vec![])
     };
-    Ok(userinfo_json(&headers, OidcClaims {
-        sub: claims.sub,
+    let user_alg = client_userinfo_signed_alg(
+        &state,
+        claims.client_id.as_deref().unwrap_or(""),
+    )
+    .await;
+    let sub_for_render = claims.sub.clone();
+    let sub_for_aud = claims.sub.clone();
+        Ok(userinfo_json(&headers, OidcClaims {
+        sub: sub_for_render,
         email: None,
         phone_number: None,
         email_verified: None,
@@ -6840,7 +7074,11 @@ pub async fn userinfo(
         scopes: platform_claims.then_some(scopes),
         client_id: platform_claims.then_some(claims.client_id.clone()).flatten(),
         token_tp: platform_claims.then_some("m2m".to_string()),
-    }))
+    },
+        user_alg.as_deref(),
+        Some(&state.keys),
+        &resolve_issuer(&state.config, &headers),
+        &sub_for_aud))
 }
 
 // ── Logout ──────────────────────────────────────────────────────────────

@@ -367,6 +367,15 @@ impl SigningKeys {
     /// connection before every statement (the pool is the auth service role,
     /// NOBYPASSRLS; without the context RLS fails closed).
     /// Load or generate.
+    /// A fresh read of the persisted key set (decrypt-only; no
+    /// generation side effect - the JWKS publisher calls this per request
+    /// so a rotation is visible in the served set without a restart).
+    pub async fn load_fresh(pool: &sqlx::PgPool) -> anyhow::Result<Self> {
+        Self::load_or_generate(pool).await
+    }
+
+    /// Load the persisted key set (decrypting with the master key),
+    /// generating the active key when the store is empty.
     pub async fn load_or_generate(pool: &sqlx::PgPool) -> anyhow::Result<Self> {
         let active_alg = if is_pq_mode() { "MLDSA65" } else { "RS256" };
         // DBX: signing_keys' RLS policies admit only the SYSTEM-env context.
@@ -654,11 +663,24 @@ impl SigningKeys {
     /// # Errors
     /// - Unknown family, or no signing material for it (the store was
     ///   tampered with - both families are generated at boot).
+    /// Sign a JWT with the requested algorithm family. `none` is a legal
+    /// FAMILY for the ID token's registered preference (OIDC Core - the
+    /// unsigned-ID-token form): the unsigned JWS is `<header>.<payload>.`
+    /// (empty MAC/appendix segment per JWS §5.2 unsecured form).
     pub fn sign_value_alg(
         &self,
         claims: &serde_json::Value,
         alg: &str,
     ) -> Result<String, String> {
+        if alg.eq_ignore_ascii_case("none") {
+            // JWS "unsecured" form - the alg header names none, no sig.
+            let header = serde_json::json!({"alg": "none", "typ": "JWT"});
+            let header_b64 = base64::engine::general_purpose::URL_SAFE_NO_PAD
+                .encode(serde_json::to_vec(&header).map_err(|e| format!("serialize header: {e}"))?);
+            let payload_b64 = base64::engine::general_purpose::URL_SAFE_NO_PAD
+                .encode(serde_json::to_vec(claims).map_err(|e| format!("serialize claims: {e}"))?);
+            return Ok(format!("{header_b64}.{payload_b64}."));
+        }
         let key = self
             .signing_key_for(alg)
             .ok_or_else(|| format!("no {alg} signing key available"))?;

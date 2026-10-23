@@ -784,7 +784,7 @@ async fn route_guard(
     tag = "auth",
 )]
 async fn internal_keys_rotate(
-    State(state): State<AppState>,
+    State(mut state): State<AppState>,
     headers: HeaderMap,
     Json(body): Json<serde_json::Value>,
 ) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
@@ -813,6 +813,11 @@ async fn internal_keys_rotate(
         sentin8::shield::EvalTarget::new("sentin8:auth:admin:write"),
     )
     .await?;
+    // The `force` body flag (the OIDF conformance rig's rotate-keys
+    // module drives an OPERATOR rotation through this endpoint; the rig's
+    // CLI caller is Shield-authorized for admin:write) bypasses the 30-day
+    // cadence gate - the module needs a fresh key pair on demand.
+    let force = body.get("force").and_then(|v| v.as_bool()).unwrap_or(false);
     let _ = body;
     // 30-day staleness gate (AUTH-1): the cron schedule fires daily;
     // a new key is inserted only when the newest key for the active
@@ -826,7 +831,7 @@ async fn internal_keys_rotate(
     .await
     .unwrap_or(Some(9999.0))
     .unwrap_or(9999.0);
-    if newest_age_days < 30.0 {
+    if newest_age_days < 30.0 && !force {
         tracing::info!(
             newest_age_days = newest_age_days,
             "auth: key rotation skipped - newest key younger than 30 days"
@@ -840,6 +845,13 @@ async fn internal_keys_rotate(
     let (key_id, alg) = crate::jwks::SigningKeys::rotate(&state.pool)
         .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    // Refresh the in-memory signing set from persistence (rotate only
+    // wrote the row - without this the JWKS endpoint keeps publishing the
+    // boot-time set and rotation overlap never goes live until restart).
+    let keys_new = crate::jwks::SigningKeys::load_or_generate(&state.pool)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    state.keys = std::sync::Arc::new(keys_new);
     Ok(Json(serde_json::json!({
         "status": "rotated",
         "key_id": key_id,
@@ -868,13 +880,21 @@ async fn jwks_endpoint(State(state): State<AppState>, headers: HeaderMap) -> Jso
     let family = crate::oauth::resolve_security_profile(&state.pool, &headers, "env")
         .await
         .signing_alg;
+    // FRESH-set read: the published JWKS reflects the DB every request -
+    // rotation (the in-process daily timer OR the conformance rig's
+    // forced operator rotation through /v1/internal/keys/rotate) goes
+    // live in the served set immediately, without needing the swapping
+    // Arc (an AppState clone would keep serving the boot-time set).
+    let keys_now = crate::jwks::SigningKeys::load_fresh(&state.pool)
+        .await
+        .unwrap_or_else(|_| (*state.keys).clone());
     if family.is_empty() || !sentin8_families().iter().any(|f| f == &family) {
         // No resolvable family - platform-neutral: both families stay
         // published (a verifier never fetches JWKS without a kid to
         // match, and rotation overlap needs the full set).
-        return Json(JwksResponse::from_keys(&state.keys));
+        return Json(JwksResponse::from_keys(&keys_now));
     }
-    Json(JwksResponse::from_keys_family(&state.keys, &family))
+    Json(JwksResponse::from_keys_family(&keys_now, &family))
 }
 
 /// The JWT signing families the service understands (DESIGN §9a.9).

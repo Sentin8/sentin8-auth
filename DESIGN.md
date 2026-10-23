@@ -1630,7 +1630,66 @@ PAR-reuse family, PKCE-required family, expired-request_uri family), 3
 SKIP-SANCTIONED (ES256-client RS256 negatives - our alg policy is PS/ES and
 the suite blesses the skip), 1 FAIL-SANCTIONED (above), zero warnings.
 
----
+### 9a.17 OIDC Core Config + Dynamic OP certification (OC-13 family 4)
+
+Two more OIDF certification families run against the same cert tenant,
+extending the discovery surface and exercising the RFC 7591 dynamic
+registration path end to end.
+
+**`oidcc-config-certification-test-plan`** (discovery completeness cell,
+`discovery` + `static_client` variant): one module
+(`oidcc-discovery-endpoint-verification`) fetches the discovery document
+and verifies every advertised capability. Supported by the discovery
+additions: `registration_endpoint`, `userinfo_signing_alg_values_supported`
+(`[active, ES256, PS256, none]` for the standard profile, `none` for FAPI),
+`subject_types_supported: [public, pairwise]`, explicit
+`grant_types_supported` (+ `implicit` for non-FAPI),
+`id_token_signing_alg_values_supported` (+ `none` for non-FAPI), and the
+`mtls_endpoint_aliases` omission. GREEN: PASSED, zero warnings.
+
+**`oidcc-dynamic-certification-test-plan`** (RFC 7591 dynamic-client
+cells): 23 module-variants (server=discovery x client_registration=
+dynamic_client x client_auth_type=private_key_jwt x response_type=code),
+each self-registering at `POST /oauth/register` and driving the full code
+flow. Auth-side support:
+
+1. **DCR JSON errors** - every registration/maintenance answer renders
+   RFC 6749/7591 JSON ({"error", "error_description"} via the DcrError
+   renderer; invalid_redirect_uri for redirect fragments,
+   invalid_client_metadata for unreachable/sector-invalid
+   sector_identifier_uri).
+2. **RFC 7591 client metadata** - id_token_signed_response_alg,
+   userinfo_signed_response_alg, subject_type, sector_identifier_uri
+   stored at registration, merged per RFC 7592 update semantics (an
+   omitted field never nulls the stored one), and honored at code
+   exchange (unsigned id_token / the none JWS family, signed userinfo
+   JWTs, pairwise subjects keyed by client_db_id, sector validation).
+3. **External jwks_uri rotation retry** - client-assertion verification
+   against a jwks_uri-registered client first reads the 300s Valkey
+   cache (auth:extjwks:{sha256(uri)}); on a failed signature the cache
+   is invalidated and the fetch retried ONCE before concluding
+   invalid_client - the client-key rotation use case (a client
+   legitimately rotating between two token calls) no longer trips on the
+   negative TTL cache.
+4. **Key-rotation automation** - POST /v1/internal/keys/rotate accepts
+   {"force": true} to bypass the 30-day gate (operator-scope M2M), and
+   jwks_endpoint reads the signing keys FRESH per request; the harness
+   hook detects the suite's "Please rotate the keys" log instruction,
+   force-rotates, and resumes the manual module via POST /api/runner/<id>.
+
+**Certification status.** Config plan GREEN (1 module PASSED, zero
+warnings). Dynamic plan terminal: all 23 module-variants FINISHED - 4
+PASSED (discovery, rotate-keys, redirect-fragment, sector-bad), 7 REVIEW
+(zero failures - the suite's by-design manual-review states: registration
+uri-field family, redirect-query family, ensure-redirect/request-object
+family), 12 WARNING (all 12 sanctioned: entries carry
+src=UnregisterDynamicallyRegisteredClient + code=404 - the suite's
+unregister-on-alias-claim lifecycle against an already-deleted client,
+verified identical across 20/20 warning entries), zero plan violations;
+the plan-level acceptability gate PASSES. Harness fix: the suite
+occasionally answers empty-bodied responses on the racey post-settle
+GET /api/plan/<id> - the rig's request() parses empty bodies as absent
+instead of throwing.
 
 ---
 

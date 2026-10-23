@@ -96,6 +96,16 @@ pub struct RegisterRequest {
     #[serde(default)]
     /// The application type.
     pub application_type: Option<String>,
+    #[serde(default)]
+    /// RFC 7591 - the registered ID-token signing preference the mint
+    /// honors (none = the unsigned-ID-token OIDC form; the plan's
+    /// oidcc-idtoken-unsigned module drives it).
+    pub id_token_signed_response_alg: Option<String>,
+    #[serde(default)]
+    /// RFC 7591 - the registered userinfo signing preference (RS256 etc.
+    /// = the userinfo response is a signed JWT; the Dynamic-OP plan's
+    /// oidcc-userinfo-rs256 module drives it).
+    pub userinfo_signed_response_alg: Option<String>,
     // ── mTLS fields (RFC 8705,) ──
     /// Subject DN for `tls_client_auth` method (RFC 8705 ).
     #[serde(default)]
@@ -483,6 +493,37 @@ fn is_m2m_only_grants(grant_types: &[String]) -> bool {
 
 // ── POST /oauth/register (RFC 7591) ───────────────────────────────────
 
+/// DCR rejection type - renders as an RFC 7591 §3.2.2 JSON body
+/// (`{"error": "...", "error_description": "..."}`). The suite's
+/// dynamic-registration checkers parse the `error` field; a plain-text
+/// body fails their JSON gate (the same convention as CIBA's renderer).
+pub struct DcrError(pub StatusCode, pub String);
+
+impl axum::response::IntoResponse for DcrError {
+    fn into_response(self) -> axum::response::Response {
+        let (status, msg) = (self.0, self.1);
+        if status.is_client_error() {
+            let (code, desc) = match msg.split_once(": ") {
+                Some((c, d)) => (c.to_string(), d.to_string()),
+                None => ("invalid_client_metadata".to_string(), msg.clone()),
+            };
+            let body = if desc.is_empty() {
+                serde_json::json!({ "error": code })
+            } else {
+                serde_json::json!({ "error": code, "error_description": desc })
+            };
+            (status, axum::Json(body)).into_response()
+        } else {
+            (status, msg).into_response()
+        }
+    }
+}
+
+impl From<(StatusCode, String)> for DcrError {
+    fn from((status, msg): (StatusCode, String)) -> Self {
+        Self(status, msg)
+    }
+}
 /// Register it.
 #[utoipa::path(
     post,
@@ -499,15 +540,80 @@ pub async fn register(
     State(state): State<AppState>,
     headers: HeaderMap,
     Json(req): Json<RegisterRequest>,
-) -> Result<(StatusCode, Json<RegisterResponse>), (StatusCode, String)> {
+) -> Result<(StatusCode, Json<RegisterResponse>), DcrError> {
     // Validate redirect_uris - required for interactive clients (RFC 7591 ),
     // but M2M clients (client_credentials only) don't need redirect URIs.
     let is_m2m_only = is_m2m_only_grants(&req.grant_types);
     if req.redirect_uris.is_empty() && !is_m2m_only {
-        return Err((
-            StatusCode::BAD_REQUEST,
-            "invalid_client_metadata: redirect_uris is required".into(),
-        ));
+        return Err(DcrError(StatusCode::BAD_REQUEST, "invalid_redirect_uri: redirect_uris is required".into(),));
+    }
+    // RFC 7591 §2 / RFC 6749 §3.2 - a redirect_uri must not contain a
+    // fragment (the query is fine; the fragment can never reach a server).
+    // The suite's oidcc-redirect-uri-regfrag negative expects
+    // invalid_redirect_uri 400.
+    if let Some(bad) = req
+        .redirect_uris
+        .iter()
+        .chain(req.post_logout_redirect_uris.iter())
+        .find(|u| u.contains('#'))
+    {
+        return Err(DcrError(StatusCode::BAD_REQUEST, format!("invalid_redirect_uri: fragment not allowed: {bad}"),));
+    }
+
+    // RFC 7591 §2 - sector_identifier_uri must be a reachable https URL
+    // whose document lists EVERY registered redirect_uri (the suite's
+    // oidcc-registration-sector-bad negative sends an unreachable/bad
+    // sector URI and expects 400 invalid_client_metadata).
+    if let Some(sector) = req.sector_identifier_uri.as_deref().filter(|s| !s.trim().is_empty()) {
+        let bad = if !sector.starts_with("https://") {
+            Some("sector_identifier_uri must be https".to_string())
+        } else {
+            match tokio::time::timeout(
+                std::time::Duration::from_secs(10),
+                async {
+                    reqwest::Client::builder()
+                        .timeout(std::time::Duration::from_secs(8))
+                        .build()
+                        .ok()?
+                        .get(sector)
+                        .send()
+                        .await
+                        .ok()?
+                        .error_for_status()
+                        .ok()?
+                        .text()
+                        .await
+                        .ok()
+                },
+            )
+            .await
+            .ok()
+            .flatten()
+            {
+                Some(doc) => {
+                    let listed: serde_json::Value = serde_json::from_str(&doc).ok().unwrap_or_default();
+                    let members: Vec<String> = listed
+                        .get("redirect_uris")
+                        .and_then(|v| v.as_array())
+                        .map(|a| a.iter().filter_map(|x| x.as_str().map(str::to_string)).collect())
+                        .or_else(|| serde_json::from_str::<Vec<String>>(&doc).ok())
+                        .unwrap_or_default();
+                    if req.redirect_uris.iter().any(|u| !members.contains(u)) {
+                        Some("not all redirect_uris are registered in the sector document".to_string())
+                    } else {
+                        None
+                    }
+                }
+                None => Some("sector_identifier_uri is not reachable".to_string()),
+            }
+        };
+        if let Some(reason) = bad {
+            return Err((
+                StatusCode::BAD_REQUEST,
+                format!("invalid_client_metadata: {reason}"),
+            )
+                .into());
+        }
     }
 
     // - mTLS-bound DCR for M2M scope registration (auth design
@@ -527,7 +633,7 @@ pub async fn register(
             &client_name,
             &platform_scopes(req.scope.as_deref()),
         )
-        .await?;
+        .await.map_err(|(s, m)| DcrError(s, m))?;
     }
 
     // Determine auth method - default to client_secret_basic for confidential clients.
@@ -548,7 +654,7 @@ pub async fn register(
     } else {
         let raw = generate_client_secret();
         let hash = bcrypt_hash(&raw, DEFAULT_COST)
-            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+            .map_err(|e| DcrError(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
         (Some(raw), Some(hash))
     };
 
@@ -588,7 +694,7 @@ pub async fn register(
         .pool
         .begin()
         .await
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+        .map_err(|e| DcrError(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
     let _ = sqlx::query("SELECT sentin8_set_tenant_context($1)")
         .bind(env_id)
         .execute(&mut *tx)
@@ -598,6 +704,8 @@ pub async fn register(
                (env_id, client_id, client_name,
                 client_secret_hash, redirect_uris, grant_types, response_types,
                 token_endpoint_auth_method, scopes,
+                id_token_signed_response_alg, userinfo_signed_response_alg,
+                subject_type,
                 client_id_issued_at, client_secret_expires_at,
                 software_id, software_statement,
                 logo_uri, client_uri, policy_uri, tos_uri, contacts,
@@ -606,11 +714,11 @@ pub async fn register(
                 tls_client_auth_subject_dn, self_signed_tls_client_auth_thumbprint,
                 consent_required, backchannel_client_notification_endpoint,
                 post_logout_redirect_uris)
-           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9,
-                   $10, $11, $12, $13, $14, $15, $16, $17, $18,
-                   $19, $20, $21, $22, $23, true,
-                   $24, $25, $26, $27,
-                   $28)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10,
+                   $11, $12, $13, $14, $15, $16, $17, $18, $19,
+                   $20, $21, $22, $23, $24, $25, $26, true,
+                   $27, $28, $29, $30,
+                   $31)
            RETURNING
                client_id, client_id_issued_at, client_secret_expires_at,
                client_name, redirect_uris, grant_types, response_types,
@@ -627,6 +735,9 @@ pub async fn register(
         &response_types,
         &token_endpoint_auth_method,
         &scopes,
+        req.id_token_signed_response_alg.as_deref(),
+        req.userinfo_signed_response_alg.as_deref(),
+        req.subject_type.as_deref(),
         now,
         client_secret_expires_at.map(|_| now + Duration::days(365)),
         req.software_id.as_deref(),
@@ -655,7 +766,7 @@ pub async fn register(
     )
     .fetch_one(&mut *tx)
     .await
-    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    .map_err(|e| DcrError(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
     let _ = tx.commit().await; // SEC-2.4.8 - persist the client
 
     let issuer = resolve_issuer(&state, &headers);
@@ -989,6 +1100,20 @@ pub async fn delete_client(
     })?;
     let rat_hash = hash_token(&rat);
 
+    // RLS: oauth_clients is env-RLS gated - the DELETE runs under the
+    // resolved tenant context on the SAME transaction (the bare pool
+    // query deleted zero rows and wrongly answered 404 for a live
+    // client; the same the read path guards against above).
+    let env_id = resolve_tenant(&headers);
+    let mut tx = state
+        .pool
+        .begin()
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    let _ = sqlx::query("SELECT sentin8_set_tenant_context($1)")
+        .bind(env_id)
+        .execute(&mut *tx)
+        .await;
     let result = sqlx::query!(
         r#"DELETE FROM oauth_clients
            WHERE client_id = $1
@@ -997,9 +1122,10 @@ pub async fn delete_client(
         client_id,
         rat_hash,
     )
-    .execute(&state.pool)
+    .execute(&mut *tx)
     .await
     .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    let _ = tx.commit().await;
 
     if result.rows_affected() == 0 {
         return Err((

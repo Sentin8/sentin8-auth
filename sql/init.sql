@@ -448,6 +448,18 @@ CREATE TABLE IF NOT EXISTS auth.oauth_clients (
     -- never self-exempt. Proofs presented by exempt clients are still
     -- verified (opt-in sender-constraining).
     dpop_exempt BOOLEAN NOT NULL DEFAULT false,
+    -- RFC 7591 registration metadata the ID-token mint honors: the
+    -- registered id_token_signed_response_alg preference (none | RS256 |
+    -- ES256 | PS256). NULL = the profile's default signing family.
+    id_token_signed_response_alg TEXT,
+    -- RFC 7591 - the registered userinfo signing preference. RS256/ES256
+    -- /PS256 = the userinfo response is a signed JWT (content-type
+    -- application/jwt); none/NULL = plain JSON.
+    userinfo_signed_response_alg TEXT,
+    -- RFC 7591 - the registered subject type (public | pairwise). A
+    -- pairwise client's `sub` is the client-pair-salted hash (the
+    -- subject-type derivation; the Dynamic-OP plan's sector-uri family).
+    subject_type TEXT,
     -- RP-Initiated Logout allow-list (SEC-2.1.5). `/oauth/logout`
     -- only redirects to URIs registered here; otherwise it falls back to
     -- the local /sign-in page (open-redirect defense).
