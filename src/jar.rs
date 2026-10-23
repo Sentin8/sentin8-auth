@@ -87,6 +87,10 @@ pub struct JarClaims {
     #[serde(default)]
     /// The resource.
     pub resource: Option<Vec<String>>,
+    /// RFC 9101 §6 - a request object carrying `request_uri` is
+    /// malformed (the nested reference form is rejected).
+    #[serde(default)]
+    pub request_uri: Option<String>,
 }
 
 /// Decode a JAR request JWT WITHOUT signature verification.
@@ -174,6 +178,13 @@ pub fn validate_jar_claims(claims: &JarClaims, issuer: &str) -> Result<(), Strin
     }
     if claims.redirect_uri.is_empty() {
         return Err("JAR redirect_uri is required".into());
+    }
+    // RFC 9101 §6 - a request object MUST NOT carry `request_uri` (a
+    // nested request-reference form the FAPI PAR negative exercises).
+    if let Some(raw) = claims.request_uri.as_deref() {
+        if !raw.trim().is_empty() {
+            return Err("JAR request_uri is not a valid request object parameter".into());
+        }
     }
     Ok(())
 }
