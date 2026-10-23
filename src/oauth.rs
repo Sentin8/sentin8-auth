@@ -228,9 +228,13 @@ async fn verify_client_assertion(
     // ENDPOINT it was issued for; every endpoint this OP receives client
     // assertions on is an acceptable audience.
     let par_aud = format!("{issuer}/oauth/par");
+    // The plain token endpoint as the named audience (the suite's
+    // token-endpoint-as-audience module pushes with aud = token URL).
+    let token_aud = format!("{issuer}/oauth/token");
     let aud_ok = matches!(aud_json, Some(serde_json::Value::String(a)) if *a == issuer)
         || matches!(aud_json, Some(serde_json::Value::String(a)) if *a == mtls_aud)
-        || matches!(aud_json, Some(serde_json::Value::String(a)) if *a == par_aud);
+        || matches!(aud_json, Some(serde_json::Value::String(a)) if *a == par_aud)
+        || matches!(aud_json, Some(serde_json::Value::String(a)) if *a == token_aud);
     if !aud_ok {
         return Err((
             StatusCode::UNAUTHORIZED,
