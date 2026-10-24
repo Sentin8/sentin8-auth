@@ -65,9 +65,78 @@ fn supported_credential_configurations(issuer: &str) -> serde_json::Value {
             "vct": id,
         })
     };
+    // The OIDF WALLET-plan catalog (VCICredentialConfigurations DEFAULTS -
+    // the suite builds its metadata from these per-test defaults): the
+    // dc+sd-jwt families the wallet plan actually requests under the
+    // sd_jwt_vc format variant. Each entry carries the catalog's scope +
+    // proof shape; the keyattest entries REQUIRE the key attestation like
+    // the native configs (the plan's keyattest modules drive that path).
+    // The minted `vct` is the catalog's designator (urn:eudi:pid:1).
+    let proof = |kinds: &[&str]| {
+        let mut pt = serde_json::Map::new();
+        for k in kinds {
+            pt.insert(
+                (*k).to_string(),
+                serde_json::json!({ "proof_signing_alg_values_supported": ["ES
+256", "RS256"] }),
+            );
+        }
+        serde_json::Value::Object(pt)
+    };
+    let wallet = |id: &str, scope: &str, proofs: &[&str], vct: &str| {
+        let mut v = serde_json::json!({
+            "format": "dc+sd-jwt",
+            "scope": scope,
+            "vct": vct,
+            "cryptographic_binding_methods_supported": ["jwk"],
+            "credential_signing_alg_values_supported": ["ES256", "RS256", "ML-D
+SA-65"],
+            "proof_types_supported": proof(proofs),
+        });
+        v.as_object_mut().unwrap().insert(
+            "credential_metadata".to_string(),
+            serde_json::json!({
+                "display": [ { "name": id, "description": "Sentin8 wallet-c
+atalog credential" } ]
+            }),
+        );
+        // The keyattest catalog entries REQUIRE the key attestation (the
+        // module drives the attested-proof path; the plain families do
+        // not carry the requirement).
+        if id.contains("keyattest") {
+            v.as_object_mut()
+                .unwrap()
+                .get_mut("proof_types_supported")
+                .unwrap()
+                .as_object_mut()
+                .unwrap()
+                .insert(
+                    "key_attestations_required".to_string(),
+                    serde_json::json!({ "key_storage": ["software", "enclave
+", "tpm", "secure_element"] }),
+                );
+        }
+        v
+    };
     serde_json::json!({
         "VerifiedPersonCredential": single("VerifiedPersonCredential"),
         "VerifiedEmployeeCredential": single("VerifiedEmployeeCredential"),
+        "eu.europa.ec.eudi.pid.1": wallet("eu.europa.ec.eudi.pid.1", "eudi.p
+id.1", &["jwt"], "urn:eudi:pid:1"),
+        "eu.europa.ec.eudi.pid.1.nobinding": wallet("eu.europa.ec.eudi.pid.1
+.nobinding", "eudi.pid.1.nobinding", &[], "urn:eudi:pid:1"),
+        "eu.europa.ec.eudi.pid.1.attestation": wallet("eu.europa.ec.eudi.pid
+.1.attestation", "eudi.pid.1.attestation", &["attestation"], "urn:eudi:pid:1"),
+
+        "eu.europa.ec.eudi.pid.1.jwt.keyattest": wallet("eu.europa.ec.eudi.p
+id.1.jwt.keyattest", "eudi.pid.1.jwt.keyattest", &["jwt"], "urn:eudi:pid:1"),
+
+        "eu.europa.ec.eudi.pid.1.attestation.keyattest": wallet("eu.europa.ec
+.eudi.pid.1.attestation.keyattest", "eudi.pid.1.attestation.keyattest", &["att
+estation"], "urn:eudi:pid:1"),
+        "eu.europa.ec.eudi.pid.1.jwt_and_attestation.keyattest": wallet("eu.e
+uropa.ec.eudi.pid.1.jwt_and_attestation.keyattest", "eudi.pid.1.jwt_and_attest
+ation.keyattest", &["jwt", "attestation"], "urn:eudi:pid:1"),
     })
 }
 
@@ -1047,7 +1116,14 @@ async fn credential_impl(
     // Batch issuance (Final §7.3): N proofs → N credentials, EVERY proof
     // verified against its own key binding.
     let mut credentials_out: Vec<serde_json::Value> = Vec::new();
-    let cred_type = config_id;
+    // The minted `vct` is the CONFIG's designator when the configuration
+    // carries one (the OIDF wallet-catalog EUDI entries use
+    // `urn:eudi:pid:1`); otherwise the configuration id IS the vct.
+    let cred_type: String = config
+        .get("vct")
+        .and_then(|v| v.as_str())
+        .map(str::to_string)
+        .unwrap_or_else(|| config_id.to_string());
     verify_credential_dpop(&state, &headers, bearer).await?;
     let mut shared_status: Option<Uuid> = None;
     let mut used_idx: Vec<u32> = Vec::new();
