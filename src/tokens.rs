@@ -95,7 +95,7 @@ pub async fn password_reset_request(
     // lookup to env_id.
     let (_org_id, env_id) =
         crate::handlers::resolve_tenant_from_headers(&state.pool, &headers).await;
-    // SEC- - tenant context on the same connection (design ).
+    // tenant context on the same connection (design ).
     let user = async {
         let mut conn = state.pool.begin().await.ok()?;
         let _ = sqlx::query("SELECT sentin8_set_tenant_context($1)")
@@ -152,7 +152,7 @@ pub async fn password_reset_request(
 
             // The raw token is NOT returned in the API response - the
             // short code is delivered out-of-band via Sentin8:Post and is
-            // visible in dev logs only (SEC-: the previous
+            // visible in dev logs only (the previous
             // `short_code: Some(...)` leaked 32 bits of the security
             // token to any unauthenticated caller who knew an email).
             let _ = raw_token;
@@ -220,7 +220,7 @@ pub async fn password_reset_confirm(
     }
 
     let token_hash = hash_token(&req.token);
-    // SEC- - tenant context on the same connection (design ). The
+    // tenant context on the same connection (design ). The
     // token → user lookup resolves the tenant, then all writes run on that
     // connection with the context set.
     let mut conn = state
@@ -294,9 +294,9 @@ pub async fn password_reset_confirm(
     )
     .await;
 
-    // SEC- - password:reset is a CONFIRM-time domain event (the
+    // password:reset is a CONFIRM-time domain event (the
     // password actually changed), not a request-time notification. The
-    // inbox row is written on the same transaction (SEC- inbox-first).
+    // inbox row is written on the same transaction (outbox-first rule).
     crate::events::emit_event_tx(
         &mut conn,
         row.env_id,
@@ -339,10 +339,10 @@ pub struct EmailVerifyResponse {
 /// `Host` / TLS headers) because the same email can exist as a
 /// separate user in each tenant.
 ///
-/// SEC- - enumeration-safe: unknown emails and
+/// enumeration-safe: unknown emails and
 /// already-verified emails return the same `{"status":"sent"}` shape
 /// (previously 404 / 409 revealed account existence). The short_code is
-/// no longer returned to unauthenticated callers (SEC-) -
+/// no longer returned to unauthenticated callers -
 /// it is logged for dev workflows and delivered via Sentin8:Post.
 /// Handle email verify request.
 #[utoipa::path(

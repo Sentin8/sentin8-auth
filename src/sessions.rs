@@ -45,7 +45,7 @@ impl Session {
     /// Insert a new session into the database.
     ///
     /// Accepts any executor (pool or transaction connection) so callers can
-    /// set the tenant context on the same connection first (SEC-).
+    /// set the tenant context on the same connection first.
     /// Create it.
     pub async fn create<'e, E>(
         executor: E,

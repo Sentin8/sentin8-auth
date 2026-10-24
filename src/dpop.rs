@@ -226,7 +226,7 @@ pub fn extract_dpop_header(headers: &axum::http::HeaderMap) -> Option<String> {
     Some(first.to_string()).filter(|s| !s.is_empty())
 }
 
-/// Validate AND verify a DPoP proof for a request (SEC-).
+/// Validate AND verify a DPoP proof for a request.
 ///
 /// This is the production entry point used by the token endpoint:
 /// 1. decode the proof (header + claims),

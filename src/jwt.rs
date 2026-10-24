@@ -264,7 +264,7 @@ impl AuthClaims {
         DateTime::from_timestamp(self.exp, 0).unwrap_or_else(Utc::now)
     }
 
-    /// Build claims for an OIDC **ID token** (SEC-).
+    /// Build claims for an OIDC **ID token**.
     ///
     /// Per OIDC Core : `iss` = Auth issuer, `sub` = user id, `aud` = the
     /// OAuth client_id, short-lived (≤ access token TTL), with `auth_time`

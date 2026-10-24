@@ -201,7 +201,7 @@ pub async fn issue_actor_token(
             "actor must be authenticated".into(),
         )
     })?;
-    // SEC- - mutating session endpoint: CSRF-gated (Bearer exempt).
+    // mutating session endpoint: CSRF-gated (Bearer exempt).
     crate::handlers::check_csrf(&headers, &actor_token_id)?;
     let actor_session = crate::sessions::Session::find_by_token(&state.pool, &actor_token_id)
         .await
@@ -358,7 +358,7 @@ pub async fn list_actor_tokens(
     headers: axum::http::HeaderMap,
     Query(q): Query<ListActorTokensQuery>,
 ) -> Result<Json<Vec<ActorEventResponse>>, (StatusCode, String)> {
-    // SEC- - admin guard (previously unauthenticated).
+    // admin guard (previously unauthenticated).
     let _auth = crate::sentin8or_auth::require_sentin8or_access(&state, &headers).await?;
     let limit = q.page_size.clamp(1, 200);
     let offset = (q.page.max(1) - 1) * limit;
@@ -416,7 +416,7 @@ pub async fn revoke_actor_token(
     headers: axum::http::HeaderMap,
     Json(req): Json<RevokeActorTokenRequest>,
 ) -> Result<Response, (StatusCode, String)> {
-    // SEC- - admin guard (previously unauthenticated).
+    // admin guard (previously unauthenticated).
     let _auth =
         crate::sentin8or_auth::require_sentin8or_access_write(&state, &headers, None).await?;
     // Mark the token as revoked in the audit table and add to a revocation set.
@@ -476,7 +476,7 @@ pub async fn list_actor_events(
     headers: axum::http::HeaderMap,
     Query(q): Query<ListActorTokensQuery>,
 ) -> Result<Json<Vec<ActorEventResponse>>, (StatusCode, String)> {
-    // SEC- - admin guard (previously unauthenticated), then
+    // admin guard (previously unauthenticated), then
     // delegate to the shared guarded query.
     list_actor_tokens(State(state), headers, Query(q)).await
 }

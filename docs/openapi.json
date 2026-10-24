@@ -32,6 +32,28 @@
         "security": []
       }
     },
+    "/.well-known/oauth-authorization-server": {
+      "get": {
+        "tags": [
+          "oauth"
+        ],
+        "summary": "The RFC 8414 authorization-server metadata alias\n(https://datatracker.ietf.org/doc/html/rfc8414) - serves exactly the\ndiscovery document (the OAuth 2.0 metadata form of the same issuer\ndata; the OID4VCI issuer cell resolves `authorization_servers`\nagainst this well-known path).",
+        "operationId": "discovery_rfc8414_alias",
+        "responses": {
+          "200": {
+            "description": "RFC 8414 AS metadata (alias of the OIDC discovery document)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DiscoveryDocument"
+                }
+              }
+            }
+          }
+        },
+        "security": []
+      }
+    },
     "/.well-known/openid-configuration": {
       "get": {
         "tags": [
@@ -193,7 +215,7 @@
           "oauth"
         ],
         "summary": "`POST /device/verify` - the signed-in user submits the user_code to\napprove a device sign-in (RFC 8628 ).",
-        "description": "SEC-: this endpoint **requires a valid session** (cookie or\nBearer). The approving user is the session's user - `user_id`, `org_id`,\nand `env_id` are taken from the session, NEVER from the request body,\nso knowledge of a user_code alone can no longer mint tokens for an\narbitrary user.\nHandle device verify.",
+        "description": "this endpoint **requires a valid session** (cookie or\nBearer). The approving user is the session's user - `user_id`, `org_id`,\nand `env_id` are taken from the session, NEVER from the request body,\nso knowledge of a user_code alone can no longer mint tokens for an\narbitrary user.\nHandle device verify.",
         "operationId": "device_verify",
         "requestBody": {
           "content": {
@@ -422,7 +444,7 @@
           {
             "name": "nonce",
             "in": "path",
-            "description": "OIDC `nonce` - echoed into the ID token (SEC-).\nThe nonce.",
+            "description": "OIDC `nonce` - echoed into the ID token.\nThe nonce.",
             "required": true,
             "schema": {
               "type": [
@@ -470,7 +492,7 @@
           {
             "name": "resource",
             "in": "path",
-            "description": "RFC 8707 resource indicator (SEC-).\nThe resource.",
+            "description": "RFC 8707 resource indicator.\nThe resource.",
             "required": true,
             "schema": {
               "type": [
@@ -673,7 +695,7 @@
           "wallet"
         ],
         "summary": "`POST /oauth/credential` - issuance request (OID4VCI §7.2, DESIGN\n§9a.7). Authorized by an access token whose scope carries the\ncredential type; the proof JWT binds the wallet key.",
-        "description": "# Errors\n- `400` unknown configuration or malformed proof.\n- `401` missing/invalid access token or proof verification failed.",
+        "description": "# Errors\n- `400` unknown configuration or malformed proof.\n- `401` missing/invalid access token or proof verification failed.\n`POST /oauth/credential` - the JSON-error wrapper: OID4VCI Final\n7.4 - the issuance endpoint's failures render\n`{\"error\": \"invalid_proof|invalid_nonce|invalid_credential_request\",\n \"error_description\": \"...\"}` (the suite's\nVCIValidateCredentialErrorResponse reads the `error` STRING).",
         "operationId": "credential",
         "requestBody": {
           "content": {
@@ -908,7 +930,7 @@
           "oauth"
         ],
         "summary": "`POST /oauth/device` - request a device code.",
-        "description": ".5 (design ): the requesting client is authenticated and\nthe device code is bound to it - the polling grant must present the\nsame client.\nHandle device authorization.",
+        "description": "5 (design ): the requesting client is authenticated and\nthe device code is bound to it - the polling grant must present the\nsame client.\nHandle device authorization.",
         "operationId": "device_authorization",
         "parameters": [
           {
@@ -1379,6 +1401,46 @@
         "responses": {
           "302": {
             "description": "Redirect to the registered post_logout_redirect_uri (or the local sign-in page when unregistered)"
+          }
+        },
+        "security": []
+      }
+    },
+    "/oauth/nonce": {
+      "get": {
+        "tags": [
+          "wallet"
+        ],
+        "summary": "`GET /oauth/nonce` - issuance nonce (Final §8.1): a fresh c_nonce\nthe wallet's next proof echoes. Stored in Valkey (TTL 300s) - the\nproof check consumes it (FailOnInvalidNonce family: a random or\nreplayed nonce must answer the 400 `invalid_nonce` error shape).",
+        "description": "# Errors\n- `500` nonce store unavailable.",
+        "operationId": "issuance_nonce",
+        "responses": {
+          "200": {
+            "description": "Fresh issuance nonce",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        },
+        "security": []
+      },
+      "post": {
+        "tags": [
+          "wallet"
+        ],
+        "summary": "`GET /oauth/nonce` - issuance nonce (Final §8.1): a fresh c_nonce\nthe wallet's next proof echoes. Stored in Valkey (TTL 300s) - the\nproof check consumes it (FailOnInvalidNonce family: a random or\nreplayed nonce must answer the 400 `invalid_nonce` error shape).",
+        "description": "# Errors\n- `500` nonce store unavailable.",
+        "operationId": "issuance_nonce",
+        "responses": {
+          "200": {
+            "description": "Fresh issuance nonce",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
           }
         },
         "security": []
@@ -7303,7 +7365,7 @@
           "ciba"
         ],
         "summary": "`POST /v1/ciba/approve` - user approves or denies from their device.",
-        "description": "SEC- - the approving user is the **session's** user; the\n`user_id` field in the body is ignored. Knowledge of an `auth_req_id`\nalone can no longer bind an arbitrary user to a CIBA request.\nHandle CIBA approve.",
+        "description": "the approving user is the **session's** user; the\n`user_id` field in the body is ignored. Knowledge of an `auth_req_id`\nalone can no longer bind an arbitrary user to a CIBA request.\nHandle CIBA approve.",
         "operationId": "ciba_approve",
         "requestBody": {
           "content": {
@@ -7422,7 +7484,7 @@
           "auth"
         ],
         "summary": "`POST /v1/email/verify` - request an email verification token.",
-        "description": "The email is scoped to the current tenant (resolved from the\n`Host` / TLS headers) because the same email can exist as a\nseparate user in each tenant.\n\nSEC- - enumeration-safe: unknown emails and\nalready-verified emails return the same `{\"status\":\"sent\"}` shape\n(previously 404 / 409 revealed account existence). The short_code is\nno longer returned to unauthenticated callers (SEC-) -\nit is logged for dev workflows and delivered via Sentin8:Post.\nHandle email verify request.",
+        "description": "The email is scoped to the current tenant (resolved from the\n`Host` / TLS headers) because the same email can exist as a\nseparate user in each tenant.\n\nenumeration-safe: unknown emails and\nalready-verified emails return the same `{\"status\":\"sent\"}` shape\n(previously 404 / 409 revealed account existence). The short_code is\nno longer returned to unauthenticated callers -\nit is logged for dev workflows and delivered via Sentin8:Post.\nHandle email verify request.",
         "operationId": "email_verify_request",
         "requestBody": {
           "content": {
@@ -7981,7 +8043,7 @@
           "sso"
         ],
         "summary": "`POST /v1/saml/acs/{connection_id}` - SAML Assertion Consumer Service.",
-        "description": "SEC- - **default deny**. Without a vendored SAML signature\nvalidation library, unsigned assertions are rejected in production\n(`SENTIN8_AUTH_ALLOW_UNSIGNED_SAML=1` opts in for dev/test). When\nallowed, we additionally validate: RelayState session (below),\n`InResponseTo`, audience restriction, and `NotOnOrAfter`. Full XML\nsignature validation remains a documented gap - SAML connections are\nnot used by any vertical today; use OIDC connections for SSO.\nHandle SAML acs.",
+        "description": "**default deny**. Without a vendored SAML signature\nvalidation library, unsigned assertions are rejected in production\n(`SENTIN8_AUTH_ALLOW_UNSIGNED_SAML=1` opts in for dev/test). When\nallowed, we additionally validate: RelayState session (below),\n`InResponseTo`, audience restriction, and `NotOnOrAfter`. Full XML\nsignature validation remains a documented gap - SAML connections are\nnot used by any vertical today; use OIDC connections for SSO.\nHandle SAML acs.",
         "operationId": "saml_acs",
         "parameters": [
           {
@@ -8094,7 +8156,7 @@
           "oauth"
         ],
         "summary": "`PUT /v1/security-profile` - update (or insert) the security profile for\nthe given scope + tenant.",
-        "description": "SEC- - admin guard. `sentin8:sys:admin`/`sentin8:dash:admin` (platform\noperators) may manage any scope row; org/env rows additionally require\nthe caller to have access to that org/env (RBAC) - enforced by passing\nthe target as `target_env_id` for env-scoped rows.\nHandle PUT security profile API.",
+        "description": "admin guard. `sentin8:sys:admin`/`sentin8:dash:admin` (platform\noperators) may manage any scope row; org/env rows additionally require\nthe caller to have access to that org/env (RBAC) - enforced by passing\nthe target as `target_env_id` for env-scoped rows.\nHandle PUT security profile API.",
         "operationId": "put_security_profile_api",
         "requestBody": {
           "content": {
@@ -9071,7 +9133,7 @@
               "string",
               "null"
             ],
-            "description": "OIDC nonce - bound into the ID token (SEC-).\nThe nonce."
+            "description": "OIDC nonce - bound into the ID token.\nThe nonce."
           },
           "redirect_uri": {
             "type": "string",
@@ -9082,14 +9144,21 @@
               "string",
               "null"
             ],
-            "description": "RFC 8707 resource indicator (SEC-).\nThe resource."
+            "description": "RFC 8707 resource indicator.\nThe resource."
           },
           "response_mode": {
             "type": [
               "string",
               "null"
             ],
-            "description": "OAuth response mode - `jwt` triggers a JARM response (SEC-).\nThe response mode."
+            "description": "OAuth response mode - `jwt` triggers a JARM response.\nThe response mode."
+          },
+          "response_type": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The authorize CELL's response_type (DESIGN §9a.13): the code/\"\nid_token hybrid cells deliver the id_token member in the\nFRAGMENT response; the record stamps it for the exchange check.\nThe response type."
           },
           "scope": {
             "type": "string",
@@ -9179,7 +9248,7 @@
               "string",
               "null"
             ],
-            "description": "OIDC `nonce` - echoed into the ID token (SEC-).\nThe nonce."
+            "description": "OIDC `nonce` - echoed into the ID token.\nThe nonce."
           },
           "prompt": {
             "type": [
@@ -9214,7 +9283,7 @@
               "string",
               "null"
             ],
-            "description": "RFC 8707 resource indicator (SEC-).\nThe resource."
+            "description": "RFC 8707 resource indicator.\nThe resource."
           },
           "response_mode": {
             "type": [
@@ -9489,9 +9558,6 @@
       "CibaRequest": {
         "type": "object",
         "description": "CIBA authorization request (POST /oauth/bc-authorize).\nRequest body for CIBA.",
-        "required": [
-          "client_id"
-        ],
         "properties": {
           "act_email": {
             "type": [
@@ -9519,11 +9585,21 @@
               "string",
               "null"
             ],
-            "description": "SEC- - private_key_jwt client assertion (RFC 7523).\nThe client assertion."
+            "description": "private_key_jwt client assertion (RFC 7523).\nThe client assertion."
+          },
+          "client_assertion_type": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "CIBA §7.1 - the assertion type accompanying `client_assertion`\n(MUST be urn:ietf:params:oauth:client-assertion-type:jwt-bearer\nwhen the assertion is present)."
           },
           "client_id": {
-            "type": "string",
-            "description": "client identifier."
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "client identifier - OPTIONAL on the wire: the FAPI-CIBA push may\ncarry ONLY the signed request object (client identity comes from\nthe verified assertion's iss / the object's client_id claim)."
           },
           "client_notification_token": {
             "type": [
@@ -9537,7 +9613,7 @@
               "string",
               "null"
             ],
-            "description": "SEC- - client authentication (client_secret_post). Public\nclients omit it.\nThe client secret."
+            "description": "client authentication (client_secret_post). Public\nclients omit it.\nThe client secret."
           },
           "delivery": {
             "type": [
@@ -9922,7 +9998,7 @@
               "string",
               "null"
             ],
-            "description": "SEC- - the session authorizing this approval.\nThe session token."
+            "description": "the session authorizing this approval.\nThe session token."
           },
           "state": {
             "type": [
@@ -9970,7 +10046,7 @@
               "string",
               "null"
             ],
-            "description": "SEC- - the session authorizing this denial.\nThe session token."
+            "description": "the session authorizing this denial.\nThe session token."
           },
           "state": {
             "type": [
@@ -10312,7 +10388,7 @@
           "env_id": {
             "type": "string",
             "format": "uuid",
-            "description": "The tenant the grant lives in - REQUIRED (SEC-: no silent\nfallback to the caller's env).\nenv identifier."
+            "description": "The tenant the grant lives in - REQUIRED (no silent\nfallback to the caller's env).\nenv identifier."
           },
           "scope": {
             "type": "string",
@@ -10631,6 +10707,8 @@
           "credential_endpoint",
           "deferred_credential_endpoint",
           "notification_endpoint",
+          "nonce_endpoint",
+          "batch_credential_issuance",
           "credential_configurations_supported"
         ],
         "properties": {
@@ -10640,6 +10718,9 @@
               "type": "string"
             },
             "description": "Authorization servers accepting the credential scopes - this\nissuer is also its own AS (the standard authorize/token surface)."
+          },
+          "batch_credential_issuance": {
+            "description": "Final §12.2.4 - the batch issuance posture (`batch_size` >= 2)."
           },
           "credential_configurations_supported": {
             "description": "One entry per credential type auth mints (SD-JWT VC profile)."
@@ -10655,6 +10736,10 @@
           "deferred_credential_endpoint": {
             "type": "string",
             "description": "`POST /oauth/deferred_credential` - deferred polling endpoint."
+          },
+          "nonce_endpoint": {
+            "type": "string",
+            "description": "Final §12.2.4 - the issuance nonce endpoint (the proof's\n`nonce` claim echoes a c_nonce minted here; replay/reuse of an\nunknown nonce rejects the proof)."
           },
           "notification_endpoint": {
             "type": "string",
@@ -10718,13 +10803,20 @@
       "CredentialRequest": {
         "type": "object",
         "description": "`POST /oauth/credential` request (OID4VCI §7.2).\nRequest body for credential.",
-        "required": [
-          "credential_configuration_id"
-        ],
         "properties": {
           "credential_configuration_id": {
-            "type": "string",
-            "description": "The configuration id being requested (a key of\n`credential_configurations_supported`)."
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The configuration id being requested (a key of\n`credential_configurations_supported`). Omitted in the\ncredential-identifier form (§7.2.1), where the access token is\npre-bound to the configuration via its scope."
+          },
+          "credential_identifier": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The credential-identifier form (§7.2.1): the identifier issued in\nthe deferred flow's `transaction_id` (or the token-scope-bound\nrequest) - the configuration resolves from the token scope."
           },
           "proof": {
             "oneOf": [
@@ -10733,9 +10825,25 @@
               },
               {
                 "$ref": "#/components/schemas/Proof",
-                "description": "Proof of possession JWT (`proof_type: jwt`) binding the wallet's\nkey: `iss` = client_id, `aud` = issuer, fresh `exp`, and the\nkey JWK embedded as `cnf.jwk`. Optional when the access token's\ngrant already carries the wallet key (pre-authorized flow)."
+                "description": "The Draft-11 single-proof form (`proof: {proof_type, jwt}`) -\nstill seen from earlier wallets; accepted (one-of)."
               }
             ]
+          },
+          "proofs": {
+            "type": [
+              "object",
+              "null"
+            ],
+            "description": "Final §7.2 proofs map: `{\"jwt\": [\"<proof-jwt>\"]}` - an object\nkeyed BY proof type carrying that type's JWT array (the suite's\nand wallets' wire form). Unknown keys = unsupported proof types\n(only `jwt` is implemented - rejected below).",
+            "additionalProperties": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "propertyNames": {
+              "type": "string"
+            }
           }
         }
       },
@@ -10950,7 +11058,7 @@
         "properties": {
           "user_code": {
             "type": "string",
-            "description": "The device user_code being approved. The approving user identity\ncomes from the session (SEC-) - never the body.\nThe user code."
+            "description": "The device user_code being approved. The approving user identity\ncomes from the session - never the body.\nThe user code."
           }
         }
       },
@@ -11011,7 +11119,6 @@
           "request_object_signing_alg_values_supported",
           "request_parameter_supported",
           "request_uri_parameter_supported",
-          "software_statement_supported",
           "token_endpoint_auth_signing_alg_values_supported",
           "claims_parameter_supported",
           "claims_supported",
@@ -11150,7 +11257,7 @@
               },
               {
                 "$ref": "#/components/schemas/MtlsEndpointAliases",
-                "description": "mTLS endpoint aliases (RFC 8705) - present when mTLS is advertised.\nThe mtls endpoint aliases."
+                "description": "The mtls endpoint aliases."
               }
             ]
           },
@@ -11160,6 +11267,23 @@
               "null"
             ],
             "description": "PAR endpoint (RFC 9126) - present when the security profile requires PAR.\nThe pushed authorization request endpoint."
+          },
+          "registration_endpoint": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "mTLS endpoint aliases (RFC 8705) - present when mTLS is advertised.\nRFC 7591 §4 / OIDC Discovery §4.1 - the dynamic-registration\nendpoint (anonymous for interactive clients; cert-gated for\nclient_credentials, DESIGN §4.3f). Advertised when the surface\nis served (the §9a.10 no-skip honesty rule)."
+          },
+          "registration_endpoint_auth_methods_supported": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "string"
+            },
+            "description": "RFC 7591 §4 - the registration endpoint's own auth methods\n(the endpoint is unauthenticated for interactive clients)."
           },
           "request_object_signing_alg_values_supported": {
             "type": "array",
@@ -11219,6 +11343,10 @@
             },
             "description": "The subject types supported."
           },
+          "tls_client_certificate_bound_access_tokens": {
+            "type": "boolean",
+            "description": "RFC 8705 §2 - the AS issues certificate-bound access tokens\n(advertised when the profile's require_mtls is on)."
+          },
           "token_endpoint": {
             "type": "string",
             "description": "The token endpoint."
@@ -11240,6 +11368,16 @@
           "userinfo_endpoint": {
             "type": "string",
             "description": "The userinfo endpoint."
+          },
+          "userinfo_signing_alg_values_supported": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "string"
+            },
+            "description": "OIDC Core §5.3.2 - the signing algs a signed userinfo response may\nuse (advertised when the dynamic signed-userinfo form is served)."
           }
         }
       },
@@ -12862,10 +13000,6 @@
       "ParRequest": {
         "type": "object",
         "description": "PAR endpoint (RFC 9126) - accepts a pushed authorization request.\nRequest body for par.",
-        "required": [
-          "response_type",
-          "client_id"
-        ],
         "properties": {
           "authorization_details": {
             "description": "RFC 9396 authorization_details.\nThe authorization details."
@@ -12877,9 +13011,19 @@
             ],
             "description": "private_key_jwt client assertion (RFC 9126 client auth).\nThe client assertion."
           },
+          "client_assertion_type": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "RFC 7523 §2.2 - the assertion type URN; REQUIRED (and exactly\n`urn:ietf:params:oauth:client-assertion-type:jwt-bearer`) when a\n`client_assertion` rides the push (the invalid-assertions module).\nThe client assertion type."
+          },
           "client_id": {
-            "type": "string",
-            "description": "client identifier."
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Client identifier (optional at the FORM layer - see\n`response_type`; the JAR's client or the client_assertion\nidentifies the client)."
           },
           "client_secret": {
             "type": [
@@ -12914,7 +13058,7 @@
               "string",
               "null"
             ],
-            "description": "OIDC nonce (SEC-).\nThe nonce."
+            "description": "OIDC nonce.\nThe nonce."
           },
           "redirect_uri": {
             "type": [
@@ -12930,16 +13074,33 @@
             ],
             "description": "The pushed request object (RFC 9126 + JAR RFC 9101): FAPI 2.0\npushes the authorization request's parameters as a JWT on the\nPAR call - its params are AUTHORITATIVE over any inline ones.\nThe request."
           },
+          "request_uri": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "A `request_uri` FORM parameter on the push. RFC 9126 §2 defines\nthe PAR request's parameters - `request_uri` is NOT one (it is\nthe RESPONSE payload): a push carrying it is malformed and the\nendpoint MUST reject it `invalid_request` (the suite's\n\"authorization request containing request_uri form param\"\nnegative)."
+          },
           "resource": {
             "type": [
               "string",
               "null"
             ],
-            "description": "RFC 8707 resource indicator (SEC-).\nThe resource."
+            "description": "RFC 8707 resource indicator.\nThe resource."
+          },
+          "response_mode": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "OAuth response mode (`query` default, `jwt` for JARM) - the\nJAR-only push carries it INSIDE the request object; the form\noverlay applies it to the stored record so the authorize +\ncontinue paths honor JARM (FAPI1/2)."
           },
           "response_type": {
-            "type": "string",
-            "description": "The response type."
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The response type (optional at the FORM layer: a JAR push\ncarries ONLY the request object - the params ride inside it,\nRFC 9101 §4; the missing-form 422 the suite's CallPAREndpoint\nsaw is a deserializer rejection, not an OAuth error)."
           },
           "scope": {
             "type": "string",
@@ -13546,6 +13707,13 @@
             },
             "description": "The grant types."
           },
+          "id_token_signed_response_alg": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "RFC 7591 - the registered ID-token signing preference the mint\nhonors (none = the unsigned-ID-token OIDC form; the plan's\noidcc-idtoken-unsigned module drives it)."
+          },
           "jwks": {
             "description": "The JWKS."
           },
@@ -13569,6 +13737,13 @@
               "null"
             ],
             "description": "The policy URI."
+          },
+          "post_logout_redirect_uris": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "OIDC RP-Initiated Logout (§2) - the URIs the client may be\nredirected to after logout; the OP validates the\nend-session request's URI against this allow-list."
           },
           "redirect_uris": {
             "type": "array",
@@ -13646,6 +13821,13 @@
               "null"
             ],
             "description": "The tos URI."
+          },
+          "userinfo_signed_response_alg": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "RFC 7591 - the registered userinfo signing preference (RS256 etc.\n= the userinfo response is a signed JWT; the Dynamic-OP plan's\noidcc-userinfo-rs256 module drives it)."
           }
         }
       },
@@ -13739,6 +13921,13 @@
               "null"
             ],
             "description": "The policy URI."
+          },
+          "post_logout_redirect_uris": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "The post-logout redirect uris (OIDC RP-Initiated Logout)."
           },
           "redirect_uris": {
             "type": "array",
@@ -15339,7 +15528,7 @@
               "string",
               "null"
             ],
-            "description": "Session token id - the CSRF header value (SEC-) for\ncookie-authenticated SPA mutations after a page reload. Same-origin\nexposure only, identical to the sign-in response body. Optional so\nolder internal callers parsing this struct stay compatible.\nThe session token."
+            "description": "Session token id - the CSRF header value for\ncookie-authenticated SPA mutations after a page reload. Same-origin\nexposure only, identical to the sign-in response body. Optional so\nolder internal callers parsing this struct stay compatible.\nThe session token."
           },
           "user_id": {
             "type": "string",
@@ -15592,7 +15781,7 @@
               "string",
               "null"
             ],
-            "description": "RFC 7523 private_key_jwt client assertion (SEC-).\nThe client assertion."
+            "description": "RFC 7523 private_key_jwt client assertion.\nThe client assertion."
           },
           "client_assertion_type": {
             "type": [
@@ -15666,7 +15855,7 @@
               "string",
               "null"
             ],
-            "description": "RFC 8707 resource indicator (SEC-) - the audience for the\nissued access token.\nThe resource."
+            "description": "RFC 8707 resource indicator - the audience for the\nissued access token.\nThe resource."
           },
           "scope": {
             "type": [

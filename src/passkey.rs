@@ -210,7 +210,7 @@ pub async fn enroll_begin(
     .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
     .ok_or_else(|| (StatusCode::NOT_FOUND, "user not found".into()))?;
 
-    // SEC- - tenant context on the same connection (design ).
+    // tenant context on the same connection (design ).
     let mut conn = state
         .pool
         .begin()
@@ -344,7 +344,7 @@ pub async fn enroll_finish(
         return Err((StatusCode::UNAUTHORIZED, "challenge mismatch".into()));
     }
 
-    // SEC- - ceremony completeness: verify the client origin
+    // ceremony completeness: verify the client origin
     // against the allow-list and the rpIdHash against the expected RP ID.
     verify_origin(&state, &headers, &client_data.origin)?;
     let rp_id = derive_rp_id(&state, &headers);
@@ -366,7 +366,7 @@ pub async fn enroll_finish(
         .await
         .map_err(|(_, e)| (StatusCode::INTERNAL_SERVER_ERROR, e))?;
 
-    // SEC- - tenant context on the same connection (design ).
+    // tenant context on the same connection (design ).
     let mut conn = state
         .pool
         .begin()
@@ -602,7 +602,7 @@ pub async fn verify_finish(
         return Err((StatusCode::UNAUTHORIZED, "challenge mismatch".into()));
     }
 
-    // SEC- - ceremony completeness: verify the client origin
+    // ceremony completeness: verify the client origin
     // against the allow-list and the rpIdHash against the expected RP ID.
     verify_origin(&state, &headers, &client_data.origin)?;
     let rp_id = derive_rp_id(&state, &headers);
@@ -645,7 +645,7 @@ pub async fn verify_finish(
         )
     })?;
 
-    // SEC- - sign counter clone detection. If the authenticator
+    // sign counter clone detection. If the authenticator
     // reports a counter, it must strictly increase; a non-increasing
     // counter means the credential private key has been cloned (or the
     // assertion is replayed). The new counter is persisted for the next
@@ -714,7 +714,7 @@ pub async fn verify_finish(
 
 // ── Internal helpers ───────────────────────────────────────────────────
 
-/// SEC- - allowed WebAuthn origins.
+/// allowed WebAuthn origins.
 ///
 /// Derived from `SENTIN8_AUTH_ALLOWED_ORIGINS` (comma-separated) plus the
 /// request's own hostname (the auth-ui is served from the auth host itself)
@@ -739,7 +739,7 @@ fn allowed_origins(state: &AppState, headers: &HeaderMap) -> Vec<String> {
     origins
 }
 
-/// SEC- - verify `clientData.origin` against the allow-list.
+/// verify `clientData.origin` against the allow-list.
 fn verify_origin(
     state: &AppState,
     headers: &HeaderMap,
@@ -760,7 +760,7 @@ fn verify_origin(
     Ok(())
 }
 
-/// SEC- - verify the rpIdHash (authenticatorData bytes 0..32)
+/// verify the rpIdHash (authenticatorData bytes 0..32)
 /// equals SHA-256 of the expected RP ID.
 fn verify_rp_id_hash(auth_data: &[u8], rp_id: &str) -> Result<(), (StatusCode, String)> {
     if auth_data.len() < 37 {
@@ -779,7 +779,7 @@ fn verify_rp_id_hash(auth_data: &[u8], rp_id: &str) -> Result<(), (StatusCode, S
     Ok(())
 }
 
-/// SEC- - extract the sign counter (authenticatorData bytes 33..37).
+/// extract the sign counter (authenticatorData bytes 33..37).
 fn extract_sign_count(auth_data: &[u8]) -> Result<u32, (StatusCode, String)> {
     if auth_data.len() < 37 {
         return Err((
@@ -835,7 +835,7 @@ struct ClientData {
     #[serde(rename = "type")]
     r#type: String,
     challenge: String,
-    /// SEC- - the origin is now VERIFIED against the allow-list
+    /// the origin is now VERIFIED against the allow-list
     /// (previously parsed and ignored).
     origin: String,
     #[serde(default)]
@@ -846,7 +846,7 @@ struct ClientData {
 struct ParsedClientData {
     r#type: String,
     challenge: String,
-    /// SEC- - the origin is verified against the allow-list by
+    /// the origin is verified against the allow-list by
     /// the finish handlers.
     origin: String,
     raw_bytes: Vec<u8>,

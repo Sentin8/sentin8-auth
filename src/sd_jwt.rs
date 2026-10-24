@@ -3,10 +3,12 @@
 // SPDX-FileCopyrightText: Copyright Contributors to the Sentin8:Auth
 // SPDX-License-Identifier: Apache-2.0
 
-//! SD-JWT (Selective Disclosure JWT) verification - EUDI.1.1.
+//! SD-JWT (Selective Disclosure JWT) verification.
 //!
-//! Basis for the OID4VP wallet sign-in flow (EUDI.) and OID4VCI issuance
-//! (EUDI.). Format per draft-ietf-oauth-selective-disclosure-jwt:
+//! Format per SD-JWT (https://www.ietf.org/archive/id/draft-ietf-oauth-selective-disclosure-jwt-14.html);
+//! credential shape per SD-JWT VC (https://www.ietf.org/archive/id/draft-ietf-oauth-sd-jwt-vc-05.html);
+//! revocation per OAuth Status List (https://www.ietf.org/archive/id/draft-ietf-oauth-status-list-14.html).
+//! Basis for the OID4VP wallet sign-in flow (wallet.rs) and OID4VCI issuance (oid4vci.rs).
 //!
 //! ```text
 //! <issuer-signed JWT>.<disclosure 0>~<disclosure 1>...~<optional KB-JWT>
@@ -20,8 +22,8 @@
 //!
 //! This module verifies:
 //! 1. **Issuer signature** - via a trusted-issuer JWKS (or the platform
-//! JWKS when the credential is self-issued; EUDI issuer keys come from
-//! the EU trust list in production).
+//! JWKS when the credential is self-issued; production issuer keys come
+//! from the EU trust list).
 //! 2. **Disclosures** - every `_sd` digest resolves to a decoded
 //! disclosure; hash mismatch → reject.
 //! 3. **Key binding** - `cnf.jwk` in the issuer-signed part must equal the
@@ -32,7 +34,8 @@
 //!
 //! Note: this module verifies the **flat top-level disclosure set** - the
 //! common wallet shape (`_sd` at the root and inside simple subobjects).
-//! Recursive array-element disclosures are Phase-2 (EUDI.2.x) work.
+//! Recursive array-element disclosures are deferred work
+//! (tracked under the wallet roadmap).
 
 use sha2::{Digest, Sha256};
 
@@ -214,8 +217,8 @@ pub fn verify_presentation(
         // Salt+name+value raw string hashes to one of the _sd digests.
         let digest = b64_sha256(d);
         if !sd_digests.contains(&digest) {
-            // Nested (array/object) disclosures are Phase-2 (EUDI.2.x);
-            // today a disclosure must match a top-level `_sd` entry.
+            // Nested (array/object) disclosures are deferred (wallet
+            // roadmap); today a disclosure must match a top-level `_sd` entry.
             return Err(SdJwtError::HashMismatch { disclosure: i });
         }
         if !seen.insert(digest) {

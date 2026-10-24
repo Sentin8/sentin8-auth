@@ -3,7 +3,9 @@
 // SPDX-FileCopyrightText: Copyright Contributors to the Sentin8:Auth
 // SPDX-License-Identifier: Apache-2.0
 
-//! OIDC Discovery §2.1 WebFinger (RFC 7033) - `GET /.well-known/webfinger`.
+//! OIDC Discovery §2.1 WebFinger (RFC 7033,
+//! https://datatracker.ietf.org/doc/html/rfc7033) -
+//! `GET /.well-known/webfinger`.
 //!
 //! The Dynamic OP conformance profile requires WebFinger: a relying party
 //! discovers the issuer for a user identifier (`acct:`/email) before

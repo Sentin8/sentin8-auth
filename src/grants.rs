@@ -3,7 +3,8 @@
 // SPDX-FileCopyrightText: Copyright Contributors to the Sentin8:Auth
 // SPDX-License-Identifier: Apache-2.0
 
-//! FAPI 2.0 Grant Management.
+//! FAPI 2.0 Grant Management
+//! (https://openid.net/specs/fapi-grant-management.html).
 //!
 //! A *grant* is one durable consent/authorization between a user and a
 //! client. Access and refresh tokens issued through the authorization-code
@@ -70,7 +71,7 @@ pub struct CreateGrantRequest {
     #[serde(default)]
     /// The authorization details.
     pub authorization_details: Option<serde_json::Value>,
-    /// The tenant the grant lives in - REQUIRED (SEC-: no silent
+    /// The tenant the grant lives in - REQUIRED (no silent
     /// fallback to the caller's env).
     /// env identifier.
     pub env_id: Uuid,
@@ -210,7 +211,7 @@ async fn fetch_grant(
     headers: &HeaderMap,
     id: Uuid,
 ) -> Result<GrantResponse, (StatusCode, String)> {
-    // RLS context: run on the same connection (SEC-).
+    // RLS context: run on the same connection.
     let mut conn = state
         .pool
         .acquire()

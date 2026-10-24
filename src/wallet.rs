@@ -3,20 +3,23 @@
 // SPDX-FileCopyrightText: Copyright Contributors to the Sentin8:Auth
 // SPDX-License-Identifier: Apache-2.0
 
-//! EUDI wallet integration - OID4VP sign-in.
+//! EUDI wallet integration - OID4VP sign-in
+//! (https://openid.net/specs/openid-4-verifiable-presentations-1_0.html)
+//! and the platform-native OID4VCI endpoints
+//! (https://openid.net/specs/openid-4-verifiable-credential-issuance-1_0.html).
 //!
-//! Single-identity-plane invariants :
+//! Single-identity-plane invariants (DESIGN.md §1):
 //! 1. Wallet verification replaces **authentication only** - after a
 //! successful presentation, Auth issues its own session + tokens.
 //! 2. Wallet keys are verified against the connection's trusted issuers,
 //! never added to Auth's JWKS.
 //!
-//! Endpoints (EUDI.1.3 + EUDI.):
+//! Endpoints (DESIGN.md §9a.7):
 //! - `GET /oauth/authorize?prompt=wallet` - builds the OID4VP authorization
 //! request as a signed request object + `openid4vp://` deep link.
 //! - `POST /oauth/vp/response` - wallet `direct_post` callback: verifies the
-//! presentation (EUDI.1.1 `sd_jwt` module), checks trusted issuer + LoA
-//! (EUDI.), find-or-creates the user ( federation pattern), and
+//! presentation (`sd_jwt` module), checks trusted issuer + LoA,
+//! find-or-creates the user (federation pattern), and
 //! issues the standard session + auth code.
 //! - `GET /v1/auth/wallet/metadata` - public wallet-facing metadata.
 
@@ -36,7 +39,7 @@ use crate::dtos::{
 };
 use crate::handlers::AppState;
 
-// ── EUDI. - eudi_wallet enterprise-connection config ───────────────
+// ── eudi_wallet enterprise-connection config ─────────────────────
 
 /// Extended metadata for a `eudi_wallet` enterprise connection (stored in
 /// `enterprise_connections.config` JSONB).
@@ -124,7 +127,7 @@ fn trusted_jwks(cfg: &WalletConnectionConfig) -> Vec<(String, Vec<serde_json::Va
         .collect()
 }
 
-// ── EUDI. - OID4VP sign-in flow ─────────────────────────────────────
+// ── OID4VP sign-in flow ─────────────────────────────────────
 
 const VP_PENDING_TTL_SECS: u64 = 600;
 
@@ -289,9 +292,9 @@ pub async fn vp_response(
         ));
     };
 
-    // ── EUDI. - SD-JWT verification ────────────────────────────────
+    // ── SD-JWT verification ────────────────────────────────
     let presentation: &str = &req.vp_token;
-    // Trusted issuer keys from the connection config (EUDI trust-list
+    // Trusted issuer keys from the connection config (EU trust list
     // resolution is ; uses operator-provisioned JWKS).
     let trusted = trusted_jwks(&cfg);
     if trusted.is_empty() {
@@ -329,7 +332,7 @@ pub async fn vp_response(
         ));
     }
 
-    // ── EUDI. - assurance mapping ──────────────────────────────────
+    // ── assurance mapping ──────────────────────────────────
     let presented_loa = verified
         .claims
         .get("acr")
@@ -369,7 +372,7 @@ pub async fn vp_response(
            "scope": "openid profile email",
            "user_id": user.id.to_string(),
            "env_id": pending_env.to_string(),
-    // EUDI. - assurance claims carried into the ID token.
+    // Assurance claims carried into the ID token.
            "acr": acr,
            "amr": amr,
            "nonce": pending.get("nonce"),
@@ -438,7 +441,7 @@ async fn find_or_create_wallet_user(
         .to_string();
 
     // keys the user on (env_id, email); the dedicated external-id
-    // table is EUDI.2.x. Returns the plain user row.
+    // table is the wallet roadmap. Returns the plain user row.
     let row: Option<(Uuid, String)> =
         sqlx::query_as("SELECT id, first_name FROM users WHERE env_id = $1 AND email = $2")
             .bind(env_id)
@@ -469,7 +472,7 @@ async fn find_or_create_wallet_user(
     Ok(WalletUser { id, email })
 }
 
-// ── Status List 2021 (shared with EUDI.2.1 revocation) ────────────────
+// ── Status List 2021 (shared with revocation) ────────────────
 
 /// Fetch a Status List document (10s timeout).
 async fn fetch_status_list_doc(_valkey_url: &str, uri: &str) -> Result<serde_json::Value, String> {
@@ -518,7 +521,7 @@ fn sha_hex(input: &str) -> String {
     d.iter().map(|b| format!("{b:02x}")).collect()
 }
 
-// ── EUDI. - wallet-facing metadata ──────────────────────────────────
+// ── wallet-facing metadata ──────────────────────────────────
 
 /// `GET /v1/auth/wallet/metadata` - public wallet metadata (formats, trusted
 /// issuers, the required presentation definition, the response endpoint).
@@ -558,7 +561,7 @@ pub async fn wallet_metadata(
         vp_response_endpoint: format!("{}/oauth/vp/response", state.config.issuer),
     })
 }
-// ── EUDI. - OID4VCI credential issuance ───────────────────
+// ── OID4VCI credential issuance ───────────────────
 
 /// `GET /.well-known/openid-credential-verifier` - OID4VP verifier
 /// metadata (DESIGN §9a.7): the client id, the response endpoints, and
@@ -997,7 +1000,7 @@ pub async fn credential_revoke(
     }))
 }
 
-/// Encode a 1-byte status list (MSB-first, entry 0 = bit 7) - EUDI.2.1.
+/// Encode a 1-byte status list (MSB-first, entry 0 = bit 7) - the wallet roadmap.
 fn status_list_b64(bit: u8) -> String {
     list_b64_with_bits(&[(bit, 0)], 16)
 }
@@ -1022,7 +1025,7 @@ fn list_b64_with_bits(entries: &[(u8, u32)], cap: u32) -> String {
     base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(&compressed)
 }
 
-// ── EUDI. - QES signature ceremony broker ────────────────
+// ── QES signature ceremony broker ────────────────
 
 /// `POST /oauth/signature/request` - QES signature-ceremony broker.
 /// The vertical payment service submits the transaction hash + binding

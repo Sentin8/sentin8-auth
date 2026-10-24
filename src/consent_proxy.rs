@@ -114,7 +114,7 @@ async fn resolve_vertical_service_url(pool: &sqlx::PgPool, service_type: &str) -
     ))
 }
 
-/// Validate the session for consent-proxy requests (SEC-).
+/// Validate the session for consent-proxy requests.
 ///
 /// Backlog claimed the `session_token` query param was validated -
 /// it never was. Any caller could drive the consent UI/approve/deny proxy.
@@ -185,7 +185,7 @@ pub async fn proxy_consent_ui(
     State(state): State<AppState>,
     Query(q): Query<ConsentProxyQuery>,
 ) -> Result<Json<sentin8::rfw::AdminUiResponse>, (StatusCode, String)> {
-    // SEC- - validate the session before proxying (read: lenient).
+    // validate the session before proxying (read: lenient).
     let _session = require_consent_session(&state, &q, false).await?;
 
     let scopes = q.scopes.as_deref().unwrap_or("");
@@ -256,7 +256,7 @@ pub struct ConsentApproveProxyRequest {
     pub user_id: Option<String>,
     /// The selected account ids.
     pub selected_account_ids: Option<Vec<String>>,
-    /// SEC- - the session authorizing this approval.
+    /// the session authorizing this approval.
     /// The session token.
     pub session_token: Option<String>,
 }
@@ -278,7 +278,7 @@ pub async fn proxy_consent_approve(
     State(state): State<AppState>,
     Json(req): Json<ConsentApproveProxyRequest>,
 ) -> Result<Json<sentin8::rfw::AdminUiResponse>, (StatusCode, String)> {
-    // SEC- - validate the session before proxying.
+    // validate the session before proxying.
     let q = ConsentProxyQuery {
         consent_flow: req.consent_flow.clone(),
         scopes: req.scopes.clone(),
@@ -335,7 +335,7 @@ pub struct ConsentDenyProxyRequest {
     pub redirect_uri: Option<String>,
     /// The state.
     pub state: Option<String>,
-    /// SEC- - the session authorizing this denial.
+    /// the session authorizing this denial.
     /// The session token.
     pub session_token: Option<String>,
 }
@@ -357,7 +357,7 @@ pub async fn proxy_consent_deny(
     State(state): State<AppState>,
     Json(req): Json<ConsentDenyProxyRequest>,
 ) -> Result<Json<sentin8::rfw::AdminUiResponse>, (StatusCode, String)> {
-    // SEC- - validate the session before proxying.
+    // validate the session before proxying.
     let q = ConsentProxyQuery {
         consent_flow: req.consent_flow.clone(),
         scopes: req.scopes.clone(),

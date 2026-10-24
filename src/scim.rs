@@ -3,9 +3,11 @@
 // SPDX-FileCopyrightText: Copyright Contributors to the Sentin8:Auth
 // SPDX-License-Identifier: Apache-2.0
 
-//! SCIM+ SEC-.
+//! SCIM 2.0 - schema RFC 7643
+//! (https://datatracker.ietf.org/doc/html/rfc7643), protocol RFC 7644
+//! (https://datatracker.ietf.org/doc/html/rfc7644).
 //!
-//! Full SCIM 2.0 protocol (RFC 7643 + 7644) for user provisioning and management.
+//! Full SCIM 2.0 protocol for user provisioning and management.
 //! Endpoints:
 //! GET /scim/v2/Users - list/search with SCIM filtering
 //! POST /scim/v2/Users - create user
@@ -17,7 +19,7 @@
 //! GET /scim/v2/ServiceProviderConfig - capabilities metadata
 //! GET /scim/v2/ResourceTypes - supported resource types
 //!
-//! Authentication (SEC-): the Bearer token is **verified** -
+//! Authentication: the Bearer token is **verified** -
 //! signature + issuer + expiry via Auth's own signing keys - and must
 //! carry `sentin8:scim:read` / `sentin8:scim:write`. Previously the token was decoded
 //! without verification, so any forged JWT with a `scope` claim could
@@ -376,7 +378,7 @@ pub async fn create_user(
         Err(e) => return Err((StatusCode::INTERNAL_SERVER_ERROR, e.to_string())),
     };
 
-    // SEC- - SCIM mutations emit the same domain events as the
+    // SCIM mutations emit the same domain events as the
     // admin API (the design catalog lists SCIM as a user.* trigger).
     let created_id: Uuid = row.try_get("id").unwrap_or_default();
     crate::events::emit_event(
@@ -477,7 +479,7 @@ pub async fn replace_user(
 
     match row {
         Some(r) => {
-            // SEC- - SCIM mutations emit the same domain events as the
+            // SCIM mutations emit the same domain events as the
             // admin API (the design catalog lists SCIM as a user.* trigger).
             crate::events::emit_event(
                 &state.pool,
@@ -594,7 +596,7 @@ pub async fn patch_user(
 
     match row {
         Some(r) => {
-            // SEC- - SCIM mutations emit the same domain events as the
+            // SCIM mutations emit the same domain events as the
             // admin API (the design catalog lists SCIM as a user.* trigger).
             let updated_id: Uuid = r.try_get("id").unwrap_or_default();
             crate::events::emit_event(
@@ -643,7 +645,7 @@ pub async fn delete_user(
         return Err((StatusCode::NOT_FOUND, "user not found".into()));
     }
 
-    // SEC- - SCIM delete (deactivate) emits the catalog event.
+    // SCIM delete (deactivate) emits the catalog event.
     crate::events::emit_event(
         &state.pool,
         env_id,
@@ -767,7 +769,7 @@ async fn validate_scim_auth(
         .and_then(|s| s.strip_prefix("Bearer "))
         .ok_or_else(|| (StatusCode::UNAUTHORIZED, "missing Bearer token".into()))?;
 
-    // SEC- - VERIFIED decode: signature + issuer + expiry via
+    // VERIFIED decode: signature + issuer + expiry via
     // Auth's own keys. A forged token fails here instead of being honored.
     let claims = state
         .keys

@@ -114,7 +114,7 @@ pub async fn list_endpoints(
     headers: axum::http::HeaderMap,
     Query(_q): Query<ListEndpointsQuery>,
 ) -> Result<Json<Vec<EndpointResponse>>, (StatusCode, String)> {
-    // SEC- - admin guard + tenant scoping. The previous
+    // admin guard + tenant scoping. The previous
     // `WHERE ($1::uuid IS NULL OR env_id = $1)` listed EVERY tenant's
     // webhook endpoints when env_id was omitted - a cross-tenant leak.
     let auth = crate::sentin8or_auth::require_sentin8or_access(&state, &headers).await?;
@@ -162,7 +162,7 @@ pub async fn create_endpoint(
     headers: axum::http::HeaderMap,
     Json(req): Json<CreateEndpointRequest>,
 ) -> Result<Response, (StatusCode, String)> {
-    // SEC- - admin guard + tenant scoping.
+    // admin guard + tenant scoping.
     let auth =
         crate::sentin8or_auth::require_sentin8or_access_write(&state, &headers, None).await?;
     if req.url.is_empty() || (!req.url.starts_with("https://") && !req.url.starts_with("http://")) {
@@ -173,9 +173,9 @@ pub async fn create_endpoint(
     let cipher = encrypt_secret(&state.config, &raw_secret);
 
     let event_types = req.event_types.unwrap_or_else(|| vec!["*".to_string()]);
-    // SEC- - the row is created in the CALLER's env; a
+    // the row is created in the CALLER's env; a
     // request-supplied env_id is ignored (it could target another tenant).
-    // SEC- - tenant context on the same connection (design ).
+    // tenant context on the same connection (design ).
     let mut conn = state
         .pool
         .begin()
@@ -248,7 +248,7 @@ pub async fn get_endpoint(
     headers: axum::http::HeaderMap,
     Path(id): Path<Uuid>,
 ) -> Result<Json<EndpointResponse>, (StatusCode, String)> {
-    // SEC- - admin guard + tenant scoping: the row must belong
+    // admin guard + tenant scoping: the row must belong
     // to the caller's env (otherwise a tenant could read another
     // tenant's webhook by id).
     let auth = crate::sentin8or_auth::require_sentin8or_access(&state, &headers).await?;
@@ -292,10 +292,10 @@ pub async fn delete_endpoint(
     headers: axum::http::HeaderMap,
     Path(id): Path<Uuid>,
 ) -> Result<StatusCode, (StatusCode, String)> {
-    // SEC- - admin guard + tenant scoping.
+    // admin guard + tenant scoping.
     let auth =
         crate::sentin8or_auth::require_sentin8or_access_write(&state, &headers, None).await?;
-    // SEC- - tenant context on the same connection (design ).
+    // tenant context on the same connection (design ).
     let mut conn = state
         .pool
         .begin()
@@ -370,7 +370,7 @@ pub async fn list_outbox(
     headers: axum::http::HeaderMap,
     Query(_q): Query<ListEndpointsQuery>,
 ) -> Result<Json<Vec<OutboxEntryResponse>>, (StatusCode, String)> {
-    // SEC- - admin guard + tenant scoping (caller's env only).
+    // admin guard + tenant scoping (caller's env only).
     let auth = crate::sentin8or_auth::require_sentin8or_access(&state, &headers).await?;
     let rows = sqlx::query!(
         r#"SELECT id, endpoint_id, event_type, payload, retry_count, delivered_at, failed_at, created_at
@@ -434,7 +434,7 @@ pub async fn list_attempts(
     headers: axum::http::HeaderMap,
     Path(outbox_id): Path<Uuid>,
 ) -> Result<Json<Vec<AttemptResponse>>, (StatusCode, String)> {
-    // SEC- - admin guard + tenant scoping: only attempts for
+    // admin guard + tenant scoping: only attempts for
     // outbox rows in the caller's env are visible.
     let auth = crate::sentin8or_auth::require_sentin8or_access(&state, &headers).await?;
     let rows = sqlx::query!(

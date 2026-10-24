@@ -158,7 +158,7 @@ pub async fn sign_in(
     let user = match user {
         Some(u) => u,
         None => {
-            // SEC- - timing-safe rejection: run a dummy bcrypt
+            // timing-safe rejection: run a dummy bcrypt
             // verify so the nonexistent-user path costs the same as the
             // wrong-password path. Without this, a timing side channel
             // enumerates registered emails (bcrypt ≈ 100ms vs ~0ms).
@@ -182,7 +182,7 @@ pub async fn sign_in(
         .map(|h| bcrypt_verify(&req.password, h).unwrap_or(false))
         .unwrap_or(false);
     if !valid {
-        // EUDI. - app-password fallback: the presented credential may
+        // app-password fallback: the presented credential may
         // be one of the user's scoped-down device credentials. A match
         // issues a DOWNSCOPED token (whitelist ∩ role scopes) with
         // token_tp = "app_password" and no session (short-lived by
@@ -218,7 +218,7 @@ pub async fn sign_in(
     //reset the failed-attempt counter on success.
     let _ = crate::bot_protection::reset_failed_signins(&state, user.id).await;
 
-    // Create a session. SEC- - run inside a transaction with the
+    // Create a session. run inside a transaction with the
     // tenant context on the same connection (RLS insert under the app role).
     let token_id = Uuid::new_v4().to_string();
     let mut session_tx = state
@@ -380,7 +380,7 @@ pub async fn sign_up(
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
     let user_id = Uuid::new_v4();
-    // SEC- - set the tenant context on this connection via a
+    // set the tenant context on this connection via a
     // transaction, then run the INSERT on the SAME connection. Without the
     // context, FORCE ROW LEVEL SECURITY blocks the insert for the app role
     // (the 500 sign-up failures under the NOBYPASSRLS role).
@@ -512,7 +512,7 @@ pub async fn sign_up(
     )
     .await;
 
-    // Create a session for the new user. SEC- - same-connection
+    // Create a session for the new user. same-connection
     // tenant context: reuse a transaction so the RLS INSERT succeeds under
     // the app role.
     let token_id = Uuid::new_v4().to_string();
@@ -569,7 +569,7 @@ pub struct SessionInfo {
     pub env_id: Uuid,
     /// expires time.
     pub expires_at: chrono::DateTime<chrono::Utc>,
-    /// Session token id - the CSRF header value (SEC-) for
+    /// Session token id - the CSRF header value for
     /// cookie-authenticated SPA mutations after a page reload. Same-origin
     /// exposure only, identical to the sign-in response body. Optional so
     /// older internal callers parsing this struct stay compatible.
@@ -608,7 +608,7 @@ pub async fn get_session(
 
     match session {
         Some(s) if s.is_valid() => {
-            // Same-origin SPA use only (SEC-): the token id is the CSRF
+            // Same-origin SPA use only: the token id is the CSRF
             // header value for cookie-authenticated mutations after a page
             // reload (the sign-in response body is not in flight anymore).
             // Same exposure as the sign-in response body - never a new
@@ -649,7 +649,7 @@ pub async fn get_session(
 )]
 pub async fn sign_out(State(state): State<AppState>, headers: HeaderMap) -> Response {
     if let Some(token_id) = extract_session_token(&headers) {
-        // SEC- - mutating session endpoint: CSRF-gated (Bearer exempt).
+        // mutating session endpoint: CSRF-gated (Bearer exempt).
         if crate::handlers::check_csrf(&headers, &token_id).is_err() {
             return (
                 StatusCode::FORBIDDEN,
@@ -1206,7 +1206,7 @@ pub async fn consent_accounts(
 // ── Helpers ─────────────────────────────────────────────────────────────
 
 /// Fetch all scopes for a user by resolving the full Role/Group graph
-/// . Returns a deduplicated list of scope strings.
+/// Returns a deduplicated list of scope strings.
 /// Collect every scope granted to a user, resolving the full Role/Group
 /// graph:
 ///
@@ -1704,7 +1704,7 @@ pub async fn client_role_names(
 }
 
 /// Extract the session token from the `__session` cookie header.
-/// SEC- - run a read/write against RLS tables with the tenant
+/// run a read/write against RLS tables with the tenant
 /// context set on the same connection.
 ///
 /// `sentin8_set_tenant_context` uses `set_config(..., true)` which is
@@ -1750,7 +1750,7 @@ where
 
 /// Extract session token.
 pub fn extract_session_token(headers: &HeaderMap) -> Option<String> {
-    // SEC- - also accept `Authorization: Bearer <session_token>`
+    // also accept `Authorization: Bearer <session_token>`
     // so non-browser clients (e2e fixtures, the authenticator app) can
     // drive session-authenticated endpoints without cookies.
     if let Some(auth) = headers
@@ -1772,7 +1772,7 @@ pub fn extract_session_token(headers: &HeaderMap) -> Option<String> {
     None
 }
 
-/// SEC- - CSRF defense on mutating session-authenticated endpoints.
+/// CSRF defense on mutating session-authenticated endpoints.
 ///
 /// A cross-site form POST cannot set custom headers, so requiring the
 /// `X-Sentin8-CSRF` header defeats it. Bearer-token callers are exempt -

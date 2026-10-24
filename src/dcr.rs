@@ -687,7 +687,7 @@ pub async fn register(
     let rat_hash = hash_token(&registration_access_token);
 
     let now = Utc::now();
-    // SEC- - run the INSERT inside a transaction with the tenant
+    // run the INSERT inside a transaction with the tenant
     // context on the same connection (RLS under the app role; set_config is
     // transaction-local so the pool-only path denied the write).
     let mut tx = state

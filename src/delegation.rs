@@ -211,7 +211,7 @@ pub async fn delegate_access_token(
                         return Err((StatusCode::UNAUTHORIZED, "mTLS certificate mismatch".into()));
                     }
                     (Some(_), None) => {
-                        // SEC- - the token is cert-bound but no mTLS cert
+                        // the token is cert-bound but no mTLS cert
                         // header was presented: the request bypassed TLS or mTLS
                         // wasn't used. This is now a HARD REJECT - a stolen cert-bound
                         // token must be useless. `SENTIN8_AUTH_DEV_NO_MTLS=1` is the
@@ -359,7 +359,7 @@ pub async fn delegate_access_token(
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
     // 7. Audit log.
-    // SEC- - tenant context on the same connection (design ).
+    // tenant context on the same connection (design ).
     let mut conn = state
         .pool
         .begin()

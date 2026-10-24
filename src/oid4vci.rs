@@ -602,7 +602,7 @@ async fn verify_credential_dpop(
 /// # Errors
 /// - `500` nonce store unavailable.
 #[utoipa::path(
-    get,
+    method(get, post),
     path = "/oauth/nonce",
     responses(
         (status = 200, description = "Fresh issuance nonce", body = serde_json::Value),

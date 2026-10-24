@@ -33,7 +33,7 @@ use crate::enterprise_connections::decode_jwt_unverified;
 use crate::handlers::AppState;
 use crate::jwt::AuthClaims;
 
-// ── Client authentication (SEC-) ─────────────────────────────
+// ── Client authentication ─────────────────────────────
 //
 // A single extractor that resolves + authenticates the OAuth client on
 // every client-authenticated endpoint (token, introspect, revoke, PAR,
@@ -88,7 +88,7 @@ pub struct AuthenticatedClient {
     /// Presented client cert thumbprint (mTLS) - used to bind issued tokens.
     /// The cert thumbprint.
     pub cert_thumbprint: Option<String>,
-    /// DPoP key thumbprint when a valid proof was presented (SEC-).
+    /// DPoP key thumbprint when a valid proof was presented.
     /// The DPoP jkt.
     pub dpop_jkt: Option<String>,
     /// Explicit DPoP exemption (oauth_clients.dpop_exempt). True only
@@ -97,7 +97,7 @@ pub struct AuthenticatedClient {
     /// The DPoP exempt.
     pub dpop_exempt: bool,
     /// RFC 9396 `authorization_details` types this client may request
-    /// . Empty = RAR not permitted for this client.
+    /// Empty = RAR not permitted for this client.
     /// The authorization details types.
     pub authorization_details_types: Vec<String>,
     /// RFC 7591 - the registered ID-token signing preference
@@ -483,7 +483,7 @@ fn hex_encode(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 
-/// Resolve + authenticate the OAuth client for a request (SEC-).
+/// Resolve + authenticate the OAuth client for a request.
 ///
 /// `require_secret`: when true, a confidential client MUST authenticate
 /// (secret / assertion / mTLS). When false (public-client endpoints), the
@@ -533,7 +533,7 @@ pub async fn authenticate_client(
         )
     })?;
 
-    // SEC- - RLS: the client lookup must run with the tenant
+    // RLS: the client lookup must run with the tenant
     // context on the same connection. set_config(..., true) is
     // TRANSACTION-local - on a bare pooled connection it evaporates
     // immediately, so the lookup runs inside a transaction.
@@ -754,7 +754,7 @@ pub async fn authenticate_client(
             .as_deref()
             .ok_or_else(|| (StatusCode::UNAUTHORIZED, "invalid client".into()))?;
         if !bcrypt_verify(secret, stored).unwrap_or(false) {
-            // Uniform error - no client-existence oracle (SEC-).
+            // Uniform error - no client-existence oracle.
             return Err((StatusCode::UNAUTHORIZED, "invalid client".into()));
         }
         auth_method = if basic.is_some() {
@@ -806,7 +806,7 @@ pub async fn authenticate_client(
 }
 
 /// Verify a token that Auth itself issued and is about to *decide on*
-/// (SEC-): signature + `iss` + `exp`.
+///: signature + `iss` + `exp`.
 ///
 /// This is the verified-decode helper that replaces
 /// `decode_token_unverified` on every path where Auth is the deciding
@@ -827,7 +827,7 @@ fn verify_access_token_claims(
         // domain is OPAQUE - the platform-derived
         // `{env}.{org}.{domain}` shape, a custom env domain, anything the
         // env registered. No structural parsing: the signature is the
-        // trust anchor (Auth is the single issuer - verify() above), and
+        // trust anchor (Auth is the single issuer - verify above), and
         // this check only admits the auth-host issuer family.
         let tenant_issuer_ok = claims.iss.starts_with("https://auth.");
         if !tenant_issuer_ok {
@@ -1138,6 +1138,27 @@ pub struct MtlsEndpointAliases {
     pub token_endpoint: String,
     /// The revocation endpoint.
     pub revocation_endpoint: String,
+}
+
+/// The RFC 8414 authorization-server metadata alias
+/// (https://datatracker.ietf.org/doc/html/rfc8414) - serves exactly the
+/// discovery document (the OAuth 2.0 metadata form of the same issuer
+/// data; the OID4VCI issuer cell resolves `authorization_servers`
+/// against this well-known path).
+#[utoipa::path(
+    get,
+    path = "/.well-known/oauth-authorization-server",
+    responses(
+        (status = 200, description = "RFC 8414 AS metadata (alias of the OIDC discovery document)", body = DiscoveryDocument),
+    ),
+    security(),
+    tag = "oauth",
+)]
+pub async fn discovery_rfc8414_alias(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> Json<DiscoveryDocument> {
+    discovery(State(state), headers).await
 }
 
 /// Handle discovery.
@@ -1482,7 +1503,7 @@ pub struct SecurityProfile {
     pub require_jwt_introspection: bool,
     /// The require iss.
     pub require_iss: bool,
-    /// SEC- - PKCE is mandatory for authorization requests when
+    /// PKCE is mandatory for authorization requests when
     /// the profile mandates PAR (FAPI 2.0 default). Mirrors `require_par`
     /// until the profile table grows a dedicated column.
     /// The require pkce.
@@ -1856,7 +1877,7 @@ pub async fn get_security_profile_api(
 /// `PUT /v1/security-profile` - update (or insert) the security profile for
 /// the given scope + tenant.
 ///
-/// SEC- - admin guard. `sentin8:sys:admin`/`sentin8:dash:admin` (platform
+/// admin guard. `sentin8:sys:admin`/`sentin8:dash:admin` (platform
 /// operators) may manage any scope row; org/env rows additionally require
 /// the caller to have access to that org/env (RBAC) - enforced by passing
 /// the target as `target_env_id` for env-scoped rows.
@@ -1886,7 +1907,7 @@ pub async fn put_security_profile_api(
     )
     .await?;
 
-    // Cross-tenant rule (SEC-): an org/env-scoped row must
+    // Cross-tenant rule: an org/env-scoped row must
     // belong to the caller's authorized env unless the caller is a
     // platform admin.
     if !auth.is_platform_admin() {
@@ -2049,7 +2070,7 @@ pub async fn put_security_profile_api(
         .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
-    // SEC- - the catalog's `sentin8:auth:securityprofile:updated`
+    // the catalog's `sentin8:auth:securityprofile:updated`
     // event (previously never emitted).
     crate::events::emit_event(
         &state.pool,
@@ -2142,7 +2163,7 @@ pub struct AuthorizeQuery {
     #[serde(default)]
     /// The screen hint.
     pub screen_hint: Option<String>,
-    /// OIDC `nonce` - echoed into the ID token (SEC-).
+    /// OIDC `nonce` - echoed into the ID token.
     #[serde(default)]
     /// The nonce.
     pub nonce: Option<String>,
@@ -2159,7 +2180,7 @@ pub struct AuthorizeQuery {
     #[serde(default)]
     /// The request.
     pub request: Option<String>,
-    /// RFC 8707 resource indicator (SEC-).
+    /// RFC 8707 resource indicator.
     #[serde(default)]
     /// The resource.
     pub resource: Option<String>,
@@ -2246,7 +2267,7 @@ pub fn validate_authorization_details(
 }
 
 /// Resolve a PAR request_uri from Valkey. **Single-use** - the key is
-/// deleted atomically via GETDEL (SEC-); a second authorize
+/// deleted atomically via GETDEL; a second authorize
 /// with the same request_uri fails with `invalid_request`.
 async fn resolve_par_request(state: &AppState, request_uri: &str) -> Option<serde_json::Value> {
     let key = request_uri
@@ -2299,11 +2320,11 @@ pub struct ParRequest {
     #[serde(default)]
     /// The code challenge method.
     pub code_challenge_method: Option<String>,
-    /// OIDC nonce (SEC-).
+    /// OIDC nonce.
     #[serde(default)]
     /// The nonce.
     pub nonce: Option<String>,
-    /// RFC 8707 resource indicator (SEC-).
+    /// RFC 8707 resource indicator.
     #[serde(default)]
     /// The resource.
     pub resource: Option<String>,
@@ -2450,7 +2471,7 @@ pub async fn pushed_authorization_request(
         ));
     }
 
-    // SEC- - PAR pushes require client authentication (RFC 9126
+    // PAR pushes require client authentication (RFC 9126
     // ); the redirect_uri must be registered for the client. A JAR-only
     // push may omit the FORM client_id: the client_assertion's verified
     // `iss`/`sub` (or the JAR's client_id claim) identifies it.
@@ -2737,9 +2758,9 @@ struct AuthorizeParams {
     state: String,
     code_challenge: Option<String>,
     code_challenge_method: Option<String>,
-    /// OIDC nonce (SEC-).
+    /// OIDC nonce.
     nonce: Option<String>,
-    /// RFC 8707 resource indicator (SEC-).
+    /// RFC 8707 resource indicator.
     resource: Option<String>,
     /// OAuth response mode (`query` default, `jwt` for JARM).
     response_mode: Option<String>,
@@ -2846,7 +2867,7 @@ pub async fn authorize(
     if let (Some(ref request_uri), true) = (q.request_uri.as_deref(), is_par_uri) {
         match resolve_par_request(&state, request_uri).await {
             Some(stored) => {
-                // SEC- - the PAR record is client-bound: the query
+                // the PAR record is client-bound: the query
                 // client_id must match the client that pushed the request.
                 let par_client = stored
                     .get("client_id")
@@ -2928,7 +2949,7 @@ pub async fn authorize(
         }
     }
 
-    // ── JAR (RFC 9101) - signed request object overlay (SEC-) ──
+    // ── JAR (RFC 9101) - signed request object overlay ──
     //
     // When a `request` JWT parameter is present, verify its signature
     // against the client's registered keys (inline `jwks` or `jwks_uri`)
@@ -3046,7 +3067,7 @@ pub async fn authorize(
                 .into_response();
         }
     }
-    // SEC- - PKCE is mandatory when the profile mandates PAR
+    // PKCE is mandatory when the profile mandates PAR
     // (FAPI 2.0 default): reject requests without a code_challenge.
     if profile.require_pkce && params.code_challenge.as_deref().unwrap_or("").is_empty() {
         return (
@@ -3079,9 +3100,9 @@ pub async fn authorize(
 
     // Look up the OAuth client to check consent_required
     // and validate the redirect_uri against the registered allow-list
-    // (SEC- - open-redirect defense).
+    // (open-redirect defense).
     //
-    // SEC- - run with the tenant context on the same connection:
+    // run with the tenant context on the same connection:
     // `oauth_clients` is RLS-forced, and `sentin8_set_tenant_context`
     // is transaction-local - a bare pool query sees zero rows under the
     // app role and every authorize request failed with "unknown client_id".
@@ -3640,7 +3661,7 @@ pub async fn authorize(
         format!("&consent_required={consent_required}"),
     );
     // Forward the nonce so authorize/continue can bind it into the ID token
-    // (SEC-) and the resource indicator (SEC-).
+    // and the resource indicator.
     if let Some(n) = params.nonce.as_deref().filter(|s| !s.is_empty()) {
         ui_url.push_str(&format!("&nonce={}", urlencode(n)));
     if let Some(j) = params.dpop_jkt.as_deref().filter(|s| !s.is_empty()) {
@@ -3651,7 +3672,7 @@ pub async fn authorize(
         ui_url.push_str(&format!("&resource={}", urlencode(r)));
     }
     // Forward the response mode so authorize/continue can honor a JARM
-    // (`response_mode=jwt`) request (SEC-).
+    // (`response_mode=jwt`) request.
     // DESIGN §9a.13 - forward the CELL's response_type so the continue
     // request serves the fragment cells (the id_token/token members)
     // and stamps the record.
@@ -3707,15 +3728,15 @@ pub struct AuthorizeContinueRequest {
     pub user_id: Uuid,
     /// The session token.
     pub session_token: String,
-    /// OIDC nonce - bound into the ID token (SEC-).
+    /// OIDC nonce - bound into the ID token.
     #[serde(default)]
     /// The nonce.
     pub nonce: Option<String>,
-    /// RFC 8707 resource indicator (SEC-).
+    /// RFC 8707 resource indicator.
     #[serde(default)]
     /// The resource.
     pub resource: Option<String>,
-    /// OAuth response mode - `jwt` triggers a JARM response (SEC-).
+    /// OAuth response mode - `jwt` triggers a JARM response.
     #[serde(default)]
     /// The response mode.
     pub response_mode: Option<String>,
@@ -3812,9 +3833,9 @@ pub async fn authorize_continue(
         _ => return Err((StatusCode::UNAUTHORIZED, "invalid session".into())),
     };
 
-    // SEC- - re-validate the redirect_uri against the client's
+    // re-validate the redirect_uri against the client's
     // registered allow-list before issuing any code (open-redirect
-    // defense). Context-scoped lookup (SEC- - RLS).
+    // defense). Context-scoped lookup (RLS).
     let (_consent_meta, redirect_uris, _rar_types) = with_client_env(&state, req.client_id.clone())
         .await
         .ok_or_else(|| (StatusCode::BAD_REQUEST, "unknown client_id".into()))?;
@@ -3825,7 +3846,7 @@ pub async fn authorize_continue(
         ));
     }
 
-    // SEC- - PKCE challenge must be present when the caller's env-resolved
+    // PKCE challenge must be present when the caller's env-resolved
     // profile mandates it (FAPI 2.0 default).
     let profile = resolve_security_profile(&state.pool, &headers, "env").await;
     if profile.require_pkce && req.code_challenge.as_deref().unwrap_or("").is_empty() {
@@ -3870,7 +3891,7 @@ pub async fn authorize_continue(
         }
         // The SPA's authorizeContinue contract: a JSON body carrying the
         // redirect_url (the SPA navigates the browser itself) - a raw
-        // 302 would be followed by fetch() and break the client-side
+        // 302 would be followed by fetch and break the client-side
         // state (the approval path answers the same shape).
         return Ok(Json(serde_json::json!({ "redirect_url": url })).into_response());
     }
@@ -3965,7 +3986,7 @@ pub async fn authorize_continue(
     ) + &iss_param
         + &accounts_param;
 
-    // SEC- - JARM (`response_mode=jwt`): when the profile
+    // JARM (`response_mode=jwt`): when the profile
     // requires JARM and the client requested the JWT response mode, the
     // response parameters are wrapped in a signed JWT delivered via the
     // `response` query parameter instead of plain query params.
@@ -4199,12 +4220,12 @@ pub struct TokenRequest {
     #[serde(default, rename = "requested_tenancy.env_id")]
     /// requested env identifier.
     pub requested_env_id: Option<String>,
-    /// RFC 8707 resource indicator (SEC-) - the audience for the
+    /// RFC 8707 resource indicator - the audience for the
     /// issued access token.
     #[serde(default)]
     /// The resource.
     pub resource: Option<String>,
-    /// RFC 7523 private_key_jwt client assertion (SEC-).
+    /// RFC 7523 private_key_jwt client assertion.
     #[serde(default)]
     /// The client assertion.
     pub client_assertion: Option<String>,
@@ -4262,7 +4283,7 @@ pub async fn token(
     headers: axum::http::HeaderMap,
     raw_body: axum::body::Bytes,
 ) -> Result<Json<TokenResponse>, TokenError> {
-    // . - RFC 9421 HTTP request signatures (FAPI 2.0 Message
+    // RFC 9421 HTTP request signatures (FAPI 2.0 Message
     // Signing): when the caller's env-resolved profile requires them, the
     // raw body is needed for the Content-Digest check BEFORE the form is
     // parsed (the digest covers the exact bytes on the wire).
@@ -4274,7 +4295,7 @@ pub async fn token(
         ))
     })?;
 
-    // SEC- - authenticate the client on every grant. Confidential
+    // authenticate the client on every grant. Confidential
     // clients must present their credentials; public clients (dash, CLI) are
     // resolved by client_id only. The resolved client is passed to the grant
     // handlers so codes/CIBA requests/refresh tokens can be bound to it.
@@ -4304,7 +4325,7 @@ pub async fn token(
     .await
     .map_err(|(s, m)| TokenError::OAuth(OAuthTokenError::with_desc(s, "invalid_client", m)))?;
 
-    // SEC- - DPoP proof handling. When the caller's env-resolved profile
+    // DPoP proof handling. When the caller's env-resolved profile
     // requires DPoP, every token request must carry a valid proof;
     // the proof key thumbprint (`jkt`) sender-constrains the issued access token.
     let profile = resolve_security_profile(&state.pool, &headers, "env").await;
@@ -4381,7 +4402,7 @@ pub async fn token(
         )));
     }
 
-    // . - RFC 9421 HTTP request signatures (FAPI 2.0 Message
+    // RFC 9421 HTTP request signatures (FAPI 2.0 Message
     // Signing): when the env-resolved profile requires them, every mutating
     // token request must carry a signature over @method, @target-uri, and
     // the Content-Digest of the exact body bytes (swap protection).
@@ -4434,10 +4455,10 @@ pub async fn token(
 
 /// Authorization code exchange.
 ///
-/// SEC- - the code is bound to the authenticated client (mix-up
+/// the code is bound to the authenticated client (mix-up
 /// defense) and PKCE is mandatory when the stored challenge exists. When
 /// the granted scope includes `openid`, an OIDC ID token is issued
-/// (SEC-) with `aud` = client_id, `nonce` from the authorize
+/// with `aud` = client_id, `nonce` from the authorize
 /// request, and `at_hash` binding it to the access token.
 /// The pairwise subject derivation (OIDC Core §8 - pairwise sub =
 /// the sector-identifier + client-pair salted hash, opaque to the RP).
@@ -4555,7 +4576,7 @@ async fn handle_code_exchange(
         )));
     }
 
-    // SEC- - client binding: the authenticated client must be the
+    // client binding: the authenticated client must be the
     // client the code was issued for (mix-up attack defense, RFC 8252/9207).
     let stored_client_id = code_data["client_id"].as_str().unwrap_or("");
     if stored_client_id != client.client_id {
@@ -4581,7 +4602,7 @@ async fn handle_code_exchange(
         )));
     }
 
-    // Validate PKCE - the stored challenge must be proven (SEC-).
+    // Validate PKCE - the stored challenge must be proven.
     // Missing verifier / mismatched proof = the PKCE contract failed for
     // THIS grant - RFC 6749 SS5.2 + RFC 7636 SS4.6 semantics: invalid_grant
     // (the suite's ensure-pkce-code-verifier-required requires it).
@@ -4604,7 +4625,7 @@ async fn handle_code_exchange(
         }
     } else {
         // No challenge stored - only permissible when the caller's env-resolved
-        // profile does not mandate PKCE (SEC-).
+        // profile does not mandate PKCE.
         if profile.require_pkce {
             return Err(TokenError::OAuth(OAuthTokenError::with_desc(
                 StatusCode::BAD_REQUEST,
@@ -4720,7 +4741,7 @@ async fn handle_code_exchange(
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
     let merged_scope = crate::handlers::merge_scopes(scope, &role_scopes);
 
-    // SEC- - resource indicator (RFC 8707): the `resource` param
+    // resource indicator (RFC 8707): the `resource` param
     // sets the access token's `aud`.
     let resource = req.resource.as_deref().filter(|s| !s.is_empty());
     if let Some(r) = resource {
@@ -4761,7 +4782,7 @@ async fn handle_code_exchange(
                 Some(sel.keys().cloned().collect::<Vec<_>>());
         }
     }
-    // SEC- - DPoP sender-constraining (`cnf.jkt`). The live proof's key
+    // DPoP sender-constraining (`cnf.jkt`). The live proof's key
     // thumbprint binds the token; when the exchange carried NO live
     // proof, the CODE RECORD's pre-bound jkt (pushed on PAR / RFC 9449
     // dpop_jkt on authorize) still sender-constrains - the resource
@@ -5136,9 +5157,9 @@ async fn handle_code_exchange(
 
 /// Refresh token grant.
 ///
-/// SEC- - the presented refresh token is **verified** (signature +
+/// the presented refresh token is **verified** (signature +
 /// issuer + expiry) and checked against the revocation denylist before any
-/// new token is issued. SEC- - rotation: when the profile's
+/// new token is issued. rotation: when the profile's
 /// `refresh_rotation` is enabled (default), a **new** refresh token is
 /// issued and the old `jti` is denylisted, so a stolen-and-replayed old
 /// token is rejected on its next use.
@@ -5154,7 +5175,7 @@ async fn handle_refresh(
         .as_deref()
         .ok_or_else(|| (StatusCode::BAD_REQUEST, "refresh_token is required".into()))?;
 
-    // SEC- - VERIFIED decode: signature + iss + exp.
+    // VERIFIED decode: signature + iss + exp.
     let claims = verify_access_token_claims(state, refresh_token).map_err(|e| {
         (
             StatusCode::UNAUTHORIZED,
@@ -5170,7 +5191,7 @@ async fn handle_refresh(
         )));
     }
 
-    // SEC- - denylist check (revoked tokens are refused). RFC 6749
+    // denylist check (revoked tokens are refused). RFC 6749
     // : the token endpoint answers with a JSON `{"error":"invalid_grant"}`
     // body.
     if is_token_revoked(state, &claims.jti).await {
@@ -5182,7 +5203,7 @@ async fn handle_refresh(
         )));
     }
 
-    // SEC- - CLIENT BINDING: the presented refresh token must belong to
+    // CLIENT BINDING: the presented refresh token must belong to
     // the AUTHENTICATED client. The token's stored client_id (mint-time
     // bound) is compared to the authenticated caller - a token issued to
     // client 2 presented by client 1 reads invalid_grant (OIDC Core / the
@@ -5275,7 +5296,7 @@ async fn handle_refresh(
         Some(&client.client_id),
         Duration::seconds(state.config.access_token_ttl_secs as i64),
     );
-    // SEC- - resource indicator.
+    // resource indicator.
     if let Some(r) = req.resource.as_deref().filter(|s| !s.is_empty()) {
         if !crate::resource_indicators::is_valid_resource_uri(r) {
             return Err(TokenError::OAuth(OAuthTokenError::with_desc(
@@ -5286,7 +5307,7 @@ async fn handle_refresh(
         }
         access_claims.aud = Some(r.to_string());
     }
-    // SEC- - DPoP sender-constraining. The mTLS cells sender-constrain via
+    // DPoP sender-constraining. The mTLS cells sender-constrain via
     // the client CERTIFICATE (cnf.x5t#S256) instead: the refresh call
     // re-presents the cert (the refresh binding below keeps the token's
     // own cnf - the cert identity never leaves the connection).
@@ -5314,7 +5335,7 @@ async fn handle_refresh(
         )
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
-    // SEC- - rotation. When enabled (default), mint a NEW refresh
+    // rotation. When enabled (default), mint a NEW refresh
     // token and denylist the old `jti` for the old token's remaining
     // lifetime, so a replay of the old token fails.
     let rotate = profile_refresh_rotation(state, headers).await;
@@ -5476,7 +5497,7 @@ async fn handle_client_credentials(
     if let Some(thumbprint) = &client.cert_thumbprint {
         claims.cnf = Some(crate::mtls::build_cnf_claim(thumbprint));
     }
-    // SEC- - resource indicator (RFC 8707).
+    // resource indicator (RFC 8707).
     if let Some(r) = req.resource.as_deref().filter(|s| !s.is_empty()) {
         if !crate::resource_indicators::is_valid_resource_uri(r) {
             return Err((StatusCode::BAD_REQUEST, "invalid resource indicator".into()));
@@ -6167,7 +6188,7 @@ pub async fn introspect(
     headers: HeaderMap,
     axum::Form(req): axum::Form<IntrospectRequest>,
 ) -> Result<Response, (StatusCode, String)> {
-    // SEC- - RFC 7662 : the caller MUST authenticate.
+    // RFC 7662 : the caller MUST authenticate.
     let client = authenticate_client(
         &state,
         &headers,
@@ -6181,7 +6202,7 @@ pub async fn introspect(
     )
     .await?;
 
-    // . - RFC 9701 JWT introspection. The signed JWT form is
+    // RFC 9701 JWT introspection. The signed JWT form is
     // returned when the caller requests it (Accept: application/token-
     // introspection+jwt) or when the caller's env-resolved profile mandates
     // it (fapi_2_message_signing). The plain JSON form remains the default.
@@ -6189,9 +6210,9 @@ pub async fn introspect(
     let jwt_requested = crate::jwt_introspection::wants_jwt_response(&headers);
     let jwt_form = jwt_requested || profile.require_jwt_introspection;
 
-    // SEC- - VERIFIED decode: a forged or expired token must
+    // VERIFIED decode: a forged or expired token must
     // report `active: false`, never leak claims. Denylisted (revoked)
-    // tokens are inactive too (SEC-).
+    // tokens are inactive too.
     let verified = verify_access_token_claims(&state, &req.token)
         .ok()
         .filter(|c| c.exp > chrono::Utc::now().timestamp());
@@ -6419,7 +6440,7 @@ pub async fn revoke(
             "refresh" => {
                 // Denylist the jti...
                 revoke_jti(&state, &claims.jti, remaining).await;
-                // ...and revoke the user's active sessions so the cookie
+                // ..and revoke the user's active sessions so the cookie
                 // dies with the refresh token (defense-in-depth).
                 if let Ok(uid) = Uuid::parse_str(&claims.sub) {
                     let _ = sqlx::query(
@@ -6609,10 +6630,10 @@ pub async fn userinfo(
         })
         .ok_or_else(|| (StatusCode::UNAUTHORIZED, "missing bearer token".into()))?;
 
-    // SEC- - VERIFIED decode: forged/expired tokens get 401.
+    // VERIFIED decode: forged/expired tokens get 401.
     let claims = verify_access_token_claims(&state, &token)
         .map_err(|e| (StatusCode::UNAUTHORIZED, format!("invalid token: {}", e.1)))?;
-    // SEC- - revocation enforcement (DESIGN §9a.11): a denylisted jti
+    // revocation enforcement (DESIGN §9a.11): a denylisted jti
     // (RFC 7009) or a revoked GRANT (the code-reuse cascade) hard-fails
     // userinfo - the suite's codereuse-30s block expects the resource
     // surface to 401 after the code replay revokes the grant.
@@ -6631,7 +6652,7 @@ pub async fn userinfo(
     )
     .await;
 
-    // SEC- - DPoP sender-constraint (RFC 9449, FAPI2): a cnf.jkt-bound
+    // DPoP sender-constraint (RFC 9449, FAPI2): a cnf.jkt-bound
     // access token presents a DPoP proof whose key EXACTLY matches the
     // binding - thumbprint equality + the proof's `ath` = the hash of
     // THIS access token. A sibling client's (valid!) proof is still a
@@ -7099,7 +7120,7 @@ pub async fn logout(
     Query(q): Query<LogoutQuery>,
 ) -> Response {
     // RP-initiated logout - clear session cookie and redirect to
-    // post_logout_redirect_uri. SEC- - the redirect target must
+    // post_logout_redirect_uri. the redirect target must
     // be registered for the client (`post_logout_redirect_uris`); otherwise
     // fall back to the local sign-in page (open-redirect defense).
     let redirect: String = match q.post_logout_redirect_uri.as_deref() {
@@ -7235,7 +7256,7 @@ pub struct LogoutQuery {
 // ── Helpers ─────────────────────────────────────────────────────────────
 
 /// Is `uri` registered for the client? Exact string match, with RFC 8252
-/// loopback port equivalence for native apps (SEC-).
+/// loopback port equivalence for native apps.
 
 /// Append query parameters to a redirect URI WITHOUT clobbering an
 /// existing query string (the registered URI may already carry
@@ -7295,7 +7316,7 @@ fn redirect_uri_query_extension(registered_uri: &str, uri: &str) -> bool {
 
 /// Look up an OAuth client's routing metadata (consent_required,
 /// redirect_uris) with the RLS tenant context set on the SAME connection
-/// (SEC-). `oauth_clients` is FORCE RLS - a bare pool
+///. `oauth_clients` is FORCE RLS - a bare pool
 /// query returns no rows under the app role.
 ///
 /// The context env is resolved from the platform system env (authorize is
@@ -7331,7 +7352,7 @@ async fn with_client_env(
 }
 
 /// Verify a JAR request object (RFC 9101) against the client's registered
-/// keys and validate its claims (SEC-). Returns the parsed JAR
+/// keys and validate its claims. Returns the parsed JAR
 /// claims on success.
 async fn verify_jar_request(
     state: &AppState,
@@ -7525,7 +7546,7 @@ fn glob_match_impl(p: &[char], pi: usize, t: &[char], ti: usize) -> bool {
 
 /// `POST /oauth/device` - request a device code.
 ///
-/// .5 (design ): the requesting client is authenticated and
+/// 5 (design ): the requesting client is authenticated and
 /// the device code is bound to it - the polling grant must present the
 /// same client.
 /// Handle device authorization.
@@ -7549,7 +7570,7 @@ pub async fn device_authorization(
     headers: HeaderMap,
     axum::Form(req): axum::Form<DeviceAuthRequest>,
 ) -> Result<Json<DeviceAuthResponse>, (StatusCode, String)> {
-    // SEC- - client auth (public CLI client resolves by id).
+    // client auth (public CLI client resolves by id).
     let client = authenticate_client(
         &state,
         &headers,
@@ -7652,7 +7673,7 @@ async fn handle_device_code(
         )));
     }
 
-    // .5 (design ) - the polling client must match the client
+    // 5 (design ) - the polling client must match the client
     // that started the device flow.
     let stored_device_client = data["client_id"].as_str().unwrap_or("");
     if stored_device_client != client.client_id {
@@ -8044,7 +8065,7 @@ async fn handle_ciba_token(
         )
         .await;
 
-    // SEC- - OIDC ID token for CIBA grants when `openid` was granted:
+    // OIDC ID token for CIBA grants when `openid` was granted:
     // same claim set as the code-exchange ID token (iss/sub/aud/jti/iat/exp/
     // auth_time/nonce/at_hash + email/profile claims).
     let id_token =
@@ -8108,7 +8129,7 @@ async fn handle_ciba_token(
 /// `POST /device/verify` - the signed-in user submits the user_code to
 /// approve a device sign-in (RFC 8628 ).
 ///
-/// SEC-: this endpoint **requires a valid session** (cookie or
+/// this endpoint **requires a valid session** (cookie or
 /// Bearer). The approving user is the session's user - `user_id`, `org_id`,
 /// and `env_id` are taken from the session, NEVER from the request body,
 /// so knowledge of a user_code alone can no longer mint tokens for an
@@ -8139,7 +8160,7 @@ pub async fn device_verify(
             "session required to approve a device sign-in".into(),
         )
     })?;
-    // SEC- - mutating session endpoint: CSRF-gated (Bearer exempt).
+    // mutating session endpoint: CSRF-gated (Bearer exempt).
     crate::handlers::check_csrf(&headers, &session_token)?;
     let session = crate::sessions::Session::find_by_token(&state.pool, &session_token)
         .await
@@ -8225,7 +8246,7 @@ pub struct DeviceAuthResponse {
 /// Request body for deviceverify.
 pub struct DeviceVerifyRequest {
     /// The device user_code being approved. The approving user identity
-    /// comes from the session (SEC-) - never the body.
+    /// comes from the session - never the body.
     /// The user code.
     pub user_code: String,
 }

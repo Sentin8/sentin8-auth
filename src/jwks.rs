@@ -5,7 +5,7 @@
 
 //! JWKS endpoint - dual-algorithm JWT signing (ML-DSA-65 + RS256), multi-key
 //! verification sets, ES256 verification, and AES-256-GCM at-rest encryption
-//! of private key material (SEC- / SEC-).
+//! of private key material (AES-256-GCM at-rest sealing).
 //!
 //! Auth loads signing keys from the database at startup (or generates and
 //! persists new ones on first run) based on `SENTIN8_TLS_PQ_MODE`:
@@ -19,7 +19,7 @@
 //! JWT signing for ML-DSA-65 is done manually (the `jsonwebtoken` crate does
 //! not support ML-DSA). RS256 signing uses `jsonwebtoken` as before.
 //!
-//! Verification (SEC-) accepts **ML-DSA-65, RS256, and ES256**
+//! Verification accepts **ML-DSA-65, RS256, and ES256**
 //! regardless of mode, resolved by `kid` across **all persisted keys** -
 //! tokens issued before a rotation or mode switch remain valid until they
 //! expire, and the JWKS publishes every persisted key (rotation overlap).
@@ -242,7 +242,7 @@ impl StoredKey {
 }
 
 /// Multi-key signing set - the active signing key plus all persisted keys
-/// for verification and JWKS publication (SEC- rotation overlap).
+/// for verification and JWKS publication (new-key overlap rotation).
 ///
 /// Keys are persisted in `sentin8_auth_signing_keys` (encrypted with
 /// AES-256-GCM) so they survive auth restarts - existing JWTs remain valid
@@ -360,7 +360,7 @@ impl SigningKeys {
     /// Loads **all** persisted keys (both algorithms) for verification; the
     /// newest row for the active algorithm is used for signing. This ensures
     /// keys survive auth restarts AND that tokens issued before a rotation
-    /// or mode switch remain verifiable (SEC-).
+    /// or mode switch remain verifiable.
     ///
     /// DBX: `signing_keys` is a platform-global table (no env_id); its RLS
     /// policies admit only the SYSTEM-env context - set it on the same
@@ -1002,7 +1002,7 @@ impl SigningKeys {
     /// Verify a JWT signature and decode the claims.
     ///
     /// Accepts ML-DSA-65, RS256, and ES256 tokens, resolved by `kid` across
-    /// all persisted keys (SEC-). The algorithm allow-list is
+    /// all persisted keys. The algorithm allow-list is
     /// explicit - `"none"`, HS256, and algorithm-confusion variants are
     /// rejected.
     /// Verify it.
@@ -1137,7 +1137,7 @@ impl SigningKeys {
     }
 
     /// Verify an arbitrary client-assertion/DPoP/JAR JWT against an **explicit
-    /// JWK** (not our own keys). Supports ES256 and RS256 (SEC-/6).
+    /// JWK** (not our own keys). Supports ES256 and RS256.
     /// Verify a **raw** (non-JWS) payload + signature pair against a client
     /// JWK (. - RFC 9421 HTTP signatures). Unlike
     /// `verify_with_jwk`, the payload is the bare signature-base string,
@@ -1364,7 +1364,7 @@ pub struct Jwk {
 
 impl JwksResponse {
     /// Publish **all** persisted keys (kid-indexed) so clients can verify
-    /// tokens across rotations and mode switches (SEC-).
+    /// tokens across rotations and mode switches.
     /// Handle from keys.
     pub fn from_keys(keys: &SigningKeys) -> Self {
         let mut jwks: Vec<Jwk> = keys.all.iter().map(|k| k.to_jwk()).collect();

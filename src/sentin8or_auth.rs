@@ -71,7 +71,7 @@ impl Sentin8orAuthContext {
     }
 }
 
-/// Access mode for the read/write scope split (SEC-).
+/// Access mode for the read/write scope split.
 ///
 /// - `Read` endpoints (GET) accept `sentin8:auth:admin:read` OR `sentin8:auth:admin:write`
 ///
@@ -303,7 +303,7 @@ pub async fn require_sentin8or_access_write(
 }
 
 /// Same as [`require_sentin8or_access_with_env`] with an explicit access
-/// mode (SEC-). Read handlers pass `AccessMode::Read`;
+/// mode. Read handlers pass `AccessMode::Read`;
 /// mutating handlers pass `AccessMode::Write`.
 pub async fn require_sentin8or_access_mode(
     state: &AppState,
@@ -349,7 +349,7 @@ pub async fn require_sentin8or_access_mode(
 
     let claims = verify_token(&state.keys, &state.config, token)?;
 
-    // SEC- - actor-token revocation check. A token whose `jti`
+    // actor-token revocation check. A token whose `jti`
     // appears in `actor_revocations` is refused even though its
     // signature/expiry are valid.
     if is_actor_token_revoked(&state.pool, &claims.jti).await {
@@ -374,7 +374,7 @@ pub async fn require_sentin8or_access_mode(
     // (e.g. `sentin8:auth:admin:read`), so we also accept those. Customer
     // tokens never carry any admin scope, so they're rejected.
     //
-    // SEC- - the read/write split: `sentin8:auth:admin:read` alone does
+    // the read/write split: `sentin8:auth:admin:read` alone does
     // NOT authorize mutating endpoints.
     let scopes: Vec<&str> = claims.scope.split_whitespace().collect();
     let is_platform_admin = scopes.iter().any(|s| {
@@ -519,7 +519,7 @@ pub async fn require_sentin8or_access_mode(
 }
 
 /// Check whether a token `jti` has been revoked as an actor token
-/// (SEC- - `actor_revocations`).
+/// (`actor_revocations`).
 async fn is_actor_token_revoked(pool: &sqlx::PgPool, jti: &str) -> bool {
     if jti.is_empty() {
         return false;
@@ -537,7 +537,7 @@ async fn is_actor_token_revoked(pool: &sqlx::PgPool, jti: &str) -> bool {
     .unwrap_or(false)
 }
 
-/// SEC- - backstop check for the route-guard middleware:
+/// backstop check for the route-guard middleware:
 /// verify a Bearer token's signature/issuer/expiry and confirm it carries
 /// any admin scope. Returns `Ok` when the token may proceed to the
 /// per-handler guard (which performs the full tenant resolution).

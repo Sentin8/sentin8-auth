@@ -221,7 +221,7 @@ pub async fn list_users(
 ) -> Result<Json<UserListResponse>, (StatusCode, String)> {
     let auth =
         require_sentin8or_access_with_env(&state, &headers, teq.target_env_id.as_deref()).await?;
-    // SEC- - begin instead of acquire: sentin8_set_tenant_context
+    // begin instead of acquire: sentin8_set_tenant_context
     // uses set_config(..., true) which is TRANSACTION-local - outside a
     // transaction it evaporates and RLS denies every write. All queries for
     // this request run inside this transaction on the same connection.
@@ -323,7 +323,7 @@ pub async fn create_user(
 ) -> Result<Response, (StatusCode, String)> {
     let auth =
         require_sentin8or_access_write(&state, &headers, teq.target_env_id.as_deref()).await?;
-    // SEC- - begin instead of acquire: sentin8_set_tenant_context
+    // begin instead of acquire: sentin8_set_tenant_context
     // uses set_config(..., true) which is TRANSACTION-local - outside a
     // transaction it evaporates and RLS denies every write. All queries for
     // this request run inside this transaction on the same connection.
@@ -338,7 +338,7 @@ pub async fn create_user(
     }
 
     // Use the auth context's env_id if not explicitly provided.
-    // SEC- - a request-supplied env_id must match the caller's
+    // a request-supplied env_id must match the caller's
     // authorized env unless the caller is a platform admin; an org admin
     // could otherwise create users in any env.
     let env_id = match req.env_id {
@@ -494,7 +494,7 @@ pub async fn get_user(
 ) -> Result<Json<UserResponse>, (StatusCode, String)> {
     let _auth =
         require_sentin8or_access_with_env(&state, &headers, teq.target_env_id.as_deref()).await?;
-    // SEC- - begin instead of acquire (see the note above).
+    // begin instead of acquire (see the note above).
     let mut conn = state
         .pool
         .begin()
@@ -609,7 +609,7 @@ pub async fn update_user(
 ) -> Result<Json<UserResponse>, (StatusCode, String)> {
     let _auth =
         require_sentin8or_access_write(&state, &headers, teq.target_env_id.as_deref()).await?;
-    // SEC- - begin instead of acquire (see the note above).
+    // begin instead of acquire (see the note above).
     let mut conn = state
         .pool
         .begin()
@@ -725,7 +725,7 @@ pub async fn delete_user(
 ) -> Result<StatusCode, (StatusCode, String)> {
     let _auth =
         require_sentin8or_access_write(&state, &headers, teq.target_env_id.as_deref()).await?;
-    // SEC- - begin instead of acquire (see the note above).
+    // begin instead of acquire (see the note above).
     let mut conn = state
         .pool
         .begin()
@@ -874,7 +874,7 @@ pub async fn list_roles(
 ) -> Result<Json<RoleListResponse>, (StatusCode, String)> {
     let auth =
         require_sentin8or_access_with_env(&state, &headers, teq.target_env_id.as_deref()).await?;
-    // SEC- - begin instead of acquire: sentin8_set_tenant_context
+    // begin instead of acquire: sentin8_set_tenant_context
     // uses set_config(..., true) which is TRANSACTION-local - outside a
     // transaction it evaporates and RLS denies every write. All queries for
     // this request run inside this transaction on the same connection.
@@ -1028,7 +1028,7 @@ pub async fn create_role(
     // sentin8or can only create roles in their own org/env.
     let auth =
         require_sentin8or_access_write(&state, &headers, teq.target_env_id.as_deref()).await?;
-    // SEC- - begin instead of acquire: sentin8_set_tenant_context
+    // begin instead of acquire: sentin8_set_tenant_context
     // uses set_config(..., true) which is TRANSACTION-local - outside a
     // transaction it evaporates and RLS denies every write. All queries for
     // this request run inside this transaction on the same connection.
@@ -1126,7 +1126,7 @@ pub async fn update_role(
 ) -> Result<Json<RoleResponse>, (StatusCode, String)> {
     let _auth =
         require_sentin8or_access_write(&state, &headers, teq.target_env_id.as_deref()).await?;
-    // SEC- - begin instead of acquire (see the note above).
+    // begin instead of acquire (see the note above).
     let mut conn = state
         .pool
         .begin()
@@ -1201,7 +1201,7 @@ pub async fn delete_role(
 ) -> Result<StatusCode, (StatusCode, String)> {
     let _auth =
         require_sentin8or_access_write(&state, &headers, teq.target_env_id.as_deref()).await?;
-    // SEC- - begin instead of acquire (see the note above).
+    // begin instead of acquire (see the note above).
     let mut conn = state
         .pool
         .begin()
@@ -1267,7 +1267,7 @@ pub async fn list_role_members(
 ) -> Result<Json<Vec<RoleMemberResponse>>, (StatusCode, String)> {
     let _auth =
         require_sentin8or_access_with_env(&state, &headers, teq.target_env_id.as_deref()).await?;
-    // SEC- - begin instead of acquire (see the note above).
+    // begin instead of acquire (see the note above).
     let mut conn = state
         .pool
         .begin()
@@ -1328,7 +1328,7 @@ pub async fn add_role_member(
 ) -> Result<Response, (StatusCode, String)> {
     let _auth =
         require_sentin8or_access_write(&state, &headers, teq.target_env_id.as_deref()).await?;
-    // SEC- - begin instead of acquire (see the note above).
+    // begin instead of acquire (see the note above).
     let mut conn = state
         .pool
         .begin()
@@ -1385,7 +1385,7 @@ pub async fn remove_role_member(
 ) -> Result<StatusCode, (StatusCode, String)> {
     let _auth =
         require_sentin8or_access_write(&state, &headers, teq.target_env_id.as_deref()).await?;
-    // SEC- - begin instead of acquire (see the note above).
+    // begin instead of acquire (see the note above).
     let mut conn = state
         .pool
         .begin()
@@ -1478,7 +1478,7 @@ pub async fn list_groups(
 ) -> Result<Json<GroupListResponse>, (StatusCode, String)> {
     let auth =
         require_sentin8or_access_with_env(&state, &headers, teq.target_env_id.as_deref()).await?;
-    // SEC- - begin instead of acquire: sentin8_set_tenant_context
+    // begin instead of acquire: sentin8_set_tenant_context
     // uses set_config(..., true) which is TRANSACTION-local - outside a
     // transaction it evaporates and RLS denies every write. All queries for
     // this request run inside this transaction on the same connection.
@@ -1563,7 +1563,7 @@ pub async fn create_group(
 
     let auth =
         require_sentin8or_access_write(&state, &headers, teq.target_env_id.as_deref()).await?;
-    // SEC- - begin instead of acquire: sentin8_set_tenant_context
+    // begin instead of acquire: sentin8_set_tenant_context
     // uses set_config(..., true) which is TRANSACTION-local - outside a
     // transaction it evaporates and RLS denies every write. All queries for
     // this request run inside this transaction on the same connection.
@@ -1669,7 +1669,7 @@ pub async fn update_group(
     })?;
     let _auth =
         require_sentin8or_access_write(&state, &headers, teq.target_env_id.as_deref()).await?;
-    // SEC- - begin instead of acquire (see the note above).
+    // begin instead of acquire (see the note above).
     let mut conn = state
         .pool
         .begin()
@@ -1794,7 +1794,7 @@ pub async fn delete_group(
 ) -> Result<StatusCode, (StatusCode, String)> {
     let _auth =
         require_sentin8or_access_write(&state, &headers, teq.target_env_id.as_deref()).await?;
-    // SEC- - begin instead of acquire (see the note above).
+    // begin instead of acquire (see the note above).
     let mut conn = state
         .pool
         .begin()
@@ -1860,7 +1860,7 @@ pub async fn list_group_members(
 ) -> Result<Json<crate::dtos::GroupMembersResponse>, (StatusCode, String)> {
     let _auth =
         require_sentin8or_access_with_env(&state, &headers, teq.target_env_id.as_deref()).await?;
-    // SEC- - begin instead of acquire (see the note above).
+    // begin instead of acquire (see the note above).
     let mut conn = state
         .pool
         .begin()
@@ -1921,7 +1921,7 @@ pub async fn add_group_member(
 ) -> Result<Response, (StatusCode, String)> {
     let _auth =
         require_sentin8or_access_write(&state, &headers, teq.target_env_id.as_deref()).await?;
-    // SEC- - begin instead of acquire (see the note above).
+    // begin instead of acquire (see the note above).
     let mut conn = state
         .pool
         .begin()
@@ -1989,7 +1989,7 @@ pub async fn remove_group_member(
 ) -> Result<StatusCode, (StatusCode, String)> {
     let _auth =
         require_sentin8or_access_write(&state, &headers, teq.target_env_id.as_deref()).await?;
-    // SEC- - begin instead of acquire (see the note above).
+    // begin instead of acquire (see the note above).
     let mut conn = state
         .pool
         .begin()
@@ -2065,7 +2065,7 @@ pub async fn list_group_roles(
 ) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
     let _auth =
         require_sentin8or_access_with_env(&state, &headers, teq.target_env_id.as_deref()).await?;
-    // SEC- - begin instead of acquire (see the note above).
+    // begin instead of acquire (see the note above).
     let mut conn = state
         .pool
         .begin()
@@ -2128,7 +2128,7 @@ pub async fn add_group_role(
 ) -> Result<Response, (StatusCode, String)> {
     let _auth =
         require_sentin8or_access_write(&state, &headers, teq.target_env_id.as_deref()).await?;
-    // SEC- - begin instead of acquire (see the note above).
+    // begin instead of acquire (see the note above).
     let mut conn = state
         .pool
         .begin()
@@ -2185,7 +2185,7 @@ pub async fn remove_group_role(
 ) -> Result<StatusCode, (StatusCode, String)> {
     let _auth =
         require_sentin8or_access_write(&state, &headers, teq.target_env_id.as_deref()).await?;
-    // SEC- - begin instead of acquire (see the note above).
+    // begin instead of acquire (see the note above).
     let mut conn = state
         .pool
         .begin()
@@ -2323,7 +2323,7 @@ pub async fn list_oauth_clients(
 ) -> Result<Json<OAuthClientListResponse>, (StatusCode, String)> {
     let auth =
         require_sentin8or_access_with_env(&state, &headers, teq.target_env_id.as_deref()).await?;
-    // SEC- - begin instead of acquire: sentin8_set_tenant_context
+    // begin instead of acquire: sentin8_set_tenant_context
     // uses set_config(..., true) which is TRANSACTION-local - outside a
     // transaction it evaporates and RLS denies every write. All queries for
     // this request run inside this transaction on the same connection.
@@ -2409,7 +2409,7 @@ pub async fn create_oauth_client(
 ) -> Result<Response, (StatusCode, String)> {
     let _auth =
         require_sentin8or_access_write(&state, &headers, teq.target_env_id.as_deref()).await?;
-    // SEC- - begin instead of acquire (see the note above).
+    // begin instead of acquire (see the note above).
     let mut conn = state
         .pool
         .begin()
@@ -2532,7 +2532,7 @@ pub async fn get_oauth_client(
 ) -> Result<Json<OAuthClientResponse>, (StatusCode, String)> {
     let _auth =
         require_sentin8or_access_with_env(&state, &headers, teq.target_env_id.as_deref()).await?;
-    // SEC- - begin instead of acquire (see the note above).
+    // begin instead of acquire (see the note above).
     let mut conn = state
         .pool
         .begin()
@@ -2624,7 +2624,7 @@ pub async fn update_oauth_client(
 ) -> Result<Json<OAuthClientResponse>, (StatusCode, String)> {
     let _auth =
         require_sentin8or_access_write(&state, &headers, teq.target_env_id.as_deref()).await?;
-    // SEC- - begin instead of acquire (see the note above).
+    // begin instead of acquire (see the note above).
     let mut conn = state
         .pool
         .begin()
@@ -2713,7 +2713,7 @@ pub async fn delete_oauth_client(
 ) -> Result<StatusCode, (StatusCode, String)> {
     let _auth =
         require_sentin8or_access_write(&state, &headers, teq.target_env_id.as_deref()).await?;
-    // SEC- - begin instead of acquire (see the note above).
+    // begin instead of acquire (see the note above).
     let mut conn = state
         .pool
         .begin()
@@ -2781,7 +2781,7 @@ pub async fn list_client_roles(
 ) -> Result<Json<Vec<ClientRoleResponse>>, (StatusCode, String)> {
     let _auth =
         require_sentin8or_access_with_env(&state, &headers, teq.target_env_id.as_deref()).await?;
-    // SEC- - begin instead of acquire (see the note above).
+    // begin instead of acquire (see the note above).
     let mut conn = state
         .pool
         .begin()
@@ -2842,7 +2842,7 @@ pub async fn add_client_role(
 ) -> Result<Response, (StatusCode, String)> {
     let _auth =
         require_sentin8or_access_write(&state, &headers, teq.target_env_id.as_deref()).await?;
-    // SEC- - begin instead of acquire (see the note above).
+    // begin instead of acquire (see the note above).
     let mut conn = state
         .pool
         .begin()
@@ -2912,7 +2912,7 @@ pub async fn remove_client_role(
 ) -> Result<StatusCode, (StatusCode, String)> {
     let _auth =
         require_sentin8or_access_write(&state, &headers, teq.target_env_id.as_deref()).await?;
-    // SEC- - begin instead of acquire (see the note above).
+    // begin instead of acquire (see the note above).
     let mut conn = state
         .pool
         .begin()
@@ -2989,7 +2989,7 @@ pub async fn list_federated_credentials(
 ) -> Result<Json<Vec<FederatedCredentialResponse>>, (StatusCode, String)> {
     let _auth =
         require_sentin8or_access_with_env(&state, &headers, teq.target_env_id.as_deref()).await?;
-    // SEC- - begin instead of acquire (see the note above).
+    // begin instead of acquire (see the note above).
     let mut conn = state
         .pool
         .begin()
@@ -3065,7 +3065,7 @@ pub async fn create_federated_credential(
 ) -> Result<Response, (StatusCode, String)> {
     let _auth =
         require_sentin8or_access_write(&state, &headers, teq.target_env_id.as_deref()).await?;
-    // SEC- - begin instead of acquire (see the note above).
+    // begin instead of acquire (see the note above).
     let mut conn = state
         .pool
         .begin()
@@ -3166,7 +3166,7 @@ pub async fn delete_federated_credential(
 ) -> Result<StatusCode, (StatusCode, String)> {
     let _auth =
         require_sentin8or_access_write(&state, &headers, teq.target_env_id.as_deref()).await?;
-    // SEC- - begin instead of acquire (see the note above).
+    // begin instead of acquire (see the note above).
     let mut conn = state
         .pool
         .begin()
@@ -3231,7 +3231,7 @@ pub async fn list_user_roles(
 ) -> Result<Json<Vec<String>>, (StatusCode, String)> {
     let _auth =
         require_sentin8or_access_with_env(&state, &headers, teq.target_env_id.as_deref()).await?;
-    // SEC- - begin instead of acquire (see the note above).
+    // begin instead of acquire (see the note above).
     let mut conn = state
         .pool
         .begin()
@@ -3303,7 +3303,7 @@ pub async fn list_user_groups(
 ) -> Result<Json<Vec<String>>, (StatusCode, String)> {
     let _auth =
         require_sentin8or_access_with_env(&state, &headers, teq.target_env_id.as_deref()).await?;
-    // SEC- - begin instead of acquire (see the note above).
+    // begin instead of acquire (see the note above).
     let mut conn = state
         .pool
         .begin()
@@ -3411,7 +3411,7 @@ pub async fn list_api_keys(
 ) -> Result<Json<ApiKeyListResponse>, (StatusCode, String)> {
     let auth =
         require_sentin8or_access_with_env(&state, &headers, teq.target_env_id.as_deref()).await?;
-    // SEC- - begin instead of acquire: sentin8_set_tenant_context
+    // begin instead of acquire: sentin8_set_tenant_context
     // uses set_config(..., true) which is TRANSACTION-local - outside a
     // transaction it evaporates and RLS denies every write. All queries for
     // this request run inside this transaction on the same connection.
@@ -3495,7 +3495,7 @@ pub async fn create_api_key(
 ) -> Result<Response, (StatusCode, String)> {
     let _auth =
         require_sentin8or_access_write(&state, &headers, teq.target_env_id.as_deref()).await?;
-    // SEC- - begin instead of acquire (see the note above).
+    // begin instead of acquire (see the note above).
     let mut conn = state
         .pool
         .begin()
@@ -3578,7 +3578,7 @@ pub async fn revoke_api_key(
 ) -> Result<StatusCode, (StatusCode, String)> {
     let _auth =
         require_sentin8or_access_write(&state, &headers, teq.target_env_id.as_deref()).await?;
-    // SEC- - begin instead of acquire (see the note above).
+    // begin instead of acquire (see the note above).
     let mut conn = state
         .pool
         .begin()
@@ -3683,7 +3683,7 @@ pub async fn list_sessions(
 ) -> Result<Json<SessionListResponse>, (StatusCode, String)> {
     let auth =
         require_sentin8or_access_with_env(&state, &headers, teq.target_env_id.as_deref()).await?;
-    // SEC- - begin instead of acquire: sentin8_set_tenant_context
+    // begin instead of acquire: sentin8_set_tenant_context
     // uses set_config(..., true) which is TRANSACTION-local - outside a
     // transaction it evaporates and RLS denies every write. All queries for
     // this request run inside this transaction on the same connection.
@@ -3769,7 +3769,7 @@ pub async fn terminate_session(
 ) -> Result<StatusCode, (StatusCode, String)> {
     let _auth =
         require_sentin8or_access_write(&state, &headers, teq.target_env_id.as_deref()).await?;
-    // SEC- - begin instead of acquire (see the note above).
+    // begin instead of acquire (see the note above).
     let mut conn = state
         .pool
         .begin()
@@ -3856,7 +3856,7 @@ pub async fn list_memberships(
 ) -> Result<Json<Vec<MembershipResponse>>, (StatusCode, String)> {
     let auth =
         require_sentin8or_access_with_env(&state, &headers, teq.target_env_id.as_deref()).await?;
-    // SEC- - begin instead of acquire: sentin8_set_tenant_context
+    // begin instead of acquire: sentin8_set_tenant_context
     // uses set_config(..., true) which is TRANSACTION-local - outside a
     // transaction it evaporates and RLS denies every write. All queries for
     // this request run inside this transaction on the same connection.
@@ -3943,7 +3943,7 @@ pub async fn create_membership(
 ) -> Result<Response, (StatusCode, String)> {
     let _auth =
         require_sentin8or_access_write(&state, &headers, teq.target_env_id.as_deref()).await?;
-    // SEC- - begin instead of acquire (see the note above).
+    // begin instead of acquire (see the note above).
     let mut conn = state
         .pool
         .begin()
@@ -4036,7 +4036,7 @@ pub async fn delete_membership(
 ) -> Result<StatusCode, (StatusCode, String)> {
     let auth =
         require_sentin8or_access_write(&state, &headers, teq.target_env_id.as_deref()).await?;
-    // SEC- - begin instead of acquire: sentin8_set_tenant_context
+    // begin instead of acquire: sentin8_set_tenant_context
     // uses set_config(..., true) which is TRANSACTION-local - outside a
     // transaction it evaporates and RLS denies every write. All queries for
     // this request run inside this transaction on the same connection.
@@ -4529,7 +4529,7 @@ pub async fn list_audit_events(
 ) -> Result<Json<AuditListResponse>, (StatusCode, String)> {
     let auth =
         require_sentin8or_access_with_env(&state, &headers, teq.target_env_id.as_deref()).await?;
-    // SEC- - begin instead of acquire: sentin8_set_tenant_context
+    // begin instead of acquire: sentin8_set_tenant_context
     // uses set_config(..., true) which is TRANSACTION-local - outside a
     // transaction it evaporates and RLS denies every write. All queries for
     // this request run inside this transaction on the same connection.

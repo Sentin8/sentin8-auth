@@ -4,6 +4,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 //! OIDC Back-Channel Logout
+//! (https://openid.net/specs/openid-connect-backchannel-1_0.html).
 //!
 //! When a session ends (sign-out, token revocation, session expiry), Auth
 //! sends a **logout token** (a special JWT) to every OAuth client that has a
@@ -126,7 +127,7 @@ pub async fn trigger_backchannel_logout(
     headers: axum::http::HeaderMap,
     Json(req): Json<BackchannelLogoutTrigger>,
 ) -> Result<Json<BackchannelLogoutResponse>, (StatusCode, String)> {
-    // SEC- - internal trigger: admin guard (also backstopped by the
+    // internal trigger: admin guard (also backstopped by the
     // route-guard middleware at /oauth/backchannel-logout).
     let _auth =
         crate::sentin8or_auth::require_sentin8or_access_write(&state, &headers, None).await?;

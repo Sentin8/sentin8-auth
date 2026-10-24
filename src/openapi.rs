@@ -58,6 +58,7 @@ paths(
         crate::enterprise_connections::saml_acs,
  // ── OAuth 2.1 / OIDC protocol ──────────────────────────────────
         crate::oauth::discovery,
+        crate::oauth::discovery_rfc8414_alias,
         crate::oauth::pushed_authorization_request,
         crate::oauth::authorize,
         crate::oauth::authorize_continue,
@@ -90,6 +91,7 @@ paths(
         crate::login_page::login_page,
         crate::login_page::login_submit,
         crate::oid4vci::credential_issuer_metadata,
+        crate::oid4vci::issuance_nonce,
         crate::oid4vci::credential,
         crate::oid4vci::deferred_credential,
         crate::oid4vci::notifications,

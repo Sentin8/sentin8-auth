@@ -57,12 +57,12 @@ pub struct CibaRequest {
     /// the verified assertion's iss / the object's client_id claim).
     #[serde(default)]
     pub client_id: Option<String>,
-    /// SEC- - client authentication (client_secret_post). Public
+    /// client authentication (client_secret_post). Public
     /// clients omit it.
     #[serde(default)]
     /// The client secret.
     pub client_secret: Option<String>,
-    /// SEC- - private_key_jwt client assertion (RFC 7523).
+    /// private_key_jwt client assertion (RFC 7523).
     #[serde(default)]
     /// The client assertion.
     pub client_assertion: Option<String>,
@@ -783,7 +783,7 @@ pub async fn ciba_assisted_complete(
             "no session - sign in first".into(),
         )
     })?;
-    // SEC- - mutating session endpoint: CSRF-gated (Bearer exempt).
+    // mutating session endpoint: CSRF-gated (Bearer exempt).
     crate::handlers::check_csrf(&headers, &token_id)?;
     let session = Session::find_by_token(&state.pool, &token_id)
         .await
@@ -861,7 +861,7 @@ pub async fn ciba_assisted_complete(
 
 /// `POST /v1/ciba/approve` - user approves or denies from their device.
 ///
-/// SEC- - the approving user is the **session's** user; the
+/// the approving user is the **session's** user; the
 /// `user_id` field in the body is ignored. Knowledge of an `auth_req_id`
 /// alone can no longer bind an arbitrary user to a CIBA request.
 /// Handle CIBA approve.
@@ -889,7 +889,7 @@ pub async fn ciba_approve(
             "session required to approve a CIBA request".into(),
         )
     })?;
-    // SEC- - mutating session endpoint: CSRF-gated (Bearer exempt).
+    // mutating session endpoint: CSRF-gated (Bearer exempt).
     crate::handlers::check_csrf(&headers, &session_token)?;
     let session = crate::sessions::Session::find_by_token(&state.pool, &session_token)
         .await
@@ -922,7 +922,7 @@ pub async fn ciba_approve(
     if let Some(obj) = data.as_object_mut() {
         let status = if req.approved { "approved" } else { "denied" };
         obj.insert("status".into(), serde_json::json!(status));
-        // SEC- - the session's user is the approving user.
+        // the session's user is the approving user.
         obj.insert(
             "user_id".into(),
             serde_json::json!(approving_user_id.to_string()),
@@ -1231,7 +1231,7 @@ mod tests {
 
     #[test]
     fn ciba_approval_request() {
-        // SEC- - the approving user comes from the session; the
+        // the approving user comes from the session; the
         // body carries only auth_req_id + approved.
         let req = CibaApprovalRequest {
             auth_req_id: "req-123".into(),

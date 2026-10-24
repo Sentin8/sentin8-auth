@@ -112,7 +112,7 @@ pub async fn build_state(core: sentin8::shell::ServiceCore) -> anyhow::Result<Ap
 /// context, TLS context, request logging, traffic counter, CORS).
 /// Used by `routes` and integration tests.
 ///
-/// SEC- - a `route_guard` layer wraps the finished router as a
+/// a `route_guard` layer wraps the finished router as a
 /// structural backstop: every `/v1/admin/*` path, `PUT /v1/security-profile`,
 /// and `POST /oauth/backchannel-logout` requires a verified Bearer token
 /// with an admin scope. Per-handler guards remain the primary (they also
@@ -130,7 +130,7 @@ pub fn build_router(state: AppState) -> Router {
         .route("/v1/sign-up", post(handlers::sign_up))
         .route("/v1/sign-out", post(handlers::sign_out))
         .route("/v1/health", get(handlers::health))
-        // ── App passwords (per-credential scope restrictions, EUDI.) ──
+        // ── App passwords (per-credential scope restrictions) ──
         .route(
             "/v1/me/app-passwords",
             get(crate::app_passwords::list_app_passwords)
@@ -249,7 +249,7 @@ pub fn build_router(state: AppState) -> Router {
         .route("/.well-known/openid-configuration", get(oauth::discovery))
         .route(
             "/.well-known/oauth-authorization-server",
-            get(oauth::discovery),
+            get(oauth::discovery_rfc8414_alias),
         )
         .route("/.well-known/jwks.json", get(jwks_endpoint))
         // WebFinger (OIDC Discovery §2.1 / RFC 7033) - Dynamic OP profile.
@@ -312,13 +312,13 @@ pub fn build_router(state: AppState) -> Router {
                 .patch(crate::grants::patch_grant)
                 .delete(crate::grants::delete_grant),
         )
-        // EUDI wallet - OID4VP sign-in + metadata (EUDI.).
+        // EUDI wallet - OID4VP sign-in + metadata.
         .route("/oauth/vp/response", post(crate::wallet::vp_response))
         .route(
             "/v1/auth/wallet/metadata",
             get(crate::wallet::wallet_metadata),
         )
-        // EUDI. - OID4VCI credential issuance.
+        // OID4VCI credential issuance.
         .route("/oauth/credentials", post(crate::wallet::credential_offer))
         .route(
             "/oauth/credentials/issue",
@@ -643,7 +643,7 @@ pub fn build_router(state: AppState) -> Router {
         crate::openapi::AuthOpenApi::openapi(),
     ));
 
-    // SEC- - route guard middleware (structural backstop).
+    // route guard middleware (structural backstop).
     // Every admin/platform-management path requires a verified admin
     // Bearer token OR a valid session (for the cookie-authenticated admin
     // endpoints). Per-handler guards remain the primary - they also
@@ -688,7 +688,7 @@ async fn token_no_store_middleware(
     resp
 }
 
-/// SEC- - route guard backstop.
+/// route guard backstop.
 ///
 /// Paths guarded here:
 /// - `/v1/admin/*` (all admin CRUD + admin UI data)

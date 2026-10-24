@@ -9,7 +9,7 @@
 //! Auth mounts the policy-admin routes inline (its own `AppState`, without
 //! the shell's `Arc<AppState>` mount), and the underlying handlers are
 //! GENERIC (`sentin8::shield::admin::*<T>`) - utoipa cannot reference a
-//! generic handler from `paths()` (no turbofish support in 5.5). Each
+//! generic handler from `paths` (no turbofish support in 5.5). Each
 //! route binds one of these concrete-state wrappers; the spec references
 //! these (OAPEC design §2 rule 3). The wrappers add nothing: same handler
 //! body, same gates, same state - only the concrete type is pinned.

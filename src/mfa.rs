@@ -149,7 +149,7 @@ pub async fn enroll(
 
     let env_id = user_env(&state.pool, user_id).await?;
 
-    // SEC- - tenant context on the same connection (design ).
+    // tenant context on the same connection (design ).
     let mut conn = state
         .pool
         .begin()
@@ -249,7 +249,7 @@ pub async fn verify(
         return Err((StatusCode::BAD_REQUEST, "code must be 6 digits".into()));
     }
 
-    // SEC- - rate limit the verify endpoint (brute-force defense).
+    // rate limit the verify endpoint (brute-force defense).
     // Per-IP 10/min - same policy as sign-in.
     let ip = crate::bot_protection::extract_client_ip(&headers);
     crate::bot_protection::check_signin_rate(&state, &ip, "mfa-verify").await?;
@@ -291,7 +291,7 @@ pub async fn disable(
 ) -> Result<Response, (StatusCode, String)> {
     let user_id = resolve_user_id(&state.pool, &headers, None).await?;
 
-    // SEC- - mutating session endpoint: CSRF-gated (Bearer exempt).
+    // mutating session endpoint: CSRF-gated (Bearer exempt).
     if let Some(token) = crate::handlers::extract_session_token(&headers) {
         crate::handlers::check_csrf(&headers, &token)?;
     }
@@ -313,7 +313,7 @@ pub async fn disable(
     }
 
     // Delete the factor.
-    // SEC- - tenant context on the same connection (design ).
+    // tenant context on the same connection (design ).
     let env_id = user_env(&state.pool, user_id)
         .await
         .unwrap_or(crate::config::SYSTEM_ENV_ID);
@@ -593,7 +593,7 @@ async fn verify_signin(
         return Err((StatusCode::UNAUTHORIZED, "invalid TOTP code".into()));
     }
 
-    // SEC- - TOTP replay cache: a code is single-use for the
+    // TOTP replay cache: a code is single-use for the
     // remainder of its validity window. Without this, the same code works
     // for any number of requests inside its ~90s window (the challenge is
     // consumed, but an attacker with one phished code could race it).
@@ -642,7 +642,7 @@ async fn verify_signin(
     .into_response())
 }
 
-/// Resolve the acting user id (SEC- - hardened):
+/// Resolve the acting user id (hardened):
 ///
 /// 1. Session (cookie or Bearer session token) - the acting user.
 /// 2. Explicit `user_id` - **admin-initiated enrollment only**: requires

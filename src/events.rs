@@ -105,7 +105,7 @@ pub async fn emit_session_revoked(
     }
 }
 
-/// SEC- - **transactional** inbox emission.
+/// **transactional** inbox emission.
 ///
 /// Writes the `inbox` row on the caller's open transaction connection,
 /// so the domain change and the event are committed atomically (the

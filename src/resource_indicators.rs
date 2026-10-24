@@ -3,7 +3,8 @@
 // SPDX-FileCopyrightText: Copyright Contributors to the Sentin8:Auth
 // SPDX-License-Identifier: Apache-2.0
 
-//! Resource Indicators (RFC 8707)
+//! Resource Indicators (RFC 8707,
+//! https://datatracker.ietf.org/doc/html/rfc8707).
 //!
 //! The `resource` parameter allows clients to request a specific resource
 //! server (audience) for the access token. The authorization server must:

@@ -170,7 +170,7 @@ pub async fn list_connections(
     headers: HeaderMap,
     Query(q): Query<ListConnectionsQuery>,
 ) -> Result<Json<Vec<ConnectionResponse>>, (StatusCode, String)> {
-    // SEC- - admin guard + tenant scoping. The previous
+    // admin guard + tenant scoping. The previous
     // `WHERE ($1::uuid IS NULL OR env_id = $1)` listed EVERY tenant's IdP
     // connections when env_id was omitted - a cross-tenant leak.
     let env_param = q
@@ -254,7 +254,7 @@ pub async fn create_connection(
     Query(teq): Query<TargetEnvQuery>,
     Json(req): Json<CreateConnectionRequest>,
 ) -> Result<Response, (StatusCode, String)> {
-    // SEC- - admin guard. target_env_id is forwarded by the BFF proxy
+    // admin guard. target_env_id is forwarded by the BFF proxy
     // (design Fix A) - auth is env-scoped, no fallback.
     let _auth = crate::sentin8or_auth::require_sentin8or_access_write(
         &state,
@@ -279,7 +279,7 @@ pub async fn create_connection(
         .scopes
         .unwrap_or_else(|| vec!["openid".into(), "profile".into(), "email".into()]);
 
-    // SEC- - tenant context on the same connection (design ).
+    // tenant context on the same connection (design ).
     let mut conn = state
         .pool
         .begin()
@@ -383,7 +383,7 @@ pub async fn get_connection(
     Path(id): Path<Uuid>,
     Query(teq): Query<TargetEnvQuery>,
 ) -> Result<Json<ConnectionResponse>, (StatusCode, String)> {
-    // SEC- - admin guard. target_env_id forwarded by BFF proxy.
+    // admin guard. target_env_id forwarded by BFF proxy.
     let _auth = crate::sentin8or_auth::require_sentin8or_access_with_env(
         &state,
         &headers,
@@ -455,7 +455,7 @@ pub async fn update_connection(
     Query(teq): Query<TargetEnvQuery>,
     Json(req): Json<CreateConnectionRequest>,
 ) -> Result<StatusCode, (StatusCode, String)> {
-    // SEC- - admin guard. target_env_id forwarded by BFF proxy.
+    // admin guard. target_env_id forwarded by BFF proxy.
     let _auth = crate::sentin8or_auth::require_sentin8or_access_write(
         &state,
         &headers,
@@ -467,7 +467,7 @@ pub async fn update_connection(
         .as_ref()
         .filter(|s| !s.is_empty())
         .map(|s| encrypt_secret(&state.config, s.as_bytes()));
-    // SEC- - tenant context on the same connection (design ).
+    // tenant context on the same connection (design ).
     let mut conn = state
         .pool
         .begin()
@@ -552,14 +552,14 @@ pub async fn delete_connection(
     Path(id): Path<Uuid>,
     Query(teq): Query<TargetEnvQuery>,
 ) -> Result<StatusCode, (StatusCode, String)> {
-    // SEC- - admin guard. target_env_id forwarded by BFF proxy.
+    // admin guard. target_env_id forwarded by BFF proxy.
     let _auth = crate::sentin8or_auth::require_sentin8or_access_write(
         &state,
         &headers,
         teq.target_env_id.as_deref(),
     )
     .await?;
-    // SEC- - tenant context on the same connection (design ).
+    // tenant context on the same connection (design ).
     let mut conn = state
         .pool
         .begin()
@@ -865,7 +865,7 @@ pub async fn sso_callback(
         .ok_or_else(|| (StatusCode::BAD_GATEWAY, "missing id_token".into()))?;
 
     // Decode the id_token, then VERIFY its signature against the IdP's JWKS
-    // (SEC-). Previously the payload was decoded with no signature
+    //. Previously the payload was decoded with no signature
     // check and the stored nonce was never compared - a forged or replayed
     // id_token minted a real session.
     let claims = decode_jwt_unverified(id_token)
@@ -1044,7 +1044,7 @@ pub async fn saml_metadata(
 
 /// `POST /v1/saml/acs/{connection_id}` - SAML Assertion Consumer Service.
 ///
-/// SEC- - **default deny**. Without a vendored SAML signature
+/// **default deny**. Without a vendored SAML signature
 /// validation library, unsigned assertions are rejected in production
 /// (`SENTIN8_AUTH_ALLOW_UNSIGNED_SAML=1` opts in for dev/test). When
 /// allowed, we additionally validate: RelayState session (below),
@@ -1098,7 +1098,7 @@ pub async fn saml_acs(
         return Err((StatusCode::GONE, "SSO session expired".into()));
     }
 
-    // SEC- - default deny: unsigned SAML assertions are refused
+    // default deny: unsigned SAML assertions are refused
     // in production unless the explicit dev flag is set.
     let allow_unsigned = std::env::var("SENTIN8_AUTH_ALLOW_UNSIGNED_SAML").is_ok();
     if !allow_unsigned {
@@ -1127,7 +1127,7 @@ pub async fn saml_acs(
     })?;
     let xml = String::from_utf8_lossy(&decoded);
 
-    // SEC- - partial validation when the dev flag is set:
+    // partial validation when the dev flag is set:
     // InResponseTo must reference the SSO session state when present, the
     // audience must contain our entity, and NotOnOrAfter must be future.
     if let Some(in_response_to) = extract_saml_attribute(&xml, "InResponseTo") {
@@ -1294,7 +1294,7 @@ fn extract_saml_nameid(xml: &str) -> Option<String> {
     Some(segment[gt + 1..].trim().to_string())
 }
 
-/// Extract a SAML **attribute** value (SEC-) - used for the
+/// Extract a SAML **attribute** value - used for the
 /// InResponseTo / NotOnOrAfter checks on the dev-flag path. Looks for
 /// `AttributeName="value"` anywhere in the document (naive but bounded;
 /// values are only compared, never executed).
