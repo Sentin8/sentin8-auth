@@ -60,7 +60,7 @@ mint tokens or publish signing keys. The business value it delivers:
 | Organization/environment/app records | Sentin8:Sys |
 | Authorization policy storage & decisions | Shield (Sentin8:Policy - storage substrate in Sys) |
 | Sending emails | Sentin8:Post (auth only enqueues + pushes `post_outbox`) |
-| E-signature / QES ceremonies | delegated to the bank8 vertical (returns NOT IMPLEMENTED until then) |
+| E-signature / QES ceremonies | Sentin8:Sign (core platform service; auth contributes identity assurance + approval consent only) |
 | Invitation records | Sentin8:Sys (auth proxies to sys) |
 
 ## 3. Business Capabilities
@@ -267,9 +267,9 @@ certs/Auth-local identity, DB, Valkey, and the owner-API seeds only).
 
 ## 10. Open Business Questions
 
-- QES e-signature ceremonies stay delegated to the bank8 vertical - the
-  `signature_request` endpoint returns NOT IMPLEMENTED until that
-  integration lands.
+- QES e-signature ceremonies are owned by the core platform's
+  Sentin8:Sign service; the `signature_request` endpoint returns NOT
+  IMPLEMENTED until that integration lands.
 - Webhook deliveries gain a DLQ replay surface mirroring post's
   `replay_dlq` shape.
 - Continuous access evaluation: risk-signal gating of new token issuance

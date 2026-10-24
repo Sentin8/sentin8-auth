@@ -26,8 +26,9 @@ OID4VCI/SD-JWT wallet surface.
 - **Does NOT own**: org/env business records (sys provisions those and
   calls back via the provisioning API), tenant app instances, Shield
   policy storage (sys's `policy_sets` is the substrate; auth runs an
-  engine on it), invitations (proxied to sys), e-signature (QES delegated
-  to bank8-payments - `signature_request` returns NOT IMPLEMENTED).
+  engine on it), invitations (proxied to sys), e-signature (QES owned by
+  the core platform's Sentin8:Sign service - `signature_request` returns
+  NOT IMPLEMENTED until that integration lands).
 
 ```mermaid
 graph TD
