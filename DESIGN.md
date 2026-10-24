@@ -1262,20 +1262,41 @@ carries each module's resolved values
 (`GET /api/plan/<id>.modules[].variant` → `POST /api/runner?variant=<json>`
 with an EMPTY body - a JSON body answers 400).
 
-**Encrypted-slice requirement (backlog HAIP-1, backlog-ordered not yet
-implemented).** OID4VCI §12.2.4 credential encryption: the issuer
-metadata gains `credential_response_encryption`
-(`alg_values_supported: ["ECDH-ES"]`, `enc_values_supported:
-["A256GCM"]`) and (per-profile) `credential_request_encryption`; the
-credential request accepts `credential_response_encryption {jwk, alg,
-enc}` (the wallet's `credential_encryption_jwks` is an ECDH-ES P-256
-key - the suite's VCIGenerateCredentialEncryptionJwks) and returns the
-credentials object as a compact JWE (ECDH-ES key agreement + A256GCM
-content encryption); unsupported alg/enc answers
-`400 invalid_credential_request` (the suite's
-FailOnUnsupportedEncryptionAlgorithm negative). Until this lands the 3
-encrypted-slice modules self-skip by design - the no-skip rule owns the
-follow-up.
+**Encrypted-slice capability (OID4VCI §12.2.4 credential
+encryption - implemented).** The issuer metadata publishes
+`credential_response_encryption` (`alg_values_supported:
+["ECDH-ES"]`, `enc_values_supported: ["A256GCM"]`,
+`encryption_required: false`) and `credential_request_encryption`
+(`jwks` + `enc_values_supported` + `encryption_required` - no
+`alg_values_supported` in the request block, the errata schema
+shape). The credential request accepts an encrypted body (compact
+JWE, ECDH-ES + A256GCM, 5-part OR the 4-part variant with the GCM
+tag merged into the ciphertext segment) and a JSON body carrying
+`credential_response_encryption {enc, jwk}` where the key-agreement
+alg rides the JWK (`jwk.alg`) rather than the top level. The
+response returns the credentials object as a compact JWE
+(`Content-Type: application/jwt`) under the wallet's key. Key
+derivation is RFC 7518 §4.6.1 ConcatKDF - the single-step hash
+form (`SHA-256(counter ‖ Z ‖ OtherInfo)`), NOT HKDF - with the
+`enc` value as AlgorithmID for direct key agreement. Unsupported
+alg/enc answers `400 invalid_encryption_parameters` (the suite's
+FailOnUnsupportedEncryptionAlgorithm +
+VCIValidateCredentialErrorResponse), validated BEFORE any mint.
+
+**HAIP x5c chain (certified).** The issuer's ES256 keystore key
+carries a self-issued X.509 certificate (minted at keystore load,
+published as the JWK `x5c` member); the credential SD-JWT and the
+status-list token embed it (no `jwk` member in HAIP certificate
+mode - `sign_value_typed_x5c`). When the environment profile seeds
+`issuance_leaf_pem` + `issuance_chain_pem` (the deployment
+issuance-CA's leaf signed on the issuer's own ES256 key), those
+ride the x5c chain instead and the relying-party trust anchor is
+the CA - the OIDF rig mints that CA itself and pins it as
+`credential.trust_anchor_pem` / `status_list_trust_anchor_pem`.
+Every encrypted-slice module of the HAIP family PASSES (the
+family is zero-warning green); the non-`oid4vci` modules the HAIP
+plan template ships (FAPI2 remnants) are out of scope for this
+cell - the fapi2-security spec owns them.
 
 ## 13. Open Questions
 

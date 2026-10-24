@@ -10733,6 +10733,12 @@
             "type": "string",
             "description": "The credential issuer identifier (this auth instance)."
           },
+          "credential_request_encryption": {
+            "description": "§12.2.4 (HAIP) - the credential-REQUEST encryption metadata (the\nissuer's recipient key set); declared alongside the response\ndirection (the suite requires both)."
+          },
+          "credential_response_encryption": {
+            "description": "§12.2.4 (HAIP) - the credential-response encryption metadata\n(alg/enc values + encryption_required); present ONLY when the\nresolved profile enables credential encryption."
+          },
           "deferred_credential_endpoint": {
             "type": "string",
             "description": "`POST /oauth/deferred_credential` - deferred polling endpoint."
@@ -10817,6 +10823,9 @@
               "null"
             ],
             "description": "The credential-identifier form (§7.2.1): the identifier issued in\nthe deferred flow's `transaction_id` (or the token-scope-bound\nrequest) - the configuration resolves from the token scope."
+          },
+          "credential_response_encryption": {
+            "description": "§12.2.4 (HAIP) - the wallet's credential-response encryption\nparameters (`{alg, enc, jwk|jwks}`): when present the response\nbody is a compact JWE over the wallet's key."
           },
           "proof": {
             "oneOf": [
@@ -12303,6 +12312,16 @@
               "null"
             ],
             "description": "The x."
+          },
+          "x5c": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "string"
+            },
+            "description": "The x5c certificate chain (std-base64 DER entries) - present on\nthe ES256 key when its self-issued certificate exists (HAIP\ncertificate mode)."
           },
           "y": {
             "type": [
@@ -16211,6 +16230,27 @@
           "scope"
         ],
         "properties": {
+          "allow_client_attestation": {
+            "type": [
+              "boolean",
+              "null"
+            ],
+            "description": "Attestation-based client auth (DESIGN §9a.19): enable the\n`OAuth-Client-Attestation` + PoP header family."
+          },
+          "client_attestation_issuer": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The attestation's expected `iss` (the attester's trust domain)."
+          },
+          "client_attestation_trust_anchor_pem": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "PEM of the attester trust anchor the attestation's x5c must\nchain to (empty keeps the anchor check off)."
+          },
           "env_id": {
             "type": [
               "string",
@@ -16218,6 +16258,20 @@
             ],
             "format": "uuid",
             "description": "env identifier."
+          },
+          "issuance_chain_pem": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The issuer issuance CA chain (PEM) for the HAIP x5c; empty = plain form."
+          },
+          "issuance_leaf_pem": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "HAIP: the issuer's ES256 leaf certificate (PEM) + its CA chain -\nthe credential/status-list x5c chain (empty = plain jwk form)."
           },
           "max_token_lifetime": {
             "type": [

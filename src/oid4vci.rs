@@ -87,6 +87,14 @@ pub async fn credential_issuer_metadata(
     headers: HeaderMap,
 ) -> Response {
     let issuer = crate::oauth::resolve_issuer(&state.config, &headers);
+    // §12.2.4 (HAIP) - credential-response encryption advertisement rides
+    // the profile plane: the SAME flag family that enables attestation
+    // client auth (only the vci_haip posture carries cryptographic
+    // guarantees beyond the plain profile).
+    let profile =
+        crate::oauth::resolve_security_profile(&state.pool, &headers, "env").await;
+    let encryption_enabled =
+        profile.allow_client_attestation && !profile.client_attestation_trust_anchor_pem.trim().is_empty();
     let metadata = CredentialIssuerMetadata {
         credential_issuer: issuer.clone(),
         authorization_servers: vec![issuer.clone()],
@@ -97,6 +105,31 @@ pub async fn credential_issuer_metadata(
         // Final §12.2.4 - batch issuance support (the proofs array size
         // the endpoint accepts).
         batch_credential_issuance: serde_json::json!({ "batch_size": 10 }),
+        credential_response_encryption: if encryption_enabled {
+            Some(serde_json::json!({
+                "alg_values_supported": crate::jwe::SUPPORTED_ALGS,
+                "enc_values_supported": crate::jwe::SUPPORTED_ENCS,
+                "encryption_required": false,
+            }))
+        } else {
+            None
+        },
+        credential_request_encryption: if encryption_enabled {
+            // §12.2.4: when response encryption is declared, the
+            // REQUEST direction must be declared too (the suite's
+            // VCIEnsureCredentialRequestEncryptionWhen... family). The
+            // schema (credential-issuer-metadata-1_0.json) allows ONLY
+            // {enc_values_supported, encryption_required, jwks,
+            // zip_values_supported} here - no alg list (the asymmetric
+            // JWE alg rides each key's own `alg` member).
+            Some(serde_json::json!({
+                "enc_values_supported": crate::jwe::SUPPORTED_ENCS,
+                "encryption_required": false,
+                "jwks": state.keys.credential_request_encryption_jwks(),
+            }))
+        } else {
+            None
+        },
         credential_configurations_supported: supported_credential_configurations(&issuer),
     };
     let value = serde_json::to_value(&metadata).unwrap_or_else(|_| serde_json::json!({}));
@@ -177,6 +210,16 @@ pub struct CredentialIssuerMetadata {
     pub nonce_endpoint: String,
     /// Final §12.2.4 - the batch issuance posture (`batch_size` >= 2).
     pub batch_credential_issuance: serde_json::Value,
+    /// §12.2.4 (HAIP) - the credential-response encryption metadata
+    /// (alg/enc values + encryption_required); present ONLY when the
+    /// resolved profile enables credential encryption.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub credential_response_encryption: Option<serde_json::Value>,
+    /// §12.2.4 (HAIP) - the credential-REQUEST encryption metadata (the
+    /// issuer's recipient key set); declared alongside the response
+    /// direction (the suite requires both).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub credential_request_encryption: Option<serde_json::Value>,
     /// One entry per credential type auth mints (SD-JWT VC profile).
     pub credential_configurations_supported: serde_json::Value,
 }
@@ -208,6 +251,11 @@ pub struct CredentialRequest {
     /// still seen from earlier wallets; accepted (one-of).
     #[serde(default)]
     pub proof: Option<Proof>,
+    /// §12.2.4 (HAIP) - the wallet's credential-response encryption
+    /// parameters (`{alg, enc, jwk|jwks}`): when present the response
+    /// body is a compact JWE over the wallet's key.
+    #[serde(default)]
+    pub credential_response_encryption: Option<serde_json::Value>,
 }
 
 /// The `proof` container.
@@ -653,6 +701,7 @@ async fn mint_credential(
     cnf_jwk: &serde_json::Value,
     shared_status: Option<Uuid>,
     status_idx: u32,
+    x5c_chain: Option<&[String]>,
 ) -> Result<String, (StatusCode, String)> {
     let _ = env_id;
     // RFC 9901 linkability: the credential's issuance time claims are
@@ -689,9 +738,13 @@ async fn mint_credential(
     // Every claim here is REGULAR (no `_sd` digests) so the disclosures
     // list is EMPTY - the format still requires the separator (and the
     // suite's ParseCredentialAsSdJwt splits on it).
+    // HAIP (ValidateSdJwtCredentialX5cCertificateChain): the credential
+    // JWS header carries the x5c chain of the issuer's key; fall back to
+    // the plain typed form for non-HAIP profiles.
     state
         .keys
-        .sign_value_typed(&claims, "ES256", "dc+sd-jwt")
+        .sign_value_typed_x5c(&claims, "ES256", "dc+sd-jwt", x5c_chain)
+        .or_else(|_| state.keys.sign_value_typed(&claims, "ES256", "dc+sd-jwt"))
         .or_else(|_| state.keys.sign_value_typed(&claims, "RS256", "dc+sd-jwt"))
         .or_else(|_| state.keys.sign_value(&claims))
         .map(|jws| format!("{jws}~"))
@@ -726,11 +779,65 @@ async fn mint_credential(
 pub async fn credential(
     State(state): State<AppState>,
     headers: HeaderMap,
-    req: Result<Json<CredentialRequest>, axum::extract::rejection::JsonRejection>,
+    body: String,
 ) -> Response {
-    let req = match req {
-        Ok(Json(r)) => r,
-        Err(e) => return oid4vci_error(StatusCode::BAD_REQUEST, "invalid_credential_request", e.body_text()),
+    // The §12.2.4 request-encryption form: when the body is a JWE
+    // (5 dot-separated b64url segments, not a JSON object), decrypt it
+    // with the issuer's ES256 recipient key (the SAME key family the
+    // metadata's `credential_request_encryption.jwks` publishes) and
+    // process the inner JSON request.
+    let is_json = body.trim_start().starts_with('{');
+    let req = if is_json {
+        match serde_json::from_str::<CredentialRequest>(&body) {
+            Ok(r) => r,
+            Err(e) => {
+                return oid4vci_error(
+                    StatusCode::BAD_REQUEST,
+                    "invalid_credential_request",
+                    format!("Failed to deserialize the JSON body into the target type: {e}"),
+                );
+            }
+        }
+    } else {
+        let jwe = body.trim();
+        let kid = sentin8::auth::jwt::decode_header(jwe)
+            .ok()
+            .and_then(|h| h.get("kid").and_then(|k| k.as_str()).map(str::to_string));
+        let Some(pem) = state.keys.es256_private_pem(kid.as_deref()) else {
+            return oid4vci_error(
+                StatusCode::BAD_REQUEST,
+                "invalid_credential_request",
+                "no recipient key for the encrypted credential request".into(),
+            );
+        };
+        match crate::jwe::decrypt_credential_request(jwe, &pem) {
+            Err(_e) => {
+                return oid4vci_error(
+                    StatusCode::BAD_REQUEST,
+                    "invalid_encryption_parameters",
+                    "invalid_encryption_parameters: the encrypted credential request did not decrypt".into(),
+                );
+            }
+            Ok(plaintext) => {
+                let Ok(text) = std::str::from_utf8(&plaintext) else {
+                    return oid4vci_error(
+                        StatusCode::BAD_REQUEST,
+                        "invalid_credential_request",
+                        "the decrypted credential request is not JSON".into(),
+                    );
+                };
+                match serde_json::from_str::<CredentialRequest>(text) {
+                    Ok(r) => r,
+                    Err(e) => {
+                        return oid4vci_error(
+                            StatusCode::BAD_REQUEST,
+                            "invalid_credential_request",
+                            format!("the decrypted credential request is malformed: {e}"),
+                        );
+                    }
+                }
+            }
+        }
     };
     match credential_impl(State(state), headers, req).await {
         Ok(resp) => resp,
@@ -742,6 +849,11 @@ pub async fn credential(
             // the code name itself contains no other marker words.
             let code = if msg.contains("invalid_nonce") {
                 "invalid_nonce"
+            } else if msg.starts_with("invalid_encryption_parameters") {
+                // OID4VCI §12.2.4: unsupported/unusable credential
+                // encryption answers its own error code (the suite's
+                // VCIValidateCredentialErrorResponse).
+                "invalid_encryption_parameters"
             } else if msg.starts_with(".unknown_credential_identifier") {
                 "unknown_credential_identifier"
             } else if msg.starts_with(".unknown_credential_configuration") {
@@ -999,6 +1111,11 @@ async fn credential_impl(
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("credential record: {e}")))?;
         let _ = tx.commit().await;
 
+        // HAIP x5c chain from the env profile (issuance leaf + chain).
+        let issuance_chain = crate::wallet::pem_profile_to_x5c(
+            &crate::oauth::resolve_security_profile(&state.pool, &headers, "env")
+                .await,
+        );
         match mint_credential(
             &state,
             &headers,
@@ -1009,6 +1126,7 @@ async fn credential_impl(
             &cnf_jwk,
             shared_status,
             member_idx,
+            issuance_chain.as_deref(),
         )
         .await
         {
@@ -1045,7 +1163,54 @@ async fn credential_impl(
     }
 
     // Final §7.4 - the response carries EVERY credential minted in one
-    // entry per proof.
+    // entry per proof. When the wallet requested credential-response
+    // encryption (§12.2.4), the credentials object rides as a COMPACT
+    // JWE (ECDH-ES + A256GCM) over the wallet's key - the response body
+    // is the JWE text itself (VCIEnsureCredentialResponseIsEncryptedJwe).
+    // Unsupported alg/enc values answer `400 invalid_credential_request`
+    // BEFORE minting (FailOnUnsupportedEncryptionAlgorithm).
+    if let Some(enc_obj) = &req.credential_response_encryption {
+        let enc: crate::jwe::ResponseEncryption = serde_json::from_value(enc_obj.clone())
+            .map_err(|_| {
+                (
+                    StatusCode::BAD_REQUEST,
+                    "invalid_credential_request: credential_response_encryption is malformed".into(),
+                )
+            })?;
+        // Validate alg/enc BEFORE any credential mint - the §12.2.4
+        // error code for an unsupported/unusable encryption request is
+        // `invalid_encryption_parameters` (the suite's
+        // FailOnUnsupportedEncryptionAlgorithm +
+        // VCIValidateCredentialErrorResponse expect it).
+        enc.validate().map_err(|e| {
+            (
+                StatusCode::BAD_REQUEST,
+                format!("invalid_encryption_parameters: {e:?}"),
+            )
+        })?;
+        let payload = serde_json::json!({ "credentials": credentials_out });
+        let jwe = crate::jwe::encrypt_credential_response(
+            payload.to_string().as_bytes(),
+            &enc,
+        )
+        .map_err(|e| {
+            (
+                StatusCode::BAD_REQUEST,
+                format!("invalid_credential_request: {e:?}"),
+            )
+        })?;
+        return Ok({
+            let mut resp = jwe.into_response();
+            // axum renders a bare `String` body as text/plain; the §13.3
+            // credential-response CT contract is `application/jwt` - set
+            // (not append) it explicitly.
+            resp.headers_mut().insert(
+                axum::http::header::CONTENT_TYPE,
+                axum::http::HeaderValue::from_static("application/jwt"),
+            );
+            resp
+        });
+    }
     Ok((
         StatusCode::OK,
         Json(serde_json::json!({ "credentials": credentials_out })),
@@ -1110,8 +1275,12 @@ pub async fn deferred_credential(
     if status == "revoked" {
         return Err((StatusCode::CONFLICT, "transaction revoked".into()));
     }
+    let issuance_chain = crate::wallet::pem_profile_to_x5c(
+        &crate::oauth::resolve_security_profile(&state.pool, &headers, "env").await,
+    );
     let credential =
-        mint_credential(&state, &headers, id, env_id, user_id, &cred_type, &cnf, None, 0).await?;
+        mint_credential(&state, &headers, id, env_id, user_id, &cred_type, &cnf,
+ None, 0, issuance_chain.as_deref()).await?;
     Ok((
         StatusCode::OK,
         Json(serde_json::json!({
@@ -1177,7 +1346,6 @@ mod tests {
     fn x5c_leaf_jwk_round_trips_to_standard_ec_jwk() {
         use base64::Engine as _;
         use p256::elliptic_curve::sec1::ToEncodedPoint;
-        use p256::pkcs8::EncodePublicKey;
         let key = p256::SecretKey::random(&mut rand::thread_rng());
         let cert_der = leaf_spki_der_for_test(&key);
         let header = serde_json::json!({
@@ -1205,7 +1373,7 @@ mod tests {
     /// wrapped twice (tbs, certificate). The SPKI is the real PKIX SPKI
     /// of the key, so the walker's 7th-element extraction must land on it.
     fn leaf_spki_der_for_test(key: &p256::SecretKey) -> Vec<u8> {
-        use p256::pkcs8::EncodePublicKey;
+        use p256::pkcs8::EncodePublicKey as _;
         let spki_doc = key.public_key().to_public_key_der().expect("spki doc");
         let spki = spki_doc.as_bytes();
 

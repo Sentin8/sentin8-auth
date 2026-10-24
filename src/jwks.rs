@@ -165,6 +165,10 @@ pub(crate) struct StoredKey {
     ec_pk_b64: Option<String>,
     /// PKCS#8 PEM (base64) captured at generation time for ES256 persistence.
     ec_pem_b64: Option<String>,
+    /// Self-issued X.509 certificate for the EC/ES256 key (DER, std
+    /// base64) - the HAIP x5c header chain (DESIGN §9a.19); minted once
+    /// at key load/generation and published with every HAIP JWS.
+    ec_cert_der_b64: Option<String>,
 }
 
 impl StoredKey {
@@ -190,8 +194,9 @@ impl StoredKey {
                 n: None,
                 e: None,
                 crv: None,
+                x5c: None,
             }
-        } else if self.alg == "ES256" {
+        } else if self.alg == "ES256" || self.alg == "ECDH-ES" {
             // P-256 point split: byte 0 = 0x04 (uncompressed), then x (32)
             // + y (32) - the JWK x/y are the raw halves (base64url).
             let raw = self
@@ -210,13 +215,18 @@ impl StoredKey {
             Jwk {
                 kty: "EC".into(),
                 kid: self.key_id.clone(),
-                use_field: "sig".into(),
-                alg: "ES256".into(),
+                // ECDH-ES rows are the credential-REQUEST encryption
+                // recipients (DESIGN §9a.19 addendum): use=enc + the
+                // JWE alg (the suite's request-encryption key check
+                // requires use=enc/absent + an asymmetric JWE alg).
+                use_field: if self.alg == "ECDH-ES" { "enc".into() } else { "sig".into() },
+                alg: self.alg.clone(),
                 x: Some(x_b64),
                 y: Some(y_b64),
                 n: None,
                 e: None,
                 crv: Some("P-256".into()),
+                x5c: self.ec_cert_der_b64.as_ref().map(|c| vec![c.clone()]),
             }
         } else {
             Jwk {
@@ -229,6 +239,7 @@ impl StoredKey {
                 n: self.rsa_n_b64.clone(),
                 e: self.rsa_e_b64.clone(),
                 crv: None,
+                x5c: None,
             }
         }
     }
@@ -238,6 +249,17 @@ impl StoredKey {
         self.ml_dsa_key.is_some()
             || self.rsa_encoding_key.is_some()
             || self.ec_encoding_key.is_some()
+    }
+
+    /// The EC/P-256 private key as PKCS#8 PEM (ES256 keys only) - the
+    /// credential-request JWE decryption recipient (DESIGN §9a.19
+    /// addendum): ECDH-ES key agreement needs the recipient's private
+    /// point. `None` for non-EC keys.
+    pub fn ec_private_pem(&self) -> Option<String> {
+        self.ec_pem_b64
+            .as_ref()
+            .and_then(|b64| base64::Engine::decode(&base64::engine::general_purpose::STANDARD, b64).ok())
+            .map(|raw| String::from_utf8_lossy(&raw).to_string())
     }
 }
 
@@ -294,10 +316,14 @@ impl SigningKeys {
                 ec_encoding_key: None,
                 ec_pk_b64: None,
                 ec_pem_b64: None,
+                ec_cert_der_b64: None,
             })
-        } else if alg == "ES256" {
+        } else if alg == "ES256" || alg == "ECDH-ES" {
             // FAPI2 posture - P-256 ECDSA (suite-accepted FAPI2-SP-FINAL
             // 5.4-1 family; compact, FIPS-friendly, no hash-PSS footguns).
+            // ECDH-ES rows reuse the SAME EC generation: the key is a
+            // plain P-256 pair (the alg name is the keystore family =
+            // the credential-REQUEST encryption recipients, use=enc).
             use p256::ecdsa::SigningKey as EcSigning;
             use p256::pkcs8::EncodePrivateKey;
             use rand::RngCore;
@@ -314,7 +340,7 @@ impl SigningKeys {
                 base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(pem.as_str().as_bytes());
             Ok(StoredKey {
                 key_id,
-                alg: "ES256".into(),
+                alg: alg.to_string(),
                 ml_dsa_key: None,
                 ml_dsa_pk_b64: None,
                 rsa_encoding_key: None,
@@ -324,6 +350,7 @@ impl SigningKeys {
                 ec_encoding_key: Some(encoding_key),
                 ec_pk_b64: Some(pk_b64),
                 ec_pem_b64: Some(pem_b64),
+                ec_cert_der_b64: pem_str_to_self_cert_b64(&pem),
             })
         } else {
             // Classical mode - generate RSA-2048 keypair.
@@ -351,6 +378,7 @@ impl SigningKeys {
                 ec_encoding_key: None,
                 ec_pk_b64: None,
                 ec_pem_b64: None,
+                ec_cert_der_b64: None,
             })
         }
     }
@@ -446,9 +474,10 @@ impl SigningKeys {
                     ec_encoding_key: None,
                     ec_pk_b64: None,
                     ec_pem_b64: None,
+                    ec_cert_der_b64: None,
                 }
-            } else if alg == "ES256" {
-                // ES256 rows store the PKCS#8 PEM (sealed) + the raw
+            } else if alg == "ES256" || alg == "ECDH-ES" {
+                // ES256/ECDH-ES rows store the PKCS#8 PEM (sealed) + the raw
                 // uncompressed point (pub_key_b64) for the JWK x/y.
                 let pem_str = String::from_utf8(priv_bytes)
                     .map_err(|e| anyhow::anyhow!("EC PEM not UTF-8 for {key_id}: {e}"))?;
@@ -466,7 +495,7 @@ impl SigningKeys {
                 });
                 StoredKey {
                     key_id,
-                    alg: "ES256".into(),
+                    alg: alg.to_string(),
                     ml_dsa_key: None,
                     ml_dsa_pk_b64: None,
                     rsa_encoding_key: None,
@@ -479,6 +508,7 @@ impl SigningKeys {
                         base64::engine::general_purpose::STANDARD
                             .encode(pem_str.as_bytes()),
                     ),
+                    ec_cert_der_b64: pem_str_to_self_cert_b64(&pem_str),
                 }
             } else {
                 // RS256 rows store the PKCS#8 PEM (sealed with the envelope).
@@ -503,6 +533,7 @@ impl SigningKeys {
                     ec_encoding_key: None,
                     ec_pk_b64: None,
                     ec_pem_b64: None,
+                    ec_cert_der_b64: None,
                 }
             };
             all.push(key);
@@ -529,7 +560,7 @@ impl SigningKeys {
         // while the process default is MLDSA65 (and vice versa). Generate
         // + persist the missing family so the per-tenant lookup at mint
         // time always succeeds.
-        for family in ["MLDSA65", "RS256", "ES256"] {
+        for family in ["MLDSA65", "RS256", "ES256", "ECDH-ES"] {
             if !all.iter().any(|k| k.alg == family && k.can_sign()) {
                 let key = Self::generate(family)?;
                 Self::persist_one(&mut tx, &mk, &key).await?;
@@ -761,13 +792,71 @@ impl SigningKeys {
         &self,
         claims: &serde_json::Value,
         _jwk_hdr: &serde_json::Value,
+        x5c_chain: Option<&[String]>,
     ) -> Result<String, String> {
-        self.sign_value_typed_inlined_jwk(claims, "ES256", "status-list+jwt")
+        // HAIP (the suite's ValidateStatusListTokenX5cCertificateChain):
+        // the status-list JWS header carries an x5c CERTIFICATE chain -
+        // prefer the x5c signer, fall back to the inlined-jwk form for
+        // the plain-OAuth slices (no certificate minted).
+        self.sign_value_typed_x5c(claims, "ES256", "status-list+jwt", x5c_chain)
+            .map_err(|_| ())
+            .or_else(|_| {
+                self.sign_value_typed_inlined_jwk(claims, "ES256", "status-list+jwt")
+            })
             .map_err(|_| ())
             .or_else(|_| {
                 self.sign_value_typed_inlined_jwk(claims, "RS256", "status-list+jwt")
             })
             .map_err(|_| "no ES256/RS256 key for the status-list token".to_string())
+    }
+
+    /// The x5c form of [`Self::sign_value_typed_inlined_jwk`] (HAIP
+    /// certificate mode, DESIGN §9a.19): the JWS header carries
+    /// `x5c: [<DER cert std-base64>]` of the signing key's
+    /// self-issued certificate and NO `jwk` member.
+    pub fn sign_value_typed_x5c(
+        &self,
+        claims: &serde_json::Value,
+        alg: &str,
+        typ: &str,
+        chain_override: Option<&[String]>,
+    ) -> Result<String, String> {
+        let key = self
+            .signing_key_for(alg)
+            .ok_or_else(|| format!("no {alg} signing key available"))?;
+        let chain: Vec<String> = match chain_override {
+            Some(c) if !c.is_empty() => c.to_vec(),
+            _ => key
+                .ec_cert_der_b64
+                .as_deref()
+                .map(|c| vec![c.to_string()])
+                .ok_or("no certificate on the signing key")?,
+        };
+        let cert_b64 = chain[0].as_str();
+        let b64 = |b: &[u8]| base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(b);
+        let payload_b64 = b64(
+            &serde_json::to_vec(claims).map_err(|e| format!("claims: {e}"))?,
+        );
+        let pem = key.ec_private_pem().ok_or("no EC PEM material")?;
+        let sk = {
+            use p256::elliptic_curve::pkcs8::DecodePrivateKey;
+            let secret = p256::SecretKey::from_pkcs8_pem(&pem)
+                .map_err(|e| format!("p256 key: {e}"))?;
+            p256::ecdsa::SigningKey::from(&secret)
+        };
+        let header = serde_json::json!({
+            "alg": "ES256",
+            "typ": typ,
+            "kid": key.key_id,
+            "x5c": [cert_b64],
+        });
+        let header_b64 = b64(
+            &serde_json::to_vec(&header).map_err(|e| format!("header: {e}"))?,
+        );
+        let signing_input = format!("{header_b64}.{payload_b64}");
+        use p256::ecdsa::signature::Signer;
+        let sig: p256::ecdsa::Signature = sk.sign(signing_input.as_bytes());
+        Ok(format!("{signing_input}.{}", b64(&sig.to_bytes())))
     }
 
     /// [`Self::sign_value_typed`] with the signing key's PUBLIC JWK
@@ -1360,6 +1449,62 @@ pub struct Jwk {
     #[serde(skip_serializing_if = "Option::is_none")]
     /// The crv.
     pub crv: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    /// The x5c certificate chain (std-base64 DER entries) - present on
+    /// the ES256 key when its self-issued certificate exists (HAIP
+    /// certificate mode).
+    pub x5c: Option<Vec<String>>,
+}
+
+impl SigningKeys {
+    /// The credential-REQUEST encryption recipient metadata (DESIGN
+    /// §9a.19 addendum, OID4VCI §12.2.4): the EC P-256 (ES256 family)
+    /// JWK set wallets encrypt credential REQUESTS to. Uses the ES256
+    /// keys' public JWKs (the same keys that already publish in the
+    /// JWKS endpoint; ECDH-ES key agreement works against the public
+    /// point).
+    pub fn credential_request_encryption_jwks(&self) -> serde_json::Value {
+        let doc = JwksResponse::from_keys_family(self, "ECDH-ES");
+        serde_json::to_value(&doc).unwrap_or(serde_json::json!({"keys": []}))
+    }
+
+    /// HAIP x5c chain (DESIGN §9a.19): the self-issued DER certificate
+    /// of the ES256 signing key (std-base64), present only when the cert
+    /// exists. The OIDF rig pins this exact cert as the credential/status
+    /// -list trust anchor (one-cert self-issued chain - the HAIP x5c
+    /// validator accepts a chain whose anchor matches the pinned cert).
+    pub fn es256_cert_chain_b64(&self) -> Option<String> {
+        self.all
+            .iter()
+            .filter(|k| k.alg == "ES256" && k.ec_cert_der_b64.is_some())
+            .last()
+            .and_then(|k| k.ec_cert_der_b64.clone())
+    }
+
+    /// The EC private PEM of the given `kid` (or the newest
+    /// request-encryption key) for the credential-request JWE
+    /// decryption - the ECDH-ES keystore family, ES256 fallback for
+    /// environments seeded before the family existed.
+    pub fn es256_private_pem(&self, kid: Option<&str>) -> Option<String> {
+        let key = match kid {
+            Some(k) => self
+                .all
+                .iter()
+                .find(|key| key.key_id() == k && (key.alg() == "ECDH-ES" || key.alg() == "ES256")),
+            None => self
+                .all
+                .iter()
+                .filter(|key| key.alg() == "ECDH-ES")
+                .last()
+                .or_else(|| {
+                    self.all
+                        .iter()
+                        .filter(|key| key.alg() == "ES256")
+                        .last()
+                }),
+        }?;
+        key.ec_private_pem()
+    }
 }
 
 impl JwksResponse {
@@ -1694,4 +1839,24 @@ mod tests {
         let claims = SigningKeys::verify_with_jwk(&jwk, &token).unwrap();
         assert_eq!(claims["sub"], "client");
     }
+}
+
+/// Mint a self-issued X.509 certificate (DER, std-base64) for an EC
+/// PKCS#8 PEM key - the HAIP x5c chain form (DESIGN §9a.19). The
+/// subject/issuer is the auth issuer identity; a one-cert self-signed
+/// chain the rig pins as its trust anchor.
+///
+/// Returns `None` when rcgen rejects the material (never expected for a
+/// generated P-256 key) - callers then publish the token without x5c
+/// (the plain-OAuth slice).
+pub(crate) fn pem_str_to_self_cert_b64(pem: &str) -> Option<String> {
+    use base64::Engine as _;
+    let kp = rcgen::KeyPair::from_pem(pem).ok()?;
+    let mut params = rcgen::CertificateParams::new(vec![]).ok()?;
+    params
+        .distinguished_name
+        .push(rcgen::DnType::CommonName, "sentin8-auth-issuer");
+    params.is_ca = rcgen::IsCa::Ca(rcgen::BasicConstraints::Unconstrained);
+    let cert = params.self_signed(&kp).ok()?;
+    Some(base64::engine::general_purpose::STANDARD.encode(cert.der()))
 }

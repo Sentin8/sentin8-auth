@@ -56,7 +56,9 @@ bcrypt = "0.15"
 async-trait = "0.1"
 hmac = "0.12"
 sha1 = "0.10"
-p256 = { version = "0.13", features = ["ecdsa", "ecdsa-core", "pem", "pkcs8"] }
+p256 = { version = "0.13", features = ["ecdsa", "ecdsa-core", "pem", "pkcs8", "ecdh"] }
+aes-gcm = "0.10"
+rcgen = "0.13"
 ciborium = "0.2"
 rustls = { version = "0.23", features = ["std", "tls12", "logging"], default-features = false }
 rustls-graviola = "0.4"
@@ -66,4 +68,4 @@ utoipa = { version = "5", features = ["chrono", "uuid"] }
 url = "2"
 
 [dev-dependencies]
-rcgen = "0.13"
+

@@ -922,7 +922,11 @@ pub async fn credential_status(
     let Some(jwk_hdr) = status_list_signing_jwk(&state) else {
         return (StatusCode::INTERNAL_SERVER_ERROR, "no signing key".to_string()).into_response();
     };
-    let token = crate::jwks::SigningKeys::status_list_jwt(&state.keys, &claims, &jwk_hdr)
+    // HAIP (§9a.19): the env profile's issuance leaf/chain (PEM) is the
+    // status-list JWS's x5c when seeded; else the key's self-issued cert.
+    let profile = crate::oauth::resolve_security_profile(&state.pool, &headers, "env").await;
+    let chain_x5c = pem_profile_to_x5c(&profile);
+    let token = crate::jwks::SigningKeys::status_list_jwt(&state.keys, &claims, &jwk_hdr, chain_x5c.as_deref())
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))
         .unwrap_or_else(|_| String::new());
     (
@@ -1054,4 +1058,48 @@ pub async fn signature_request(
         StatusCode::NOT_IMPLEMENTED,
         "QES signature ceremonies require a vertical payment-service integration".into(),
     ))
+}
+
+/// The HAIP x5c chain (std-base64 DER entries) from a security profile's
+/// issuance leaf + chain PEMs: `[leaf, intermediate...]` in the order the
+/// JWS x5c header expects (leaf first). `None` when the profile carries
+/// no issuance material (the plain jwk-header form).
+pub(crate) fn pem_profile_to_x5c(
+    profile: &crate::oauth::SecurityProfile,
+) -> Option<Vec<String>> {
+    use base64::Engine as _;
+    let parse = |pem: &str| -> Option<String> {
+        let body = pem
+            .split("-----BEGIN CERTIFICATE-----")
+            .nth(1)?
+            .split("-----END CERTIFICATE-----")
+            .next()?
+            .trim();
+        let cleaned: String = body.replace(['\n', '\r'], "");
+        base64::engine::general_purpose::STANDARD
+            .decode(&cleaned)
+            .ok()
+            .map(|der| base64::engine::general_purpose::STANDARD.encode(der))
+    };
+    let leaf = parse(&profile.issuance_leaf_pem)?;
+    let intermediates = profile
+        .issuance_chain_pem
+        .split("-----END CERTIFICATE-----")
+        .filter_map(|_| None::<String>)
+        .collect::<Vec<_>>();
+    // The chain member is optional; the leaf is the requirement.
+    let mut chain = vec![leaf];
+    for block in profile.issuance_chain_pem.split("-----BEGIN CERTIFICATE-----") {
+        if let Some(rest) = block.split("-----END CERTIFICATE-----").next() {
+            let cleaned: String = rest.replace(['\n', '\r'], "").trim().to_string();
+            if cleaned.is_empty() {
+                continue;
+            }
+            if let Ok(der) = base64::engine::general_purpose::STANDARD.decode(&cleaned) {
+                chain.push(base64::engine::general_purpose::STANDARD.encode(der));
+            }
+        }
+    }
+    let _ = intermediates;
+    Some(chain)
 }

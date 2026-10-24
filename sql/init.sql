@@ -1238,6 +1238,14 @@ CREATE TABLE IF NOT EXISTS auth.security_profiles (
     allow_client_attestation            BOOLEAN NOT NULL DEFAULT false,
     client_attestation_trust_anchor_pem TEXT NOT NULL DEFAULT '',
     client_attestation_issuer           TEXT NOT NULL DEFAULT '',
+    -- HAIP (§9a.19): the ISSUER's X.509 leaf certificate (PEM, signed by
+    -- the deployment's issuance CA) bound to the ES256 signing key; the
+    -- credential and status-list tokens embed it as their x5c chain and
+    -- the relying-party trust anchor is the issuance CA. Seeded per
+    -- environment; empty = the plain-OAuth (jwk-header) form.
+    issuance_leaf_pem                   TEXT NOT NULL DEFAULT '',
+    issuance_chain_pem                  TEXT NOT NULL DEFAULT '',
+
     created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at      TIMESTAMPTZ NOT NULL DEFAULT now()
 );

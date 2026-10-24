@@ -542,7 +542,7 @@ pub async fn authenticate_client(
     };
 
     // RFC 7523 §2.2: a private_key_jwt assertion carries the client in
-    // ; when no form/basic client_id arrived, the assertion IS the
+    // `iss`; when no form/basic client_id arrived, the assertion IS the
     // identification - extract it here so the exchange proceeds to
     // signature verification (the suite posts assertion-only auth).
     let client_id = client_id.filter(|s| !s.is_empty()).or_else(|| {
@@ -551,6 +551,18 @@ pub async fn authenticate_client(
                 .ok()
                 .and_then(|c| c.get("iss").and_then(|v| v.as_str()).map(str::to_string))
         })
+    });
+    // draft-ietf-oauth-attestation-based-client-auth §5: the attestation
+    // header JWT carries `sub` = client_id; a header-only push (no form
+    // client_id at all) is identified by its attestation, exactly like
+    // the assertion path above.
+    let client_id = client_id.filter(|s| !s.is_empty()).or_else(|| {
+        headers
+            .get(crate::client_attestation::HEADER_ATTESTATION)
+            .and_then(|v| v.to_str().ok())
+            .and_then(|a| sentin8::auth::jwt::decode_payload(a).ok())
+            .and_then(|c| c.get("sub").and_then(|v| v.as_str()).map(str::to_string))
+            .filter(|s| !s.is_empty())
     });
     let client_id = client_id.filter(|s| !s.is_empty()).ok_or_else(|| {
         tracing::warn!(
@@ -706,8 +718,11 @@ pub async fn authenticate_client(
     // introspect). Gated on the RESOLVED ENV PROFILE's
     // `allow_client_attestation`; the profile carries the trust anchor
     // PEM and the expected attestation `iss`. On success auth_method =
-    // attest_jwt_client_auth and the rest of the flow continues (the
-    // per-client fields keep their registered values).
+    // attest_jwt_client_auth is selected and the method ladder is DONE:
+    // this arm is the FIRST arm of the if/else chain, so a verified
+    // attestation satisfies confidential endpoints (PAR/revoke/
+    // introspect) with no client_secret - the draft's header pair IS
+    // the client authentication.
     if let (Some(att_jwt), Some(pop_jwt)) = (
         headers
             .get(crate::client_attestation::HEADER_ATTESTATION)
@@ -752,9 +767,7 @@ pub async fn authenticate_client(
         // the jti consumed; a replayed jti answers invalid_client.
         replay_gate_pop_jti(&state.config.valkey_url, &jti).await?;
         auth_method = "attest_jwt_client_auth";
-    }
-
-    if let Some(assertion) = client_assertion {
+    } else if let Some(assertion) = client_assertion {
         // private_key_jwt (RFC 7523).
         if auth_method_registered != "private_key_jwt"
             && auth_method_registered != "client_secret_jwt"
@@ -1639,6 +1652,12 @@ pub struct SecurityProfile {
     pub client_attestation_trust_anchor_pem: String,
     /// The attestation's expected `iss` (the attester's trust domain).
     pub client_attestation_issuer: String,
+    /// HAIP (§9a.19 addendum): the issuer's ES256 X.509 leaf (PEM, the
+    /// credential/status-list x5c chain's LEAF) + its CA chain; seeded
+    /// per environment. Empty = the plain jwk-header form.
+    pub issuance_leaf_pem: String,
+    /// The issuer issuance CA chain (PEM) for the HAIP x5c; empty = plain form.
+    pub issuance_chain_pem: String,
 }
 
 impl Default for SecurityProfile {
@@ -1660,6 +1679,8 @@ impl Default for SecurityProfile {
             allow_client_attestation: false,
             client_attestation_trust_anchor_pem: String::new(),
             client_attestation_issuer: String::new(),
+            issuance_leaf_pem: String::new(),
+            issuance_chain_pem: String::new(),
         }
     }
 }
@@ -1803,7 +1824,8 @@ async fn fetch_profile_row(
     let row = sqlx::query!(
         r#"SELECT profile, require_par, require_mtls, require_jarm, require_dpop,
                   require_http_signatures, require_jwt_introspection, require_iss, signing_alg,
-                  allow_client_attestation, client_attestation_trust_anchor_pem, client_attestation_issuer
+                  allow_client_attestation, client_attestation_trust_anchor_pem,
+                  client_attestation_issuer, issuance_leaf_pem, issuance_chain_pem
            FROM auth.security_profiles
            WHERE scope = $1
              AND (org_id IS NOT DISTINCT FROM $2)
@@ -1832,6 +1854,8 @@ async fn fetch_profile_row(
         allow_client_attestation: r.allow_client_attestation,
         client_attestation_trust_anchor_pem: r.client_attestation_trust_anchor_pem,
         client_attestation_issuer: r.client_attestation_issuer,
+        issuance_leaf_pem: r.issuance_leaf_pem,
+        issuance_chain_pem: r.issuance_chain_pem,
     })
 }
 
@@ -1941,6 +1965,13 @@ pub struct UpdateSecurityProfileRequest {
     /// The attestation's expected `iss` (the attester's trust domain).
     #[serde(default)]
     pub client_attestation_issuer: Option<String>,
+    /// HAIP: the issuer's ES256 leaf certificate (PEM) + its CA chain -
+    /// the credential/status-list x5c chain (empty = plain jwk form).
+    #[serde(default)]
+    pub issuance_leaf_pem: Option<String>,
+    #[serde(default)]
+    /// The issuer issuance CA chain (PEM) for the HAIP x5c; empty = plain form.
+    pub issuance_chain_pem: Option<String>,
 }
 
 /// `GET /v1/security-profile` - return the effective security profile for
@@ -2121,7 +2152,8 @@ pub async fn put_security_profile_api(
         r#"SELECT require_par, require_mtls, require_jarm, require_dpop,
                   require_http_signatures, require_jwt_introspection, require_iss,
                   max_token_lifetime, refresh_rotation, profile, signing_alg,
-                  allow_client_attestation, client_attestation_trust_anchor_pem, client_attestation_issuer
+                  allow_client_attestation, client_attestation_trust_anchor_pem,
+                  client_attestation_issuer, issuance_leaf_pem, issuance_chain_pem
            FROM security_profiles
            WHERE scope = $1
              AND (org_id IS NOT DISTINCT FROM $2)
@@ -2134,7 +2166,8 @@ pub async fn put_security_profile_api(
     .await
     .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
-    let (e_par, e_mtls, e_jarm, e_dpop, e_hsigs, e_ji, e_iss, e_max, e_rot, e_profile, e_alg, e_attest, e_anchor, e_att_iss) =
+    let (e_par, e_mtls, e_jarm, e_dpop, e_hsigs, e_ji, e_iss, e_max, e_rot,
+         e_profile, e_alg, e_attest, e_anchor, e_att_iss, e_leaf, e_chain) =
         existing.map(|r| {
             (
                 r.require_par,
@@ -2151,6 +2184,8 @@ pub async fn put_security_profile_api(
                 r.allow_client_attestation,
                 r.client_attestation_trust_anchor_pem,
                 r.client_attestation_issuer,
+                r.issuance_leaf_pem,
+                r.issuance_chain_pem,
             )
         })
         .unwrap_or((
@@ -2168,6 +2203,8 @@ pub async fn put_security_profile_api(
             false,
             String::new(),
             String::new(),
+            String::new(),
+            String::new(),
         ));
 
     let row = sqlx::query!(
@@ -2177,9 +2214,10 @@ pub async fn put_security_profile_api(
                 require_http_signatures, require_jwt_introspection, require_iss,
                 max_token_lifetime, refresh_rotation, signing_alg,
                 allow_client_attestation, client_attestation_trust_anchor_pem,
-                client_attestation_issuer)
+                client_attestation_issuer, issuance_leaf_pem,
+                issuance_chain_pem)
            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14,
- $15, $16, $17)
+                   $15, $16, $17, $18, $19)
            ON CONFLICT (scope, org_id, env_id)
            DO UPDATE SET
                profile = EXCLUDED.profile,
@@ -2197,6 +2235,8 @@ pub async fn put_security_profile_api(
                client_attestation_trust_anchor_pem =
                    EXCLUDED.client_attestation_trust_anchor_pem,
                client_attestation_issuer = EXCLUDED.client_attestation_issuer,
+               issuance_leaf_pem = EXCLUDED.issuance_leaf_pem,
+               issuance_chain_pem = EXCLUDED.issuance_chain_pem,
                updated_at = now()
            RETURNING
                scope, org_id, env_id, profile,
@@ -2222,6 +2262,8 @@ pub async fn put_security_profile_api(
         req.allow_client_attestation.unwrap_or(e_attest),
         req.client_attestation_trust_anchor_pem.clone().unwrap_or(e_anchor),
         req.client_attestation_issuer.clone().unwrap_or(e_att_iss),
+        req.issuance_leaf_pem.clone().unwrap_or(e_leaf),
+        req.issuance_chain_pem.clone().unwrap_or(e_chain),
     )
     .fetch_one(&mut *tx)
     .await

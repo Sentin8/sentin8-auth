@@ -24,6 +24,9 @@ pub mod ciba;
 /// Attestation-based client authentication
 /// (draft-ietf-oauth-attestation-based-client-auth; DESIGN §9a.19).
 pub mod client_attestation;
+/// OID4VCI credential-response encryption (§12.2.4; DESIGN §9a.19
+/// addendum): ECDH-ES + A256GCM compact JWE production.
+pub mod jwe;
 /// Environment configuration.
 pub mod config;
 /// Consent proxy for delegated approval surfaces.
