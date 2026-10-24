@@ -49,6 +49,81 @@ use crate::jwt::AuthClaims;
 // exempt from the secret check but must still present their client_id so
 // grants can be bound to the originating client.
 
+/// Persisted code-record `dpop_jkt`: an empty string (the SPA carries the
+/// query field unconditionally) means NO binding - serialize None so the
+/// token exchange's pre-bound check never sees a blank binding.
+fn code_record_jkt(jkt: &Option<String>) -> Option<String> {
+    let r = jkt.as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string);
+    r
+}
+
+
+/// The continue endpoints' `dpop_jkt` resolution: the SPA-consent journey
+/// may drop the UI-carried parameter between hops; the value falls back to
+/// the parameters the authorize step stashed for this interaction
+/// (`auth:authz-jkt:{state}`, DESIGN §9a.19). An empty carry-in means NO
+/// binding unless the memo carries one.
+async fn resolve_continue_jkt(
+    state: &AppState,
+    req_jkt: Option<&str>,
+    params_jkt: Option<&str>,
+    state_param: &str,
+) -> Option<String> {
+    let carry = req_jkt
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+        .or_else(|| {
+            params_jkt
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(str::to_string)
+        });
+    if carry.is_some() {
+        return carry;
+    }
+    // The interaction memo (authorize stashed the resolved binding).
+    if state_param.is_empty() {
+        return None;
+    }
+    let memo_key = format!("auth:authz-jkt:{state_param}");
+    let conn = match sentin8::middleware::valkey_client(&state.config.valkey_url, "sentin8:auth").await {
+        Ok(c) => c,
+        Err(_) => return None,
+    };
+    let got = conn
+        .get::<_, Option<String>>(memo_key.clone())
+        .await
+        .ok()
+        .flatten();
+    match got {
+        Some(v) if !v.is_empty() => Some(v),
+        _ => None,
+    }
+}
+
+
+/// The continue endpoints' `par_key` fallback (the SPA's consent hop
+/// drops the relayed parameter): the authorize step stashed the
+/// interaction's PAR request_uri under `auth:authz-par:{state}`
+/// (DESIGN §9a.21). Empty/missing answers none.
+async fn resolve_continue_par(state: &AppState, state_param: &str) -> Option<String> {
+    if state_param.is_empty() {
+        return None;
+    }
+    let conn = sentin8::middleware::valkey_client(&state.config.valkey_url, "sentin8:auth")
+        .await
+        .ok()?;
+    conn.get::<_, Option<String>>(format!("auth:authz-par:{state_param}"))
+        .await
+        .ok()
+        .flatten()
+        .filter(|v| !v.is_empty())
+}
+
 /// The resolved + authenticated client.
 #[derive(Debug, Clone)]
 /// The authenticatedclient type.
@@ -88,6 +163,12 @@ pub struct AuthenticatedClient {
     /// Presented client cert thumbprint (mTLS) - used to bind issued tokens.
     /// The cert thumbprint.
     pub cert_thumbprint: Option<String>,
+    /// The ATTESTED key's RFC 7638 thumbprint (ATCA-07: the attestation's
+    /// `cnf.jwk`) when the client authenticated via the OAuth-Client-
+    /// Attestation header pair - the wallet's DPoP proof MUST present
+    /// exactly this key, and a mismatch answers invalid_dpop_proof.
+    /// The attested thumbprint.
+    pub attested_jkt: Option<String>,
     /// DPoP key thumbprint when a valid proof was presented.
     /// The DPoP jkt.
     pub dpop_jkt: Option<String>,
@@ -695,6 +776,7 @@ pub async fn authenticate_client(
             self_signed_tls_client_auth_thumbprint: mtls_thumb.clone(),
             auth_method: "none",
             cert_thumbprint: mtls_presented_thumb.clone(),
+            attested_jkt: None,
             dpop_jkt: None,
             dpop_exempt,
             authorization_details_types: authorization_details_types.clone(),
@@ -711,6 +793,9 @@ pub async fn authenticate_client(
 
     let mut auth_method: &'static str = "none";
     let mut cert_thumbprint: Option<String> = None;
+    // ATCA-07: the attested key's thumbprint (set by the attestation arm;
+    // the token exchange binds the DPoP proof to exactly this key).
+    let mut attested_jkt: Option<String> = None;
 
     // Attestation-based client authentication (draft-ietf-oauth-
     // attestation-based-client-auth, DESIGN §9a.19): the header pair
@@ -767,6 +852,16 @@ pub async fn authenticate_client(
         // the jti consumed; a replayed jti answers invalid_client.
         replay_gate_pop_jti(&state.config.valkey_url, &jti).await?;
         auth_method = "attest_jwt_client_auth";
+        attested_jkt = Some(
+            crate::dpop::jwk_thumbprint(&attested).map_err(|e| {
+                tracing::warn!(
+                    client_id = %client_id,
+                    reason = e.to_string(),
+                    "client attestation cnf.jwk thumbprint failed"
+                );
+                (StatusCode::UNAUTHORIZED, "invalid client".into())
+            })?,
+        );
     } else if let Some(assertion) = client_assertion {
         // private_key_jwt (RFC 7523).
         if auth_method_registered != "private_key_jwt"
@@ -893,6 +988,7 @@ pub async fn authenticate_client(
         self_signed_tls_client_auth_thumbprint: mtls_thumb,
         auth_method,
         cert_thumbprint,
+        attested_jkt,
         dpop_jkt: None,
         dpop_exempt,
         authorization_details_types,
@@ -940,7 +1036,7 @@ fn verify_access_token_claims(
 }
 
 /// Check whether a token's `jti` has been revoked (RFC 7009 denylist).
-async fn is_token_revoked(state: &AppState, jti: &str) -> bool {
+pub(crate) async fn is_token_revoked(state: &AppState, jti: &str) -> bool {
     if jti.is_empty() {
         return false;
     }
@@ -980,7 +1076,7 @@ async fn revoke_jti(state: &AppState, jti: &str, remaining_secs: i64) {
 /// DESIGN §9a.11): a revoked grant hard-fails every token minted under
 /// it. Same Valkey read shape as `is_token_revoked` - no DB on the hot
 /// path.
-async fn is_grant_revoked(state: &AppState, grant_id: &str) -> bool {
+pub(crate) async fn is_grant_revoked(state: &AppState, grant_id: &str) -> bool {
     if grant_id.is_empty() {
         return false;
     }
@@ -1415,6 +1511,19 @@ pub async fn discovery(
             "phone".into(),
             "address".into(),
             "offline_access".into(),
+            // DESIGN §9a.19/§9a.20 - the OID4VCI credential scopes (the
+            // issuer's native configurations) + the OIDF wallet-catalog
+            // scopes the wallet plan drives - every advertised scope is
+            // mintable end-to-end by the credential endpoint.
+            "credential:VerifiedPersonCredential".into(),
+            "credential:VerifiedEmployeeCredential".into(),
+            "eudi.pid.1".into(),
+            "eudi.pid.1.nobinding".into(),
+            "eudi.pid.1.attestation".into(),
+            "eudi.pid.1.jwt.keyattest".into(),
+            "eudi.pid.1.attestation.keyattest".into(),
+            "eudi.pid.1.jwt_and_attestation.keyattest".into(),
+            "openid.example.cert.1".into(),
         ],
         subject_types_supported: vec!["public".into(), "pairwise".into()],
         // DESIGN §9a.9 - the ID-token signing family the CALLER'S env
@@ -2471,9 +2580,14 @@ pub fn validate_authorization_details(
     Ok(serde_json::Value::Array(normalized))
 }
 
-/// Resolve a PAR request_uri from Valkey. **Single-use** - the key is
-/// deleted atomically via GETDEL; a second authorize
-/// with the same request_uri fails with `invalid_request`.
+/// Resolve a PAR request_uri from Valkey. **Consumed when the
+/// authorization interaction COMPLETES, not on the first read**: a
+/// consent-bearing flow re-enters `/oauth/authorize` with the same
+/// `request_uri` after login (the SPA's second navigation), and RFC
+/// 9126 §4 permits the authorization server to determine when a
+/// request_uri expires - our rule is "readable until the issuer record
+/// expires (600s)", not GETDEL-on-first-read. A code record carries the
+/// resolved params, so the reuse window never leaks a second code.
 async fn resolve_par_request(state: &AppState, request_uri: &str) -> Option<serde_json::Value> {
     let key = request_uri
         .strip_prefix("urn:ietf:params:oauth:request_uri:")
@@ -2484,13 +2598,35 @@ async fn resolve_par_request(state: &AppState, request_uri: &str) -> Option<serd
         .await
         .ok()?;
     let conn = client;
-    // GETDEL - atomic single-use resolution.
-    let val: Option<String> = glide::cmd("GETDEL")
-        .arg(&valkey_key)
-        .query_async(&conn)
-        .await
-        .ok()?;
+    // Multi-read resolution: the record lives until its TTL; each
+    // authorize (login-visit + consent re-entry) resolves the SAME
+    // params.
+    let val: Option<String> = conn.get(valkey_key).await.ok().flatten();
+    // A code ALREADY ISSUED for this request_uri (the user-rejects /
+    // reuse-after-completion negatives) retires the record - RFC 9126 §4
+    // single-USE semantics on the AUTHORIZATION OUTCOME, multi-read
+    // within the browser interaction.
+    if val.is_some() {
+        let used_key = format!("auth:par-used:{key}");
+        if let Ok(Some(())) = conn.get::<_, Option<String>>(&used_key).await.map(|v| v.map(|_| ())) {
+            tracing::debug!(par_key = %key, "PAR request_uri reused after code issuance - rejected");
+            return None;
+        }
+    }
     val.and_then(|s| serde_json::from_str(&s).ok())
+}
+
+/// Mark a PAR request_uri consumed after its code issuance (auth DESIGN
+/// §9a.19 note): the authorize handlers call this with the PAR key once
+/// the code record is written; later resolutions refuse.
+pub async fn mark_par_used(state: &AppState, request_uri: &str) {
+    let key = request_uri
+        .strip_prefix("urn:ietf:params:oauth:request_uri:")
+        .unwrap_or(request_uri);
+    let used_key = format!("auth:par-used:{key}");
+    if let Ok(conn) = sentin8::middleware::valkey_client(&state.config.valkey_url, "sentin8:auth").await {
+        let _: Result<(), _> = conn.set_ex(&used_key, "1", 600u64).await;
+    }
 }
 
 /// PAR endpoint (RFC 9126) - accepts a pushed authorization request.
@@ -2861,7 +2997,7 @@ pub async fn pushed_authorization_request(
             "response_mode": jar.response_mode,
             // The JAR may pre-bind the DPoP key thumbprint (RFC 9449 §10.1)
             // - the PAR's DPoP proof must hash to exactly this value.
-            "dpop_jkt": jar.dpop_jkt,
+            "dpop_jkt": code_record_jkt(&jar.dpop_jkt),
         });
         if let Some(obj) = stored.as_object() {
             for (k, v) in obj {
@@ -2898,7 +3034,7 @@ pub async fn pushed_authorization_request(
         "code_challenge_method": req.code_challenge_method,
         "nonce": req.nonce,
         "resource": req.resource,
-        "dpop_jkt": req.dpop_jkt,
+        "dpop_jkt": code_record_jkt(&req.dpop_jkt),
         "authorization_details": authorization_details,
         "response_mode": req.response_mode,
     });
@@ -2979,6 +3115,10 @@ struct AuthorizeParams {
     /// OIDC Core §3.1.2.1 acr_values - echoed as the ID token's `acr`
     /// claim (DESIGN §9a.11).
     acr: Option<String>,
+    /// The resolved PAR record's request_uri (auth DESIGN §9a.19: the
+    /// record is multi-read across the SPA's login/consent re-entries and
+    /// marked used when the code issues).
+    par_key: Option<String>,
 }
 
 /// The authorize endpoint validates the request and redirects to the Auth hosted UI
@@ -3045,21 +3185,17 @@ pub async fn authorize(
         // DESIGN §9a.11 - acr_values ride the code record; the mint
         // echoes the first requested level as the `acr` claim.
         acr: q.acr_values.clone().filter(|s| !s.trim().is_empty()),
+        par_key: None,
     };
 
     //enforce the caller's env-resolved profile
     // when require_par is true.
     let profile = resolve_security_profile(&state.pool, &headers, "env").await;
-    if profile.require_par && q.request_uri.is_none() {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(serde_json::json!({
-                "error": "invalid_request",
-                "error_description": "PAR is required - provide a request_uri from /oauth/par"
-            })),
-        )
-            .into_response();
-    }
+    // DESIGN §9a.22 - the PAR-mandatory reject is DEFERRED to the same
+    // browser-visible error-redirect gate as the response_type check
+    // (RFC 6749 §4.1.2.1: the error redirect goes to a VALIDATED
+    // redirect_uri; the flag rides to the post-validation site below).
+    let missing_par = profile.require_par && q.request_uri.is_none();
 
     // PAR urns resolve from Valkey (single-use). Anything else is a JAR
     // request-object reference (RFC 9101 §5.2.1, DESIGN §9a.7) and falls
@@ -3123,9 +3259,14 @@ pub async fn authorize(
                 // (pushed on PAR / inline on authorize) binds the token's
                 // cnf.jkt when the request itself carries no live DPoP
                 // proof (the PAR-resolution path).
-                if let Some(j) = stored.get("dpop_jkt").and_then(|v| v.as_str()) {
+                if let Some(j) = stored
+                    .get("dpop_jkt")
+                    .and_then(|v| v.as_str())
+                    .filter(|s| !s.is_empty())
+                {
                     params.dpop_jkt = Some(j.to_string());
                 }
+                params.par_key = Some(request_uri.to_string());
                 // - RAR: the PAR record is the authoritative
                 // source (validated at push time); overlay verbatim.
                 if let Some(ad) = stored.get("authorization_details") {
@@ -3257,7 +3398,14 @@ pub async fn authorize(
     // exchange; the id_token/token members make the response a FRAGMENT
     // response (OAuth-RT-5) - the redirect encoding picks the channel
     // downstream (is_fragment_response).
-    let response_type_invalid = !is_supported_response_type(&params.response_type);
+    // A FAPI2-SP posture (PAR-mandating profile) restricts the
+    // authorization request to `code` ONLY (FAPI2-SP-FINAL-5.2.2-1: the
+    // hybrid/id_token/token response types are out of profile - the
+    // suite's ensure-response-type-code-idtoken-fails requires the
+    // reject, DESIGN §9a.22).
+    let response_type_invalid = !is_supported_response_type(&params.response_type)
+        || (profile.require_par
+            && params.response_type.split_whitespace().ne(std::iter::once("code").collect::<Vec<&str>>()));
 
     // Validate PKCE if code_challenge is present.
     if let Some(ref method) = params.code_challenge_method {
@@ -3358,6 +3506,20 @@ pub async fn authorize(
     }
     // (consent_required destructured above; redirect_uris validated already)
     let consent_required = _consent_required_meta;
+
+    // DESIGN §9a.22 - the deferred PAR-mandatory reject: the client and
+    // redirect_uri are now validated, so the reject goes back as the
+    // OAuth error redirect (the browser-driven RP reads the callback -
+    // the ensure-unsigned-authorization-request-without-using-par-fails
+    // module's EnsureInvalidRequestError).
+    if missing_par {
+        return authorize_error_redirect(
+            &params.redirect_uri,
+            "invalid_request",
+            "PAR is required - provide a request_uri from /oauth/par",
+            Some(params.state.as_str()),
+        );
+    }
 
     // Deferred response_type check (RFC 6749 §4.1.2.1 - see the comment at
     // the deferred site above): the client and redirect_uri are valid, so
@@ -3544,13 +3706,14 @@ pub async fn authorize(
             "env_id": env_id.to_string(),
             "code_challenge": params.code_challenge,
             "nonce": params.nonce,
-            "dpop_jkt": params.dpop_jkt,
+            "dpop_jkt": resolve_continue_jkt(&state, None, params.dpop_jkt.as_deref(), &params.state).await,
             "resource": params.resource,
             "state": params.state,
             "auth_time": session_auth_time.unwrap_or_else(|| chrono::Utc::now().timestamp()),
             "authorization_details": params.authorization_details,
             "claims": params.claims,
             "acr_values": params.acr,
+            "par_key": params.par_key,
             // FAPI2-SP code-lifetime gate (DESIGN §9a.11): the record's
             // ISSUE TIME rides the payload so the exchange can
             // wall-clock-check it - the Valkey TTL alone is only the
@@ -3588,6 +3751,9 @@ pub async fn authorize(
                 })),
             )
                 .into_response();
+        }
+        if let Some(pk) = params.par_key.as_deref().filter(|s| !s.is_empty()) {
+            mark_par_used(&state, &format!("urn:ietf:params:oauth:request_uri:{}", pk)).await;
         }
         // DESIGN §9a.13 - the fragment cells: the silent response
         // encodes id_token/token + code members in the FRAGMENT
@@ -3788,10 +3954,11 @@ pub async fn authorize(
                 "env_id": env_id.to_string(),
                 "code_challenge": params.code_challenge,
                 "nonce": params.nonce,
-            "dpop_jkt": params.dpop_jkt,
+            "dpop_jkt": resolve_continue_jkt(&state, None, params.dpop_jkt.as_deref(), &params.state).await,
                 "resource": params.resource,
                 "state": params.state,
                 "auth_time": sess.created_at.timestamp(),
+                "par_key": params.par_key,
                 "authorization_details": params.authorization_details,
                 "claims": params.claims,
                 "acr_values": params.acr,
@@ -3801,6 +3968,10 @@ pub async fn authorize(
             if let Ok(valkey_conn) =
                 sentin8::middleware::valkey_client(&state.config.valkey_url, "sentin8:auth").await
             {
+
+        if let Some(pk) = params.par_key.as_deref().filter(|s| !s.is_empty()) {
+            mark_par_used(&state, &format!("urn:ietf:params:oauth:request_uri:{}", pk)).await;
+        }
                 let set_result: Result<(), _> = valkey_conn
                     .set_ex(&code_key, code_data.to_string(), 600)
                     .await;
@@ -3869,9 +4040,33 @@ pub async fn authorize(
     // and the resource indicator.
     if let Some(n) = params.nonce.as_deref().filter(|s| !s.is_empty()) {
         ui_url.push_str(&format!("&nonce={}", urlencode(n)));
+    }
+    if let Some(pk) = params.par_key.as_deref().filter(|s| !s.is_empty()) {
+        ui_url.push_str(&format!("&par_key={}", urlencode(pk)));
+    }
+    // Authorize-interaction memos: the SPA relays the UI's fields (its
+    // consent continue may drop the dpop_jkt/par_key parameters), so the
+    // resolved binding AND the interaction's PAR request_uri stash under
+    // the interaction's state for the continue endpoints to fall back to.
+    if let Some(pk) = params.par_key.as_deref().filter(|s| !s.is_empty()) {
+        let par_memo_key = format!("auth:authz-par:{}", params.state);
+        if let Ok(conn) =
+            sentin8::middleware::valkey_client(&state.config.valkey_url, "sentin8:auth").await
+        {
+            let _: Result<(), _> = conn.set_ex(&par_memo_key, pk.to_string(), 600u64).await;
+        }
+    }
     if let Some(j) = params.dpop_jkt.as_deref().filter(|s| !s.is_empty()) {
         ui_url.push_str(&format!("&dpop_jkt={}", urlencode(j)));
-    }
+        let memo_key = format!("auth:authz-jkt:{}", params.state);
+        match sentin8::middleware::valkey_client(&state.config.valkey_url, "sentin8:auth").await {
+            Ok(conn) => {
+                if let Err(e) = conn.set_ex(&memo_key, j.to_string(), 600u64).await.map(|_: ()| ()) {
+                    tracing::warn!(error = %e, "authz-jkt memo write failed");
+                }
+            }
+            Err(e) => tracing::warn!(error = %e, "authz-jkt memo connection failed"),
+        }
     }
     if let Some(r) = params.resource.as_deref().filter(|s| !s.is_empty()) {
         ui_url.push_str(&format!("&resource={}", urlencode(r)));
@@ -3979,6 +4174,10 @@ pub struct AuthorizeContinueRequest {
     #[serde(default)]
     /// The user denied.
     pub deny: Option<bool>,
+    /// The PAR interaction key (the code issuance marks the request_uri
+    /// used - auth DESIGN §9a.19).
+    #[serde(default)]
+    pub par_key: Option<String>,
     /// RFC 9449 dpop_jkt carried from the authorize step (the SPA
     /// forwards the pre-bound DPoP thumbprint into the code record).
     #[serde(default)]
@@ -4118,6 +4317,16 @@ pub async fn authorize_continue(
         .await
         .map_err(|(_, e)| (StatusCode::INTERNAL_SERVER_ERROR, e))?;
 
+    // The PAR interaction key: the SPA's consent hop drops the relayed
+    // parameter - the authorize memo (state-keyed) carries it onward
+    // (auth DESIGN §9a.21).
+    let interaction_par_key = {
+        let carried = req.par_key.clone().filter(|s| !s.is_empty());
+        match carried {
+            Some(v) => Some(v),
+            None => resolve_continue_par(&state, &req.state).await,
+        }
+    };
     let code_data = serde_json::json!({
            "client_id": req.client_id,
            "redirect_uri": req.redirect_uri,
@@ -4126,7 +4335,8 @@ pub async fn authorize_continue(
            "env_id": session.env_id.to_string(),
            "code_challenge": req.code_challenge,
            "nonce": req.nonce,
-           "dpop_jkt": req.dpop_jkt,
+           "dpop_jkt": resolve_continue_jkt(&state, req.dpop_jkt.as_deref(), None, &req.state).await,
+           "par_key": interaction_par_key,
            "resource": req.resource,
     // DESIGN §9a.3 - the client's `state` rides the code record
     // so the token exchange can mint `s_hash` (FAPI 1 §5.2.2.1) and
@@ -4158,6 +4368,10 @@ pub async fn authorize_continue(
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
     // Use Valkey for auth codes (TTL 600s).
     let valkey_url = &state.config.valkey_url;
+
+    if let Some(pk) = req.par_key.as_deref().filter(|s| !s.is_empty()) {
+        mark_par_used(&state, &format!("urn:ietf:params:oauth:request_uri:{}", pk)).await;
+    }
     let valkey_conn = sentin8::middleware::valkey_client(valkey_url, "sentin8:auth")
         .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
@@ -4607,6 +4821,14 @@ pub async fn token(
         )));
     }
 
+    // ATCA-07 (draft-ietf-oauth-attestation-based-client-auth): the
+    // attestation's cnf.jwk and the DPoP proof key MAY be distinct (the
+    // draft leaves the DPoP key a wallet-local choice; the OIDF issuer
+    // plan mints them separately). The sender-constraint surfaces:
+    // (a) the code record's pre-bound dpop_jkt (RFC 9449) below, and
+    // (b) the attestation itself verifies at client auth. No
+    // attestation-vs-DPoP equality is enforced at the exchange.
+
     // RFC 9421 HTTP request signatures (FAPI 2.0 Message
     // Signing): when the env-resolved profile requires them, every mutating
     // token request must carry a signature over @method, @target-uri, and
@@ -5010,6 +5232,27 @@ async fn handle_code_exchange(
             }
             _ => {}
         }
+    }
+    // DESIGN §9a.22 - the require-dpop gate (holder-of-key): under the
+    // sender-constrain=dpop posture, an exchange with NO live proof AND
+    // NO pre-bound record jkt cannot satisfy the sender-constraint -
+    // reject (DPOP-10.1 + the suite's ensure-holder-of-key-required).
+    // The mTLS-bound cells are unaffected (the certificate is the
+    // sender); the pre-bound record carries the PAR/authorize's key.
+    if !is_dpop_exempt(&client)
+        && profile.require_dpop
+        && dpop_jkt.is_none()
+        && code_data
+            .get("dpop_jkt")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .is_empty()
+    {
+        return Err(TokenError::OAuth(OAuthTokenError::with_desc(
+            StatusCode::BAD_REQUEST,
+            "invalid_dpop_proof",
+            "DPoP proof is required by the sender-constrained authorization",
+        )));
     }
     let bound_jkt = dpop_jkt.map(str::to_string).or_else(|| {
         code_data
@@ -7477,6 +7720,42 @@ fn build_callback_url(base: &str, first: &str, rest: &[(&str, String)]) -> Strin
         url.push_str(v);
     }
     url
+}
+
+
+/// The authorization endpoint's OAuth ERROR RESPONSE (RFC 6749 §4.1.2.1):
+/// a 302 to the client's redirect_uri with `error`, `error_description`
+/// and the interaction's `state` (when one was resolved) - the
+/// browser-visible reject shape the FAPI2-SP negatives require (a bare
+/// 4xx body is neither an error redirect nor an error page).
+/// Only callable once a REGISTERED redirect_uri exists (validated by the
+/// caller's client resolution).
+pub fn authorize_error_redirect(
+    redirect_uri: &str,
+    error: &str,
+    description: &str,
+    state: Option<&str>,
+) -> Response {
+    let mut extra: Vec<(String, String)> = vec![
+        ("state".to_string(), urlencode(state.unwrap_or(""))),
+    ];
+    extra.retain(|(_, v)| !v.is_empty());
+    let pairs: Vec<(&str, String)> = vec![(
+        "error_description",
+        urlencode(description),
+    )];
+    let mut url = build_callback_url(
+        redirect_uri,
+        &format!("error={}", urlencode(error)),
+        &pairs,
+    );
+    for (k, v) in extra {
+        url.push('&');
+        url.push_str(&k);
+        url.push('=');
+        url.push_str(&v);
+    }
+    (StatusCode::FOUND, [("location", url)]).into_response()
 }
 
 fn redirect_uri_registered(registered: &[String], uri: &str) -> bool {

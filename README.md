@@ -118,6 +118,11 @@ graph TD
   ([RFC 8707](https://datatracker.ietf.org/doc/html/rfc8707)), rich
   authorization requests ([RFC 9396](https://datatracker.ietf.org/doc/html/rfc9396)),
   native-app redirect rules ([RFC 8252](https://datatracker.ietf.org/doc/html/rfc8252)).
+  PAR records are multi-read across the browser authorization journey
+  and retire one-shot on the authorization OUTCOME (the code issuance
+  marks the `request_uri` used) - the full RFC 9449 §10.1
+  sender-constraint journey spanning PAR proof → browser journey →
+  token exchange is designed in the Detailed Design Document §9a.21.
 - **Authorization pipeline** — extract bearer (RFC 6750 §2.2) → verify
   (issuer/signature/expiry/audience/token type) → resolve tenant →
   feature gate → authorize via Shield → set RLS context → execute →

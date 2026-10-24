@@ -862,14 +862,17 @@ graph TD
 The discovery document carries the required-when-supported /
 recommended fields (advertised only when actually supported):
 
-- **The four OIDC claim scopes are advertised and served**:
-  `scopes_supported` is `openid profile email phone address
-  offline_access` - every scope advertised is mintable end-to-end (the
-  §9a.10 no-skip rule). `claims_supported` lists the full claim set:
-  `sub`, `iss`, `aud`, `exp`, `iat`, `auth_time`, `nonce`, `at_hash`,
-  `c_hash`, `name`, `given_name`, `family_name`, `email`,
-  `email_verified`, `phone_number`, `phone_number_verified`, `address`,
-  `verified_claims`.
+- **The OIDC + wallet scope families are advertised and served**:
+  `scopes_supported` is the OIDC base (`openid profile email phone
+  address offline_access`) PLUS the OID4VCI credential scopes (the
+  issuer's native `credential:*` configurations) and the OIDF
+  wallet-catalog scopes (`eudi.pid.1` family, `openid.example.cert.1`)
+  the wallet plan drives - every scope advertised is mintable
+  end-to-end (the §9a.10 no-skip rule). `claims_supported` lists the
+  full claim set: `sub`, `iss`, `aud`, `exp`, `iat`, `auth_time`,
+  `nonce`, `at_hash`, `c_hash`, `name`, `given_name`, `family_name`,
+  `email`, `email_verified`, `phone_number`, `phone_number_verified`,
+  `address`, `verified_claims`.
 - `token_endpoint_auth_signing_alg_values_supported` (required when
   `private_key_jwt` is advertised - RFC 7591 §2)
 - `claims_parameter_supported: true` + `claims_supported`
@@ -1321,3 +1324,182 @@ cell - the fapi2-security spec owns them.
 ---
 
 **Architecture & Design:** sentin8:auth and its underlying concepts were designed by [Hamid Jahanzad](https://www.linkedin.com/in/hamidjahanzad/).
+### 9a.20 OID4VCI wallet-plan issuer surface - credential-offer landing
+
+The OIDF wallet plan (`oid4vci-1_0-wallet-test-plan`) exercises the WALLET
+role against our issuer: the suite builds the OID4VCI credential offer
+from its own default catalog and opens `vci.credential_offer_endpoint`
+(BY_VALUE: the offer JSON rides the `credential_offer` query param) in
+the browser. The issuer-side surface:
+
+- `GET /oauth/credential-offer?credential_offer=<urlencoded offer>&<fixed
+  client params>` - the offering landing handler. It parses the offer
+  (credential_issuer, credential_configuration_ids, grants.authorization
+  _code.issuer_state), resolves the bound client + redirect_uri + scope
+  from the pass-through query parameters the harness embeds in
+  `vci.credential_offer_endpoint` (UriComponentsBuilder preserves them),
+  and 302-redirects into the standard authorize flow with
+  `state=<issuer_state>` + `issuer_state=<issuer_state>` (the suite's
+  `VCIVerifyIssuerStateInAuthorizationRequest` requires the request to
+  echo its generated state).
+- The rest of the flow is the proven stack: the harness browser completes
+  the sign-in bridge, the suite callback receives `code` + matching state,
+  the wallet authenticates (`private_key_jwt`), and the credential
+  request family runs over the §9a.19 surfaces (catalog configs, dpop,
+  attested proofs, encryption).
+
+The issuer advertises the OIDF wallet catalog (eu.europa.ec.eudi.pid.1,
+nobinding, attestation/jwt.keyattest variants) in
+`credential_configurations_supported` - `scope` per configuration; the
+minted `vct` is the configuration's designator (`urn:eudi:pid:1`).
+
+The harness supplies the wallet config surface: `server.jwks` (the
+issuer's live JWKS for LoadServerJWKs), `credential.signing_jwk` (the
+rig-minted issuance leaf on the issuer's ES256 key - HAIP 6.1.1
+no-self-signed), the published wallet `client.jwks` (public-only - the
+plan's EnsureJwksHasNoPrivateOrSymmetricKeyMaterial), and the
+`client_attestation` block (`issuer` + `trust_anchor` +
+`attester_jwks` private keys mirroring the ATCA-07 registration).
+
+
+### 9a.21 DPoP sender-constraint journey - PAR lifecycle & the jkt chain
+
+The HAIP plan's fapi2-security-profile modules exercise the full RFC 9449
+§10.1 sender-constraint journey: the key that signed the PAR request's
+DPoP proof must be the key that signs the token endpoint's proof. The
+journey spans THREE server surfaces (PAR push, browser authorize/consent
+journey, token exchange) - the binding must survive the browser hops
+where neither the client nor the SPA re-derives it.
+
+**Authorization-journey lifecycle (PAR is multi-read, one-shot on
+OUTCOME):**
+
+- `POST /oauth/par` stores the verified param record at
+  `auth:par:{key}` (600s TTL, RFC 9126 §4 AS-decided expiry) with the
+  request's SENDER-CONSTRAINT resolved in priority order: the pre-bound
+  `dpop_jkt` (form field or the JAR object's member) MUST equal the
+  live proof's thumbprint when both exist (mismatch = 400
+  invalid_dpop_proof); when no value is pre-bound, the PAR's own
+  verified DPoP proof thumbprint becomes the binding.
+- `resolve_par_request` is a MULTI-READ: the SPA's login visit AND the
+  consent re-entry both hit `/oauth/authorize?request_uri=...`, and
+  each resolution overlays the record's params (incl. `dpop_jkt` and
+  the `par_key` copy) onto the request. RFC 9126 single-USE is honored
+  on the AUTHORIZATION OUTCOME, not on the first read: after ANY code
+  is issued for the interaction, `mark_par_used` sets
+  `auth:par-used:{key}` (600s) and further resolutions return none -
+  the reuse-after-completion negatives (FAPI2 rejected-request-uri
+  class) fail with the standard invalid_request error path, while the
+  two-visit flow keeps working.
+- The authorize handler copies the resolved `dpop_jkt` onto the
+  interaction params and ALSO stashes it under
+  `auth:authz-jkt:{state}` (600s) - the interaction memo.
+
+**The binding's ride through the browser journey (the invariant the
+memo exists for):** the code record is written by the CONTINUE
+endpoints (`/oauth/authorize/continue`, consent continue), which
+receive their `dpop_jkt` in priority order (1) the SPA's relayed
+parameter (may be absent or EMPTY - the SPA echoes only what its UI
+URL carried and the consent hop may strip it), (2) the authorize
+params carried on the continue request, (3) the interaction memo
+`auth:authz-jkt:{state}`. Empty strings NEVER bind - every carry-in
+is trimmed, empty-filtered (`code_record_jkt`), THEN the memo
+fallback applies. The code record's `dpop_jkt` member is absent (no
+`null` member) when no binding resolved - the exchange treats absent
+as unbound, never as a bound-but-empty value.
+
+**Token exchange (RFC 9449 §10.1):** when the code record carries a
+`dpop_jkt`, the live proof's thumbprint MUST equal it - mismatch
+answers `400 invalid_dpop_proof` (DPOP-10.1). A proof from an
+UNBOUND key on an unbound record mints a token bound to the live
+proof's key (`token_type: DPoP` either way). The pre-bound value wins
+over the live proof for the minted `cnf.jkt` (the request's key
+holder is the party the authorization bound).
+
+**PAR replay posture (the pairing with the code gate):** the code
+record carries the interaction's `par_key`; the authorize/continue
+code-writers call `mark_par_used` right after the Valkey
+`auth:authcode:{code}` write succeeds. Combined with the burned-code
+gate at exchange (code single-use), the platform guarantees: one
+authorization interaction → at most one code → at most one token
+grant, with the browser journey free to re-resolve the PAR any number
+of times BEFORE the outcome.
+
+### 9a.22 Authorization-endpoint rejects - the OAuth error-redirect posture & the require-dpop gate (FAPI2-SP negatives)
+
+The FAPI2-SP module family under the HAIP plan contains five
+authorization-endpoint negative/expectation modules whose compliant
+outcome is an ERROR REDIRECT (or the object-precedence echo), not an
+inline JSON body:
+
+- **The reject shape.** Every authorization-endpoint reject reached
+  AFTER the client + redirect_uri are validated, 302s to the client's
+  redirect_uri as the OAuth error response (RFC 6749 §4.1.2.1): `error`,
+  `error_description`, and the interaction's `state` (when one was
+  resolved). The DEFERRED-gate pattern: the PAR-mandatory violation
+  (`require_par` without a request_uri) and the response_type
+  restriction resolve at the same post-validation site. An inline 4xx
+  body is neither an error redirect nor an error page - the
+  suite's error-expecting modules read the CALLBACK (`EnsureInvalidRequestError`).
+  When the redirect_uri is not (yet) validated - a missing/unknown
+  client - the inline 400 stays (no open redirect).
+- **FAPI2-SP response_type restriction.** A PAR-mandating profile
+  restricts the authorization request to the RESPONSE TYPE `code`
+  ONLY (FAPI2-SP-FINAL-5.2.2-1): the hybrid forms (`code id_token`,
+  `code token`, `code id_token token`) and the bare `id_token`/`token`
+  forms - in profile for plain OIDC - reject with
+  `unsupported_response_type` redirect under FAPI2-SP.
+- **JAR state precedence (RFC 9101 - the object IS the request).**
+  The request object's `state` claim is THE state: an outside value
+  that differs is IGNORED (the callback echoes the object's state);
+  an object WITHOUT state completes with NO state in the callback
+  (`AuthorizeParams.state` is empty → the callback omits the
+  parameter). The state-conflict negatives
+  (different-state-inside-and-outside, state-only-outside-not-used)
+  accept this - the suite's VerifyNoStateInAuthorizationResponse /
+  CheckStateInAuthorizationResponse classes.
+- **The require-dpop gate (holder-of-key).** Under
+  `require_dpop=true` (the FAPI2-SP/sender-constrain=dpop posture), a
+  token-exchange WITHOUT a live DPoP proof AND without a pre-bound
+  code-record `dpop_jkt` cannot satisfy the sender-constraint: it
+  rejects `400 invalid_dpop_proof` (DPOP-10.1: sender-constrained
+  authorization requires proof of possession). The mTLS-bound cells
+  are unaffected (the certificate is the sender).
+- **The revocation cascade on the resource surface.** The code-replay
+  revocation (RFC 6749 §4.1.2 - `crate::grants::revoke_by_id` on the
+  detected replay) must hold EVERYWHERE the grant's tokens speak: the
+  credential endpoint enforces `is_token_revoked` + `is_grant_revoked`
+  the same way userinfo does - after the replay revocation the FIRST
+  token (the replay's sibling) stops authorizing resources (the suite
+  reuses the code 1s later, then calls the resource with the FIRST
+  token and expects 4xx).
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant C as client (HAIP)
+    participant P as /oauth/par
+    participant B as browser SPA journey
+    participant A as /oauth/authorize (+continue)
+    participant T as /oauth/token
+    C->>P: POST pushed request + DPoP proof
+    P->>P: verify proof; bind jkt (pre-bound or proof)
+    P-->>C: request_uri (auth:par:{key}, 600s)
+    C->>B: redirect to /oauth/authorize?request_uri=...
+    B->>A: GET authorize (visit 1 - login)
+    A->>A: resolve_par (multi-read) → params.dpop_jkt + par_key
+    A->>A: memo auth:authz-jkt:{state} = jkt
+    A-->>B: /sign-in UI URL (params + dpop_jkt + par_key)
+    B->>A: continue → code record (jkt via relay/memo)
+    A->>A: mark_par_used(par_key)
+    A-->>B: 302 callback?code
+    C->>T: POST token + DPoP proof (mismatched key cell)
+    alt proof jkt != code.dpop_jkt
+        T-->>C: 400 invalid_dpop_proof
+    else same key
+        T-->>C: 200 token bound to pre-bound jkt
+    end
+    B->>A: GET authorize?request_uri (reuse AFTER outcome)
+    A-->>B: rejected - auth:par-used:{key}
+```
+

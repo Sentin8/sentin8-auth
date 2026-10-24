@@ -23,7 +23,7 @@
 //! issues the standard session + auth code.
 //! - `GET /v1/auth/wallet/metadata` - public wallet-facing metadata.
 
-use axum::extract::{Path, Query, State};
+use axum::extract::{Path, Query, RawQuery, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::Json;
@@ -1103,3 +1103,103 @@ pub(crate) fn pem_profile_to_x5c(
     let _ = intermediates;
     Some(chain)
 }
+
+/// The OID4VCI credential-offer LANDING page (auth DESIGN §9a.20): the OIDF
+/// wallet plan opens `vci.credential_offer_endpoint` (our issuer URL) in the
+/// browser with the offer riding `credential_offer` (BY-VALUE) - the wallet
+/// role's first hop. The landing handler resolves the bound client from the
+/// pass-through query parameters the harness embeds in the endpoint URL (the
+/// suite's UriComponentsBuilder preserves them), then 302s into the standard
+/// authorize flow with `state` + `issuer_state` = the offer's issuer_state
+/// (the plan's VCIVerifyIssuerStateInAuthorizationRequest requires the request
+/// to echo its generated state).
+///
+/// # Errors
+/// `400` on a missing/malformed offer (unknown surface answers inline).
+pub async fn credential_offer_landing(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    RawQuery(query): RawQuery,
+) -> Response {
+    use serde_json::Value;
+    let params: std::collections::HashMap<String, String> = query
+        .map(|q| serde_urlencoded::from_str::<std::collections::HashMap<String, String>>(q.as_str()).unwrap_or_default())
+        .unwrap_or_default();
+
+    // BY-VALUE offer (the plan's BY_REFERENCE variant resolves the same JSON
+    // through vci.credential_offer_uri - the landing accepts the JSON form
+    // that path resolves to as well when the harness passes it inline).
+    let Some(offer_raw) = params.get("credential_offer") else {
+        return (StatusCode::BAD_REQUEST, "credential_offer is required").into_response();
+    };
+    let Ok(offer) = serde_json::from_str::<Value>(offer_raw) else {
+        return (StatusCode::BAD_REQUEST, "credential_offer is not valid JSON").into_response();
+    };
+    let Some(issuer_state) = offer
+        .pointer("/grants/authorization_code/issuer_state")
+        .and_then(|v| v.as_str())
+        .map(str::to_string)
+    else {
+        return (
+            StatusCode::BAD_REQUEST,
+            "credential_offer carries no authorization_code issuer_state",
+        )
+            .into_response();
+    };
+    let config_ids = offer
+        .get("credential_configuration_ids")
+        .and_then(|v| v.as_array())
+        .map(|a| {
+            a.iter()
+                .filter_map(|v| v.as_str().map(str::to_string))
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+
+    // The harness binds the client + redirect + scope hint through the pass
+    // -through query params of `vci.credential_offer_endpoint` (the suite's
+    // UriComponentsBuilder preserves existing query params when appending
+    // `credential_offer`).
+    let client_id = params.get("client_id").cloned().unwrap_or_default();
+    let redirect_uri = params.get("redirect_uri").cloned().unwrap_or_default();
+    let scopes = config_ids
+        .iter()
+        .map(|id| {
+            // The catalog scope is derivable: `credential:{id}` for the
+            // native configs, the config's own scope for the catalog
+            // (eudi.pid.1 family) - both accepted by the credential
+            // endpoint's scope check. Send BOTH forms; the authorize
+            // scope subset check permits registered scopes only.
+            id.to_string()
+        })
+        .collect::<Vec<_>>()
+        .join(" ");
+    let scope = format!(
+        "openid {scopes}",
+        scopes = scopes
+    );
+    if client_id.is_empty() || redirect_uri.is_empty() {
+        return (
+            StatusCode::BAD_REQUEST,
+            "the offer endpoint URL must carry client_id and redirect_uri (harness-bound)",
+        )
+            .into_response();
+    }
+
+    let issuer_url = crate::oauth::resolve_issuer(&state.config, &headers);
+    let authorize = vec![
+        ("response_type", "code"),
+        ("client_id", &client_id),
+        ("redirect_uri", &redirect_uri),
+        ("state", &issuer_state),
+        ("issuer_state", &issuer_state),
+        ("scope", &scope),
+    ];
+    let url = format!(
+        "{issuer_url}/oauth/authorize?{}",
+        serde_urlencoded::to_string(&authorize).unwrap_or_default()
+    );
+    axum::response::Redirect::to(&url).into_response()
+}
+
+

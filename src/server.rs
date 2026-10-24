@@ -319,6 +319,13 @@ pub fn build_router(state: AppState) -> Router {
             get(crate::wallet::wallet_metadata),
         )
         // OID4VCI credential issuance.
+        // OID4VCI credential-offer BROWSER landing page (DESIGN §9a.20):
+        // the wallet plan's first hop - the suite opens this URL with the
+        // BY-VALUE offer and the handler 302s into the authorize flow.
+        .route(
+            "/oauth/credential-offer",
+            get(crate::wallet::credential_offer_landing),
+        )
         .route("/oauth/credentials", post(crate::wallet::credential_offer))
         .route(
             "/oauth/credentials/issue",

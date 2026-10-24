@@ -367,6 +367,7 @@ mod tests {
             self_signed_tls_client_auth_thumbprint: None,
             auth_method: "client_secret_post",
             cert_thumbprint: None,
+            attested_jkt: None,
             dpop_jkt: None,
             dpop_exempt: false,
             authorization_details_types: vec![],

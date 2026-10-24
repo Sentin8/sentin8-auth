@@ -44,7 +44,12 @@ fn supported_credential_configurations(issuer: &str) -> serde_json::Value {
             "format": "dc+sd-jwt",
             "scope": format!("credential:{id}"),
             "cryptographic_binding_methods_supported": ["jwk"],
-            "credential_signing_alg_values_supported": ["ES256", "RS256", "ML-DSA-65"],
+            // The VCI validators accept recognized ASYMMETRIC JWS algs
+            // only (Nimbus JWS families) - ML-DSA-65 is not in the set it
+            // parses, so the metadata advertises the classical families;
+            // ML-DSA tokens verify kid-routed regardless (mint/verify do
+            // not read this list).
+            "credential_signing_alg_values_supported": ["ES256", "RS256"],
             // Final §12.2.4/App. D - the proof key MUST arrive with a key
             // attestation (`key-attestation+jwt`, signed key material);
             // the field rides INSIDE the jwt proof-type entry.
@@ -77,8 +82,7 @@ fn supported_credential_configurations(issuer: &str) -> serde_json::Value {
         for k in kinds {
             pt.insert(
                 (*k).to_string(),
-                serde_json::json!({ "proof_signing_alg_values_supported": ["ES
-256", "RS256"] }),
+                serde_json::json!({ "proof_signing_alg_values_supported": ["ES256", "RS256"] }),
             );
         }
         serde_json::Value::Object(pt)
@@ -89,54 +93,83 @@ fn supported_credential_configurations(issuer: &str) -> serde_json::Value {
             "scope": scope,
             "vct": vct,
             "cryptographic_binding_methods_supported": ["jwk"],
-            "credential_signing_alg_values_supported": ["ES256", "RS256", "ML-D
-SA-65"],
+            "credential_signing_alg_values_supported": ["ES256", "RS256"],
             "proof_types_supported": proof(proofs),
         });
         v.as_object_mut().unwrap().insert(
             "credential_metadata".to_string(),
             serde_json::json!({
-                "display": [ { "name": id, "description": "Sentin8 wallet-c
-atalog credential" } ]
+                "display": [ { "name": id, "description": "Sentin8 wallet-catalog credential" } ]
             }),
         );
         // The keyattest catalog entries REQUIRE the key attestation (the
         // module drives the attested-proof path; the plain families do
-        // not carry the requirement).
+        // not carry the requirement). The schema places
+        // key_attestations_required INSIDE each proof-type entry (sibling
+        // of the entry's proof_signing_alg_values_supported) - a sibling
+        // of the proof type itself is an unknown property.
         if id.contains("keyattest") {
-            v.as_object_mut()
+            let req = serde_json::json!({
+                // The metadata schema requires the attestation's proof-alg
+                // list INSIDE key_attestations_required (the suite's
+                // VCICredentialIssuerMetadataValidation).
+                "proof_signing_alg_values_supported": ["ES256"],
+            });
+            let pts = v
+                .as_object_mut()
                 .unwrap()
                 .get_mut("proof_types_supported")
                 .unwrap()
                 .as_object_mut()
-                .unwrap()
-                .insert(
-                    "key_attestations_required".to_string(),
-                    serde_json::json!({ "key_storage": ["software", "enclave
-", "tpm", "secure_element"] }),
-                );
+                .unwrap();
+            for (_, entry) in pts.iter_mut() {
+                entry
+                    .as_object_mut()
+                    .unwrap()
+                    .insert("key_attestations_required".to_string(), req.clone());
+            }
         }
         v
     };
     serde_json::json!({
         "VerifiedPersonCredential": single("VerifiedPersonCredential"),
         "VerifiedEmployeeCredential": single("VerifiedEmployeeCredential"),
-        "eu.europa.ec.eudi.pid.1": wallet("eu.europa.ec.eudi.pid.1", "eudi.p
-id.1", &["jwt"], "urn:eudi:pid:1"),
-        "eu.europa.ec.eudi.pid.1.nobinding": wallet("eu.europa.ec.eudi.pid.1
-.nobinding", "eudi.pid.1.nobinding", &[], "urn:eudi:pid:1"),
-        "eu.europa.ec.eudi.pid.1.attestation": wallet("eu.europa.ec.eudi.pid
-.1.attestation", "eudi.pid.1.attestation", &["attestation"], "urn:eudi:pid:1"),
-
-        "eu.europa.ec.eudi.pid.1.jwt.keyattest": wallet("eu.europa.ec.eudi.p
-id.1.jwt.keyattest", "eudi.pid.1.jwt.keyattest", &["jwt"], "urn:eudi:pid:1"),
-
-        "eu.europa.ec.eudi.pid.1.attestation.keyattest": wallet("eu.europa.ec
-.eudi.pid.1.attestation.keyattest", "eudi.pid.1.attestation.keyattest", &["att
-estation"], "urn:eudi:pid:1"),
-        "eu.europa.ec.eudi.pid.1.jwt_and_attestation.keyattest": wallet("eu.e
-uropa.ec.eudi.pid.1.jwt_and_attestation.keyattest", "eudi.pid.1.jwt_and_attest
-ation.keyattest", &["jwt", "attestation"], "urn:eudi:pid:1"),
+        "eu.europa.ec.eudi.pid.1": wallet(
+            "eu.europa.ec.eudi.pid.1",
+            "eudi.pid.1",
+            &["jwt"],
+            "urn:eudi:pid:1",
+        ),
+        "eu.europa.ec.eudi.pid.1.nobinding": wallet(
+            "eu.europa.ec.eudi.pid.1.nobinding",
+            "eudi.pid.1.nobinding",
+            &[],
+            "urn:eudi:pid:1",
+        ),
+        "eu.europa.ec.eudi.pid.1.attestation": wallet(
+            "eu.europa.ec.eudi.pid.1.attestation",
+            "eudi.pid.1.attestation",
+            &["attestation"],
+            "urn:eudi:pid:1",
+        ),
+        "eu.europa.ec.eudi.pid.1.jwt.keyattest": wallet(
+            "eu.europa.ec.eudi.pid.1.jwt.keyattest",
+            "eudi.pid.1.jwt.keyattest",
+            &["jwt"],
+            "urn:eudi:pid:1",
+        ),
+        "eu.europa.ec.eudi.pid.1.attestation.keyattest": wallet(
+            "eu.europa.ec.eudi.pid.1.attestation.keyattest",
+            "eudi.pid.1.attestation.keyattest",
+            &["attestation"],
+            "urn:eudi:pid:1",
+        ),
+        "eu.europa.ec.eudi.pid.1.jwt_and_attestation.keyattest": wallet(
+            "eu.europa.ec.eudi.pid.1.jwt_and_attestation.keyattest",
+            "eudi.pid.1.jwt_and_attestation.keyattest",
+            &["jwt", "attestation"],
+            "urn:eudi:pid:1",
+        ),
     })
 }
 
@@ -671,6 +704,16 @@ async fn verify_credential_dpop(
         .keys
         .verify(access_token)
         .map_err(|_| (StatusCode::UNAUTHORIZED, "invalid access token".to_string()))?;
+    // The revocation cascade (DESIGN §9a.22): a denylisted jti (RFC 7009)
+    // or a REVOKED GRANT (the code-reuse cascade - the suite's
+    // attempt-reuse-authorization-code module expects the resource surface
+    // to reject after the replay revocation) hard-fails the credential
+    // request the same way userinfo hard-fails.
+    if crate::oauth::is_token_revoked(&state, &claims.jti).await
+        || crate::oauth::is_grant_revoked(&state, claims.grant_id.as_deref().unwrap_or("")).await
+    {
+        return Err((StatusCode::UNAUTHORIZED, "token has been revoked".into()));
+    }
     let Some(cnf) = claims
         .cnf
         .as_ref()
