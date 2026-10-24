@@ -1190,6 +1190,70 @@ signing key). Note: the suite's "Try Client1's DPoP key with Client2's
 access token" step is a NEGATIVE probe - the RFC 9449-correct 401
 (cnf.jkt mismatch) is the expected verdict.
 
+### 9a.19 OID4VCI HAIP certification - attestation-based client authentication
+
+**Spec: OAuth 2.0 Attestation-Based Client Authentication (draft-ietf-
+oauth-attestation-based-client-auth, the suite's `OAuth2-ATCA07`
+requirements).** The `oid4vci-1_0-issuer-haip` plan runs the issuer
+surface with `client_auth_type=client_attestation`: the client
+authenticates with an ATTESTATION CHAIN, not a shared secret. This
+extends the token-endpoint authenticator (not the credential surface -
+the §9a.7 proof/keyAttestation paths are unchanged).
+
+**Wire contract (headers, not form parameters):**
+
+- `OAuth-Client-Attestation: <attestation JWT>` - `typ
+  oauth-client-attestation+jwt`; the JWS header carries an `x5c` chain
+  (the attester's certificate chain); claims: `iss` = the attester's
+  identifier (the trust-policy issuer), `sub` = the client_id being
+  authenticated, `iat`/`nbf`/`exp` freshness, `cnf.jwk` = the client's
+  PROOF key (the key the client signs with).
+- `OAuth-Client-Attestation-PoP: <pop JWT>` - `typ
+  oauth-client-attestation-pop+jwt`; claims: `iss` = the client's
+  instance key identifier, `aud` = the issuer
+  (`resolve_issuer`, host-resolved), `iat`/`nbf`/`exp`, `jti`
+  (single-use), and `challenge` when the server advertises an
+  `attestation_challenge_endpoint` (auth does NOT advertise one - the
+  challenge check self-skips).
+
+**Trust model.** The attestation's x5c chain must chain to the env's
+configured trust anchor: `security_profiles.kv` carries
+`client_attestation_trust_anchor_pem` (PEM of the attester CA/leaf) and
+`client_attestation_issuer` (the expected `iss`). Both are resolved
+through the SAME per-tenant profile plane as every other posture knob
+(§9a.9), gated behind `profile='vci_haip'` + an explicit
+`allow_client_attestation` flag. The attestation's signature verifies
+against the x5c LEAF key (the draft's self-contained verify path); the
+POP's signature verifies against the ATTESTED key (`cnf.jwk`) - so the
+PoP proves possession of exactly the key the attestation binds.
+
+**Discovery honesty (draft §5 metadata):** when the resolved profile
+enables attestation auth, discovery gains `attest_jwt_client_auth` in
+`token_endpoint_auth_methods_supported` (plus the revocation/
+introspection method lists that share the authenticator), and
+`client_attestation_signing_alg_values_supported: ["ES256"]` +
+`client_attestation_pop_signing_alg_values_supported: ["ES256"]`.
+
+**Profile plumbing:** `security_profiles` gains `profile='vci_haip'`
+(the same flag-shape family as `vci`) with `allow_client_attestation`,
+`client_attestation_trust_anchor_pem` (kv text), and
+`client_attestation_issuer` (kv text). The authenticator accepts
+attestation headers when the RESOLVED ENV PROFILE enables them
+(regardless of the client's registered method string, which carries
+`attest_jwt_client_auth` for the suite's registration checks); the FAPI
+method allow-list (`fapi.rs`) admits `attest_jwt_client_auth` under the
+vci profiles. PoP `jti` replay rides the established single-use cache
+(`auth:capop:{jti}`, SETNX with the exp-bounded TTL) - the draft's
+§6.2 replay rule, keyed globally-but-exp-bounded per the draft (the pop
+iss value is client-instance-scoped by construction).
+
+**Error shapes:** a failed attestation/PoP answers `401 invalid_client`
+(uniform, §8) - the suite's negative cells
+(FailOnInvalidClientAttestationPopSignature,
+FailOnMismatchedClientAttestationPopKey, FailOnInvalidClientAttestation
+Signature, FailOnClientAttestationNoSub, FailOnClientAttestationExpInPast)
+read it as the OAuth error shape.
+
 ## 13. Open Questions
 
 - Continuous access evaluation: session/token revocations already push
@@ -1211,4 +1275,4 @@ access token" step is a NEGATIVE probe - the RFC 9449-correct 401
 
 ---
 
-**Design attribution:** sentin8:auth and its underlying concepts were designed by Hamid Jahanzad <Hamid@Jahanzad.com>.
+**Architecture & Design:** sentin8:auth and its underlying concepts were designed by [Hamid Jahanzad](https://www.linkedin.com/in/hamidjahanzad/).

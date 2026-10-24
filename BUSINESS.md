@@ -279,5 +279,5 @@ certs/Auth-local identity, DB, Valkey, and the owner-API seeds only).
 
 ---
 
-**Design attribution:** sentin8:auth and its underlying concepts were
+**Architecture & Design:** sentin8:auth and its underlying concepts were
 designed by Hamid Jahanzad <Hamid@Jahanzad.com>.

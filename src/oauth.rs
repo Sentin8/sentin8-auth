@@ -162,6 +162,36 @@ fn parse_basic_auth(headers: &HeaderMap) -> Option<(String, String)> {
     Some((id.to_string(), secret.to_string()))
 }
 
+/// Single-use gate for a client-attestation PoP `jti` (DESIGN §9a.19,
+/// draft-ietf-oauth-attestation-based-client-auth §6.2 replay rule):
+/// SETNX keyed on the jti, TTL bounded by the proof's freshness window
+/// (120s > the ±60s iat check). A replayed jti means the same proof is
+/// presented twice - reject.
+async fn replay_gate_pop_jti(
+    valkey_url: &str,
+    jti: &str,
+) -> Result<(), (StatusCode, String)> {
+    if jti.is_empty() {
+        return Err((StatusCode::UNAUTHORIZED, "invalid client".into()));
+    }
+    if let Ok(conn) =
+        sentin8::middleware::valkey_client(valkey_url, "sentin8:auth").await
+    {
+        use glide::AsyncCommands as _;
+        let key = format!("auth:capop:{jti}");
+        let setnx = conn.set_nx::<_, _, i64>(key.clone(), "1").await;
+        if matches!(setnx, Ok(0)) {
+            tracing::warn!(jti = %jti, "client attestation PoP jti replayed");
+            return Err((StatusCode::UNAUTHORIZED, "invalid client".into()));
+        }
+        let _: Result<(), _> = conn.expire(key, 120i64).await;
+    }
+    // Valkey down → the denylist pattern is fail-open by design (DESIGN
+    // §6); the attestation + signature checks above already proved
+    // possession of the attested key.
+    Ok(())
+}
+
 /// Decode + verify a `client_assertion` (RFC 7523 private_key_jwt).
 ///
 /// The assertion must be: `iss`/`sub` = client_id, `aud` = token endpoint
@@ -625,7 +655,8 @@ pub async fn authenticate_client(
     let is_confidential = secret_hash.is_some()
         || mtls_dn.is_some()
         || mtls_thumb.is_some()
-        || auth_method_registered == "private_key_jwt";
+        || auth_method_registered == "private_key_jwt"
+        || auth_method_registered == "attest_jwt_client_auth";
 
     // mTLS identity from headers.
     let (mtls_presented_thumb, mtls_presented_dn) = crate::mtls::extract_mtls_identity(headers)
@@ -668,6 +699,60 @@ pub async fn authenticate_client(
 
     let mut auth_method: &'static str = "none";
     let mut cert_thumbprint: Option<String> = None;
+
+    // Attestation-based client authentication (draft-ietf-oauth-
+    // attestation-based-client-auth, DESIGN §9a.19): the header pair
+    // rides EVERY authenticate_client call site (token/PAR/revoke/
+    // introspect). Gated on the RESOLVED ENV PROFILE's
+    // `allow_client_attestation`; the profile carries the trust anchor
+    // PEM and the expected attestation `iss`. On success auth_method =
+    // attest_jwt_client_auth and the rest of the flow continues (the
+    // per-client fields keep their registered values).
+    if let (Some(att_jwt), Some(pop_jwt)) = (
+        headers
+            .get(crate::client_attestation::HEADER_ATTESTATION)
+            .and_then(|v| v.to_str().ok()),
+        headers
+            .get(crate::client_attestation::HEADER_ATTESTATION_POP)
+            .and_then(|v| v.to_str().ok()),
+    ) {
+        let env_profile =
+            crate::oauth::resolve_security_profile_for_env(&state.pool, env_id, "env")
+                .await;
+        if !env_profile.allow_client_attestation {
+            return Err((StatusCode::UNAUTHORIZED, "invalid client".into()));
+        }
+        let issuer = resolve_issuer(&state.config, headers);
+        let attested = crate::client_attestation::verify_attestation(
+            att_jwt,
+            &client_id,
+            &env_profile.client_attestation_issuer,
+            &env_profile.client_attestation_trust_anchor_pem,
+        )
+        .map_err(|e| {
+            tracing::warn!(
+                client_id = %client_id,
+                reason = e.label(),
+                "client attestation rejected"
+            );
+            (StatusCode::UNAUTHORIZED, "invalid client".into())
+        })?;
+        let jti =
+            crate::client_attestation::verify_pop(pop_jwt, &attested, &issuer).map_err(
+                |e| {
+                    tracing::warn!(
+                        client_id = %client_id,
+                        reason = e.label(),
+                        "client attestation PoP rejected"
+                    );
+                    (StatusCode::UNAUTHORIZED, "invalid client".into())
+                },
+            )?;
+        // PoP jti single-use (the draft's replay rule): the cache marks
+        // the jti consumed; a replayed jti answers invalid_client.
+        replay_gate_pop_jti(&state.config.valkey_url, &jti).await?;
+        auth_method = "attest_jwt_client_auth";
+    }
 
     if let Some(assertion) = client_assertion {
         // private_key_jwt (RFC 7523).
@@ -1032,6 +1117,14 @@ pub struct DiscoveryDocument {
     pub code_challenge_methods_supported: Vec<String>,
     /// The token endpoint auth methods supported.
     pub token_endpoint_auth_methods_supported: Vec<String>,
+    /// Attestation-based client auth (DESIGN §9a.19): the attestation
+    /// JWT signing algorithms; present only when the profile enables
+    /// attestation auth.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub client_attestation_signing_alg_values_supported: Option<Vec<String>>,
+    /// The PoP JWT signing algorithms (same gating).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub client_attestation_pop_signing_alg_values_supported: Option<Vec<String>>,
     /// The scopes supported.
     pub scopes_supported: Vec<String>,
     /// The subject types supported.
@@ -1193,7 +1286,7 @@ pub async fn discovery(
     // DESIGN §9a.4 - the token-endpoint client-auth method set,
     // computed once and advertised for the token, revocation, and
     // introspection endpoints alike (they share the authenticator).
-    let token_endpoint_auth_methods: Vec<String> = if profile.require_mtls {
+    let mut token_endpoint_auth_methods: Vec<String> = if profile.require_mtls {
         vec![
             "client_secret_post".into(),
             "client_secret_basic".into(),
@@ -1211,6 +1304,16 @@ pub async fn discovery(
             "self_signed_tls_client_auth".into(),
         ]
     };
+    // Attestation-based client auth (DESIGN §9a.19): advertised ONLY
+    // when the profile both enables it and carries the trust anchor
+    // (the draft's required-when-supported honesty rule - advertising
+    // without an anchor would be a lie).
+    let attestation_auth = profile.allow_client_attestation
+        && !profile.client_attestation_trust_anchor_pem.trim().is_empty();
+    if attestation_auth {
+        token_endpoint_auth_methods
+            .push(crate::client_attestation::AUTH_METHOD.to_string());
+    }
 
     Json(DiscoveryDocument {
         issuer: issuer.clone(),
@@ -1277,6 +1380,19 @@ pub async fn discovery(
         },
         code_challenge_methods_supported: vec!["S256".into()],
         token_endpoint_auth_methods_supported: token_endpoint_auth_methods.clone(),
+        // Attestation-based client auth (DESIGN §9a.19): the two alg
+        // lists appear ONLY when the profile enables attestation auth
+        // (same gate as the method advertisement).
+        client_attestation_signing_alg_values_supported: if attestation_auth {
+            Some(vec!["ES256".into()])
+        } else {
+            None
+        },
+        client_attestation_pop_signing_alg_values_supported: if attestation_auth {
+            Some(vec!["ES256".into()])
+        } else {
+            None
+        },
         scopes_supported: vec![
             "openid".into(),
             "profile".into(),
@@ -1513,6 +1629,16 @@ pub struct SecurityProfile {
     /// verification stays family-agnostic (kid-routed).
     /// The signing alg.
     pub signing_alg: String,
+    /// Attestation-based client authentication (design §9a.19,
+    /// draft-ietf-oauth-attestation-based-client-auth): the resolved
+    /// profile admits `OAuth-Client-Attestation` + PoP header auth on the
+    /// token endpoint family.
+    pub allow_client_attestation: bool,
+    /// PEM of the attester trust anchor the attestation's x5c chain must
+    /// chain to; empty keeps the feature disabled.
+    pub client_attestation_trust_anchor_pem: String,
+    /// The attestation's expected `iss` (the attester's trust domain).
+    pub client_attestation_issuer: String,
 }
 
 impl Default for SecurityProfile {
@@ -1531,6 +1657,9 @@ impl Default for SecurityProfile {
             require_pkce: true,
             profile: String::new(),
             signing_alg: String::new(),
+            allow_client_attestation: false,
+            client_attestation_trust_anchor_pem: String::new(),
+            client_attestation_issuer: String::new(),
         }
     }
 }
@@ -1673,7 +1802,8 @@ async fn fetch_profile_row(
 ) -> Option<SecurityProfile> {
     let row = sqlx::query!(
         r#"SELECT profile, require_par, require_mtls, require_jarm, require_dpop,
-                  require_http_signatures, require_jwt_introspection, require_iss, signing_alg
+                  require_http_signatures, require_jwt_introspection, require_iss, signing_alg,
+                  allow_client_attestation, client_attestation_trust_anchor_pem, client_attestation_issuer
            FROM auth.security_profiles
            WHERE scope = $1
              AND (org_id IS NOT DISTINCT FROM $2)
@@ -1699,6 +1829,9 @@ async fn fetch_profile_row(
         signing_alg: r.signing_alg,
         // PKCE rides on the PAR flag (FAPI 2.0 mandates both).
         require_pkce: r.require_par,
+        allow_client_attestation: r.allow_client_attestation,
+        client_attestation_trust_anchor_pem: r.client_attestation_trust_anchor_pem,
+        client_attestation_issuer: r.client_attestation_issuer,
     })
 }
 

@@ -4051,6 +4051,7 @@ dependencies = [
  "p256",
  "pkcs8 0.11.0",
  "rand 0.8.8",
+ "rcgen",
  "reqwest 0.12.28",
  "ring",
  "rsa",

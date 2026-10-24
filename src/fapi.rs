@@ -186,11 +186,15 @@ impl FapiProfile {
             // use mTLS or private_key_jwt. Secrets are not sufficient for
             // confidentiality under FAPI 2.0 (sender-constraining is the
             // defense - a shared secret is not sender-specific).
+            // Attestation-based client auth composes with FAPI 2.0
+            // (draft-ietf-oauth-attestation-based-client-auth §6.3 - the
+            // attested key IS sender-constraining by construction).
             Self::Fapi20 | Self::Fapi20MessageSigning => {
                 method == "none"
                     || method == "tls_client_auth"
                     || method == "self_signed_tls_client_auth"
                     || method == "private_key_jwt"
+                    || method == crate::client_attestation::AUTH_METHOD
             }
         }
     }

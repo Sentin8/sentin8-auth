@@ -265,5 +265,5 @@ Invariants (full numbered list in `DESIGN.md` §8):
 
 ---
 
-**Design attribution:** sentin8:auth and its underlying concepts were
+**Architecture & Design:** sentin8:auth and its underlying concepts were
 designed by Hamid Jahanzad <Hamid@Jahanzad.com>.

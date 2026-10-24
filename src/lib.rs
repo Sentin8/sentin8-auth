@@ -21,6 +21,9 @@ pub mod backchannel_logout;
 pub mod bot_protection;
 /// Client-Initiated Backchannel Authentication (RFC 9436 family).
 pub mod ciba;
+/// Attestation-based client authentication
+/// (draft-ietf-oauth-attestation-based-client-auth; DESIGN §9a.19).
+pub mod client_attestation;
 /// Environment configuration.
 pub mod config;
 /// Consent proxy for delegated approval surfaces.
