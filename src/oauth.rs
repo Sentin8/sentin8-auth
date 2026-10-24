@@ -1930,6 +1930,17 @@ pub struct UpdateSecurityProfileRequest {
     #[serde(default)]
     /// Per-tenant JWT signing family (`MLDSA65` | `RS256`) - DESIGN §9a.9.
     pub signing_alg: Option<String>,
+    /// Attestation-based client auth (DESIGN §9a.19): enable the
+    /// `OAuth-Client-Attestation` + PoP header family.
+    #[serde(default)]
+    pub allow_client_attestation: Option<bool>,
+    /// PEM of the attester trust anchor the attestation's x5c must
+    /// chain to (empty keeps the anchor check off).
+    #[serde(default)]
+    pub client_attestation_trust_anchor_pem: Option<String>,
+    /// The attestation's expected `iss` (the attester's trust domain).
+    #[serde(default)]
+    pub client_attestation_issuer: Option<String>,
 }
 
 /// `GET /v1/security-profile` - return the effective security profile for
@@ -2109,7 +2120,8 @@ pub async fn put_security_profile_api(
     let existing = sqlx::query!(
         r#"SELECT require_par, require_mtls, require_jarm, require_dpop,
                   require_http_signatures, require_jwt_introspection, require_iss,
-                  max_token_lifetime, refresh_rotation, profile, signing_alg
+                  max_token_lifetime, refresh_rotation, profile, signing_alg,
+                  allow_client_attestation, client_attestation_trust_anchor_pem, client_attestation_issuer
            FROM security_profiles
            WHERE scope = $1
              AND (org_id IS NOT DISTINCT FROM $2)
@@ -2122,7 +2134,7 @@ pub async fn put_security_profile_api(
     .await
     .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
-    let (e_par, e_mtls, e_jarm, e_dpop, e_hsigs, e_ji, e_iss, e_max, e_rot, e_profile, e_alg) =
+    let (e_par, e_mtls, e_jarm, e_dpop, e_hsigs, e_ji, e_iss, e_max, e_rot, e_profile, e_alg, e_attest, e_anchor, e_att_iss) =
         existing.map(|r| {
             (
                 r.require_par,
@@ -2136,6 +2148,9 @@ pub async fn put_security_profile_api(
                 r.refresh_rotation,
                 r.profile,
                 r.signing_alg,
+                r.allow_client_attestation,
+                r.client_attestation_trust_anchor_pem,
+                r.client_attestation_issuer,
             )
         })
         .unwrap_or((
@@ -2150,6 +2165,9 @@ pub async fn put_security_profile_api(
             true,
             "fapi_2".to_string(),
             "MLDSA65".to_string(),
+            false,
+            String::new(),
+            String::new(),
         ));
 
     let row = sqlx::query!(
@@ -2157,8 +2175,11 @@ pub async fn put_security_profile_api(
                (scope, org_id, env_id, profile,
                 require_par, require_mtls, require_jarm, require_dpop,
                 require_http_signatures, require_jwt_introspection, require_iss,
-                max_token_lifetime, refresh_rotation, signing_alg)
-           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
+                max_token_lifetime, refresh_rotation, signing_alg,
+                allow_client_attestation, client_attestation_trust_anchor_pem,
+                client_attestation_issuer)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14,
+ $15, $16, $17)
            ON CONFLICT (scope, org_id, env_id)
            DO UPDATE SET
                profile = EXCLUDED.profile,
@@ -2172,12 +2193,18 @@ pub async fn put_security_profile_api(
                max_token_lifetime = EXCLUDED.max_token_lifetime,
                refresh_rotation = EXCLUDED.refresh_rotation,
                signing_alg = EXCLUDED.signing_alg,
+               allow_client_attestation = EXCLUDED.allow_client_attestation,
+               client_attestation_trust_anchor_pem =
+                   EXCLUDED.client_attestation_trust_anchor_pem,
+               client_attestation_issuer = EXCLUDED.client_attestation_issuer,
                updated_at = now()
            RETURNING
                scope, org_id, env_id, profile,
                require_par, require_mtls, require_jarm, require_dpop,
                require_http_signatures, require_jwt_introspection, require_iss,
-               max_token_lifetime, refresh_rotation, signing_alg"#,
+               max_token_lifetime, refresh_rotation, signing_alg,
+               allow_client_attestation, client_attestation_trust_anchor_pem,
+               client_attestation_issuer"#,
         req.scope,
         req.org_id,
         req.env_id,
@@ -2192,6 +2219,9 @@ pub async fn put_security_profile_api(
         req.max_token_lifetime.unwrap_or(e_max),
         req.refresh_rotation.unwrap_or(e_rot),
         req.signing_alg.clone().unwrap_or(e_alg),
+        req.allow_client_attestation.unwrap_or(e_attest),
+        req.client_attestation_trust_anchor_pem.clone().unwrap_or(e_anchor),
+        req.client_attestation_issuer.clone().unwrap_or(e_att_iss),
     )
     .fetch_one(&mut *tx)
     .await

@@ -1254,6 +1254,29 @@ FailOnMismatchedClientAttestationPopKey, FailOnInvalidClientAttestation
 Signature, FailOnClientAttestationNoSub, FailOnClientAttestationExpInPast)
 read it as the OAuth error shape.
 
+**Plan census (suite 5.3.3, VCIIssuerTestPlanHaip):** 63 module-variants
+= 21 classes × variant slices - 57 plain
+(`vci_credential_encryption=plain`) + 3 encrypted
+(`=encrypted`) + 3 variant-less runner entries. The rig's runner create
+carries each module's resolved values
+(`GET /api/plan/<id>.modules[].variant` → `POST /api/runner?variant=<json>`
+with an EMPTY body - a JSON body answers 400).
+
+**Encrypted-slice requirement (backlog HAIP-1, backlog-ordered not yet
+implemented).** OID4VCI §12.2.4 credential encryption: the issuer
+metadata gains `credential_response_encryption`
+(`alg_values_supported: ["ECDH-ES"]`, `enc_values_supported:
+["A256GCM"]`) and (per-profile) `credential_request_encryption`; the
+credential request accepts `credential_response_encryption {jwk, alg,
+enc}` (the wallet's `credential_encryption_jwks` is an ECDH-ES P-256
+key - the suite's VCIGenerateCredentialEncryptionJwks) and returns the
+credentials object as a compact JWE (ECDH-ES key agreement + A256GCM
+content encryption); unsupported alg/enc answers
+`400 invalid_credential_request` (the suite's
+FailOnUnsupportedEncryptionAlgorithm negative). Until this lands the 3
+encrypted-slice modules self-skip by design - the no-skip rule owns the
+follow-up.
+
 ## 13. Open Questions
 
 - Continuous access evaluation: session/token revocations already push
