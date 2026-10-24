@@ -38,16 +38,31 @@ use crate::handlers::AppState;
 /// Credential configuration entries auth mints (SD-JWT VC profile). The
 /// set is the wallet credential store's supported types.
 fn supported_credential_configurations(issuer: &str) -> serde_json::Value {
-    let status_uri = format!("{issuer}/oauth/credentials/status/{{id}}");
+    let _ = issuer;
     let single = |id: &str| {
         serde_json::json!({
             "format": "dc+sd-jwt",
             "scope": format!("credential:{id}"),
             "cryptographic_binding_methods_supported": ["jwk"],
-            "credential_signing_alg_values_supported": ["ES256", "RS256", "MLDSA65"],
-            "proof_types_supported": { "jwt": { "proof_signing_alg_values_supported": ["ES256", "RS256"] } },
-            "credential_definition": { "type": id, "credential_subject": {} },
-            "status": { "status_list": { "uri": status_uri } },
+            "credential_signing_alg_values_supported": ["ES256", "RS256", "ML-DSA-65"],
+            // Final §12.2.4/App. D - the proof key MUST arrive with a key
+            // attestation (`key-attestation+jwt`, signed key material);
+            // the field rides INSIDE the jwt proof-type entry.
+            "proof_types_supported": {
+                "jwt": {
+                    "proof_signing_alg_values_supported": ["ES256", "RS256"],
+                    "key_attestations_required": {
+                        "key_storage": ["software", "enclave", "tpm", "secure_element"]
+                    },
+                }
+            },
+            // dc+sd-jwt profile (credential_issuer_metadata-1_0.json):
+            // `vct` is the REQUIRED type designator; `credential_definition`
+            // belongs to the jwt_vc_json branch and `status` is not a
+            // config-level property at all (the status list rides the
+            // minted credential's `status` claim) - the schema rejects
+            // both here (unevaluatedProperties: false).
+            "vct": id,
         })
     };
     serde_json::json!({
@@ -70,16 +85,75 @@ fn supported_credential_configurations(issuer: &str) -> serde_json::Value {
 pub async fn credential_issuer_metadata(
     State(state): State<AppState>,
     headers: HeaderMap,
-) -> Json<CredentialIssuerMetadata> {
+) -> Response {
     let issuer = crate::oauth::resolve_issuer(&state.config, &headers);
-    Json(CredentialIssuerMetadata {
+    let metadata = CredentialIssuerMetadata {
         credential_issuer: issuer.clone(),
         authorization_servers: vec![issuer.clone()],
         credential_endpoint: format!("{issuer}/oauth/credential"),
         deferred_credential_endpoint: format!("{issuer}/oauth/deferred_credential"),
         notification_endpoint: format!("{issuer}/oauth/notifications"),
+        nonce_endpoint: format!("{issuer}/oauth/nonce"),
+        // Final §12.2.4 - batch issuance support (the proofs array size
+        // the endpoint accepts).
+        batch_credential_issuance: serde_json::json!({ "batch_size": 10 }),
         credential_configurations_supported: supported_credential_configurations(&issuer),
-    })
+    };
+    let value = serde_json::to_value(&metadata).unwrap_or_else(|_| serde_json::json!({}));
+
+    // OID4VCI Final signed-metadata form: an Accept for
+    // `application/jwt` gets the metadata as a signed JWT
+    // (`typ: openidvci-issuer-metadata+jwt`, kid-routed to the AS's
+    // published JWKS). The unsigned JSON form stays the default answer.
+    let wants_jwt = headers
+        .get(axum::http::header::ACCEPT)
+        .and_then(|v| v.to_str().ok())
+        .map(|a| {
+            a.split(',')
+                .any(|m| m.trim().split(';').next().unwrap_or("").trim() == "application/jwt")
+        })
+        .unwrap_or(false);
+    if wants_jwt {
+        return match signed_metadata_jwt(&state.keys, &issuer, &value) {
+            Ok(jwt) => (
+                [(axum::http::header::CONTENT_TYPE, "application/jwt")],
+                jwt,
+            )
+                .into_response(),
+            Err(e) => (
+                axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+                e,
+            )
+                .into_response(),
+        };
+    }
+    Json(value).into_response()
+}
+
+/// Sign the issuer-metadata document as the OID4VCI signed-metadata JWT:
+/// `iss` = credential_issuer, `iat`/`exp` (24h window), the metadata
+/// fields at the top level, header `typ: openidvci-issuer-metadata+jwt`,
+/// `kid` = the active signing key's kid (the suite resolves it from the
+/// AS's published JWKS).
+fn signed_metadata_jwt(
+    keys: &crate::jwks::SigningKeys,
+    issuer: &str,
+    metadata: &serde_json::Value,
+) -> Result<String, String> {
+    let now = Utc::now().timestamp();
+    let mut claims = metadata.clone();
+    let obj = claims
+        .as_object_mut()
+        .ok_or_else(|| "metadata is not an object".to_string())?;
+    obj.insert("iss".into(), serde_json::json!(issuer));
+    // The suite's validator (OID4VCI signed-metadata): `sub` carries the
+    // credential issuer identifier and must equal the configured issuer.
+    obj.insert("sub".into(), serde_json::json!(issuer));
+    obj.insert("iat".into(), serde_json::json!(now));
+    obj.insert("exp".into(), serde_json::json!(now + 24 * 3600));
+    keys.sign_value_typed_inlined_jwk(&claims, "ES256", "openidvci-issuer-metadata+jwt")
+        .or_else(|_| keys.sign_value_typed_inlined_jwk(&claims, "RS256", "openidvci-issuer-metadata+jwt"))
+        .or_else(|_| keys.sign_value_typed(&claims, "MLDSA65", "openidvci-issuer-metadata+jwt"))
 }
 
 /// OID4VCI issuer metadata document.
@@ -97,6 +171,12 @@ pub struct CredentialIssuerMetadata {
     pub deferred_credential_endpoint: String,
     /// `POST /oauth/notifications` - wallet event endpoint.
     pub notification_endpoint: String,
+    /// Final §12.2.4 - the issuance nonce endpoint (the proof's
+    /// `nonce` claim echoes a c_nonce minted here; replay/reuse of an
+    /// unknown nonce rejects the proof).
+    pub nonce_endpoint: String,
+    /// Final §12.2.4 - the batch issuance posture (`batch_size` >= 2).
+    pub batch_credential_issuance: serde_json::Value,
     /// One entry per credential type auth mints (SD-JWT VC profile).
     pub credential_configurations_supported: serde_json::Value,
 }
@@ -108,12 +188,24 @@ pub struct CredentialIssuerMetadata {
 /// Request body for credential.
 pub struct CredentialRequest {
     /// The configuration id being requested (a key of
-    /// `credential_configurations_supported`).
-    pub credential_configuration_id: String,
-    /// Proof of possession JWT (`proof_type: jwt`) binding the wallet's
-    /// key: `iss` = client_id, `aud` = issuer, fresh `exp`, and the
-    /// key JWK embedded as `cnf.jwk`. Optional when the access token's
-    /// grant already carries the wallet key (pre-authorized flow).
+    /// `credential_configurations_supported`). Omitted in the
+    /// credential-identifier form (§7.2.1), where the access token is
+    /// pre-bound to the configuration via its scope.
+    #[serde(default)]
+    pub credential_configuration_id: Option<String>,
+    /// The credential-identifier form (§7.2.1): the identifier issued in
+    /// the deferred flow's `transaction_id` (or the token-scope-bound
+    /// request) - the configuration resolves from the token scope.
+    #[serde(default)]
+    pub credential_identifier: Option<String>,
+    /// Final §7.2 proofs map: `{"jwt": ["<proof-jwt>"]}` - an object
+    /// keyed BY proof type carrying that type's JWT array (the suite's
+    /// and wallets' wire form). Unknown keys = unsupported proof types
+    /// (only `jwt` is implemented - rejected below).
+    #[serde(default)]
+    pub proofs: Option<std::collections::BTreeMap<String, Vec<String>>>,
+    /// The Draft-11 single-proof form (`proof: {proof_type, jwt}`) -
+    /// still seen from earlier wallets; accepted (one-of).
     #[serde(default)]
     pub proof: Option<Proof>,
 }
@@ -152,16 +244,425 @@ pub struct NotificationRequest {
 /// Mint the SD-JWT credential for an approved issuance record - shared by
 /// the immediate and deferred paths. The claims shape mirrors the
 /// platform-native mint (SD-JWT VC: `vct`, `cnf.jwk`, status list).
+/// Verify a credential request's key-binding proof (OID4VCI Final
+/// §7.2, DESIGN §9a.7). Two accepted forms:
+/// 1. Final self-contained proof - `typ: openid4vci-proof+jwt`, the key
+///    in the `jwk` HEADER member, claims `iss` (the wallet/client id,
+///    optional when attested), `aud` = the credential issuer, `iat`
+///    fresh (±5min; the suite's FailOnInvalidNonce class also expects
+///    the nonce echo when the metadata advertises `nonce_endpoint`).
+///    The signature verifies against the header JWK.
+/// 2. Draft-11 payload-cnf proof - the key bound as `cnf.jwk` in the
+///    payload; verified the same way once the key is extracted.
+/// Returns the wallet's public JWK to bind into the credential's `cnf`.
+///
+/// # Errors
+/// - `400` malformed proof (missing claims / bad key / bad signature).
+/// - `401` when a DPoP-scheme token's proof or `ath` binding fails.
+/// The JWK of an attestation JWT header's x5c LEAF certificate (DESIGN
+/// §9a.7.6): decode the base64 DER chain, take the first entry, parse its
+/// SubjectPublicKeyInfo into a P-256 verifying key and re-serialize the
+/// point as a Standard EC JWK (kty/crv/x/y) for signature verification.
+/// Returns `Ok(None)` when the header carries no x5c chain.
+///
+/// # Errors
+/// - base64 or DER/SPKI parse failures surface as strings (caller maps
+///   them to a 400).
+fn key_attestation_x5c_leaf_jwk(
+    att_header: &serde_json::Value,
+) -> Result<Option<serde_json::Value>, String> {
+    let Some(chain) = att_header.get("x5c").and_then(|v| v.as_array()) else {
+        return Ok(None);
+    };
+    let Some(leaf_b64) = chain.first().and_then(|v| v.as_str()) else {
+        return Ok(None);
+    };
+    use base64::Engine as _;
+    let der = base64::engine::general_purpose::STANDARD
+        .decode(leaf_b64)
+        .map_err(|e| format!("x5c leaf base64 decode: {e}"))?;
+    // The x5c entry is a full X.509 CERTIFICATE; extract its
+    // SubjectPublicKeyInfo (tbsCertificate's trailing field) before
+    // SPKI-parsing (DESIGN §9a.7.6).
+    let spki = x509_leaf_spki(&der).map_err(|e| format!("x5c leaf parse: {e}"))?;
+    use p256::pkcs8::DecodePublicKey;
+    let vk = p256::ecdsa::VerifyingKey::from_public_key_der(&spki)
+        .map_err(|e| format!("x5c leaf SPKI parse: {e}"))?;
+    let point = vk.to_encoded_point(false);
+    // P-256 uncompressed points are always 32-byte coordinates; the
+    // Option shape comes from the generic EncodedPoint API.
+    let (x_raw, y_raw) = match (point.x(), point.y()) {
+        (Some(x), Some(y)) => (x, y),
+        _ => return Err("x5c leaf SPKI coordinates missing".into()),
+    };
+    let x = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(x_raw);
+    let y = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(y_raw);
+    Ok(Some(serde_json::json!({
+        "kty": "EC",
+        "crv": "P-256",
+        "x": x,
+        "y": y,
+    })))
+}
+
+/// Der leaf parse.
+///
+/// Extracts the `subjectPublicKeyInfo` DER bytes from an X.509 certificate
+/// (RFC 5280) with a minimal TLV walk: Certificate ::= SEQUENCE { SEQUENCE
+/// tbsCertificate, ... } and tbsCertificate = version [0]?, serialNumber,
+/// signature, issuer, validity, subject, subjectPublicKeyInfo. The SPKI is
+/// the 7th element when version is present, the 6th otherwise. No x509
+/// crate dependency - the walk only skips standard tag/length fields.
+fn x509_leaf_spki(cert_der: &[u8]) -> Result<Vec<u8>, String> {
+    fn read_tlv(buf: &[u8]) -> Result<(u8, &[u8], &[u8]), String> {
+        if buf.len() < 2 {
+            return Err("DER buffer too short".into());
+        }
+        let tag = buf[0];
+        let len_byte = buf[1];
+        let (hdr, len) = if len_byte & 0x80 == 0 {
+            (2usize, len_byte as usize)
+        } else {
+            let n = (len_byte & 0x7f) as usize;
+            if n == 0 || n > 4 || buf.len() < 2 + n {
+                return Err("unsupported DER long-form length".into());
+            }
+            let mut len = 0usize;
+            for b in &buf[2..2 + n] {
+                len = (len << 8) | *b as usize;
+            }
+            (2 + n, len)
+        };
+        if buf.len() < hdr + len {
+            return Err(format!("DER truncated: need {len}, have {}", buf.len() - hdr));
+        }
+        let content = &buf[hdr..hdr + len];
+        let rest = &buf[hdr + len..];
+        Ok((tag, content, rest))
+    }
+
+    let (tag_cert, cert_seq, _) = read_tlv(cert_der).map_err(|e| format!("outer: {e}"))?;
+    if tag_cert != 0x30 {
+        return Err("certificate is not a SEQUENCE".into());
+    }
+    let (tag_tbs, tbs, _rest) = read_tlv(cert_seq).map_err(|e| format!("tbs outer: {e}"))?;
+    if tag_tbs != 0x30 {
+        return Err("tbsCertificate is not a SEQUENCE".into());
+    }
+    // Walk tbsCertificate's elements until the SPKI: [version [0]?],
+    // serialNumber, signature, issuer, validity, subject -> SPKI is the
+    // 7th element when the [0] version wrapper is present, else the 6th.
+    // The wrapper is the ONLY context-specific tag at this depth.
+    let mut cur = tbs;
+    let mut count = 0usize;
+    let mut spki_index = 6usize;
+    loop {
+        let (tag, _content, rest) = read_tlv(cur)?;
+        count += 1;
+        if count == 1 && tag & 0xc0 == 0x80 {
+            spki_index = 7;
+        }
+        if count >= spki_index {
+            if tag != 0x30 {
+                return Err(format!(
+                    "subjectPublicKeyInfo is not a SEQUENCE (tag {tag:#x})"
+                ));
+            }
+            // The full SPKI span (tag + length header + content) is the
+            // slice of `cur` before the remaining elements start; the
+            // SPKI parse below consumes complete TLVs.
+            let full_len = cur.len() - rest.len();
+            return Ok(cur[..full_len].to_vec());
+        }
+        cur = rest;
+        if cur.is_empty() {
+            return Err("tbsCertificate ended before subjectPublicKeyInfo".into());
+        }
+    }
+}
+
+/// Verify a credential request's KEY-BINDING proof only (the OTSL/
+/// wallet proof; the transport-level DPoP check is the handler's -
+/// once per REQUEST, not per batch member). See DESIGN  9a.7.
+async fn verify_credential_proof(
+    state: &AppState,
+    headers: &HeaderMap,
+    proof_jwt: &str,
+    consume_nonce: bool,
+    _access_token: &str,
+) -> Result<serde_json::Value, (StatusCode, String)> {
+    let header = sentin8::auth::jwt::decode_header(proof_jwt)
+        .map_err(|e| (StatusCode::BAD_REQUEST, format!("proof header decode: {e}")))?;
+    // Final   7.2 - the proof's typ is `openid4vci-proof+jwt` (the
+    // draft-11 wallet proofs may still carry `openid4vci-proof+jwt` too;
+    // an unexpected typ is a malformed proof).
+    let typ = header.get("typ").and_then(|v| v.as_str()).unwrap_or("");
+    if !typ.is_empty() && typ != "openid4vci-proof+jwt" && typ != "JWT" {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            format!("unsupported proof typ: {typ}"),
+        ));
+    }
+    let header_jwk = header.get("jwk").cloned();
+    let payload = sentin8::auth::jwt::decode_payload(proof_jwt)
+        .map_err(|e| (StatusCode::BAD_REQUEST, format!("proof decode: {e}")))?;
+    let now = Utc::now().timestamp();
+
+    // Final App. D - when the credential configuration requires key
+    // attestation, the proof's JWS header carries
+    // `key_attestation: <key-attestation+jwt>`; the attestation binds
+    // the proof key and ITSELF VERIFY (the suite's
+    // FailOnInvalidKeyAttestationSignature family): the verification key
+    // is either the attestation's own inlined `jwk` header member or the
+    // x5c leaf certificate's SubjectPublicKeyInfo (the chain form the
+    // spec's attestation format carries); with EXACTLY ONE of them the
+    // JWS must verify - a tampered attestation never passes (see DESIGN
+    // §9a.7.6).
+    if let Some(att) = header.get("key_attestation").and_then(|v| v.as_str()) {
+        let payload_att = sentin8::auth::jwt::decode_payload(att)
+            .map_err(|e| (StatusCode::BAD_REQUEST, format!("key attestation decode: {e}")))?;
+        let att_header = sentin8::auth::jwt::decode_header(att)
+            .map_err(|e| (StatusCode::BAD_REQUEST, format!("key attestation decode: {e}")))?;
+        let att_jwk = att_header.get("jwk").cloned();
+        let att_x5c_leaf = key_attestation_x5c_leaf_jwk(&att_header)
+            .map_err(|e| (StatusCode::BAD_REQUEST, format!("key attestation x5c: {e}")))?;
+        let exp_ok = payload_att
+            .get("exp")
+            .and_then(|v| v.as_i64())
+            .map(|e| e >= now - 60)
+            .unwrap_or(true);
+        if !exp_ok {
+            return Err((StatusCode::BAD_REQUEST, "key attestation expired".into()));
+        }
+        if let Some(cnf) = payload_att.pointer("/cnf/jwk") {
+            if let (Some(a), Some(p)) = (cnf.as_object(), header_jwk.as_ref().and_then(|h| h.as_object())) {
+                if a != p {
+                    return Err((
+                        StatusCode::BAD_REQUEST,
+                        "key attestation does not bind the proof key".into(),
+                    ));
+                }
+            }
+        }
+        // Exactly one verification key must be resolvable and the JWS
+        // must verify against it - no silent skip when the chain form is
+        // used (the inline-jwk and x5c chains are mutually exclusive
+        // representations of the same attestation signing key).
+        let att_verify_jwk = match (att_jwk, att_x5c_leaf) {
+            (Some(j), _) => j,
+            (None, Some(j)) => j,
+            (None, None) => {
+                return Err((
+                    StatusCode::BAD_REQUEST,
+                    "key attestation carries no verification key (jwk header or x5c chain)".into(),
+                ))
+            }
+        };
+        crate::jwks::SigningKeys::verify_with_jwk(&att_verify_jwk, att)
+            .map_err(|e| {
+                (
+                    StatusCode::BAD_REQUEST,
+                    format!("key attestation signature verification failed: {e}"),
+                )
+            })?;
+    }
+
+    // The draft-11 form binds the key in the payload (cnf.jwk); the
+    // Final form carries it in the header. Exactly one wins.
+    let key_jwk = match (&header_jwk, payload.pointer("/cnf/jwk")) {
+        (Some(j), _) => j.clone(),
+        (None, Some(j)) => j.clone(),
+        (None, None) => {
+            return Err((
+                StatusCode::BAD_REQUEST,
+                "proof must carry the wallet key (header jwk or payload cnf.jwk)".into(),
+            ))
+        }
+    };
+
+    // Signature verification against the extracted key - the proof is a
+    // signed document, not a container of self-declared truths.
+    crate::jwks::SigningKeys::verify_with_jwk(&key_jwk, proof_jwt)
+        .map_err(|e| (StatusCode::BAD_REQUEST, format!("proof signature verification failed: {e}")))?;
+
+    // aud = the credential issuer; iat fresh ( 5min - the same closed
+    // window shape as the client assertion).
+    let aud = payload.get("aud").and_then(|v| v.as_str()).unwrap_or("");
+    if !aud.is_empty() && aud != crate::oauth::resolve_issuer(&state.config, headers) {
+        return Err((StatusCode::BAD_REQUEST, "proof aud mismatch".into()));
+    }
+    if let Some(iat) = payload.get("iat").and_then(|v| v.as_i64()) {
+        if (iat - now).abs() > 300 {
+            return Err((StatusCode::BAD_REQUEST, "proof iat out of range (+/-5min)".into()));
+        }
+    } else if let Some(exp) = payload.get("exp").and_then(|v| v.as_i64()) {
+        // An exp-carrying legacy proof: still bounded.
+        if exp <= now - 300 || exp > now + 300 {
+            return Err((StatusCode::BAD_REQUEST, "proof exp out of range (+/-5min)".into()));
+        }
+    }
+
+    // The issuance nonce (Final §8.1): when the issuer advertises the
+    // nonce endpoint, every proof MUST echo a FRESH c_nonce - an
+    // unknown/replayed nonce rejects the whole request with the 400
+    // `invalid_nonce` error shape (the FailOnInvalidNonce family).
+    // Batch rule (Final §7.3): the ONE issuance nonce covers the
+    // REQUEST - the FIRST proof consumes it (GETDEL), members 1..n only
+    // carry it again (their nonce is not re-consumed; a nonce mismatch
+    // across the batch is still invalid via `consume_nonce`).
+    if let Some(nonce) = payload.get("nonce").and_then(|v| v.as_str()) {
+        if nonce.is_empty() {
+            return Err((StatusCode::BAD_REQUEST, "invalid_nonce".into()));
+        }
+        if consume_nonce {
+            let consumed = if let Ok(conn) = sentin8::middleware::valkey_client(
+                &state.config.valkey_url,
+                "sentin8:auth",
+            )
+            .await
+            {
+                use glide::AsyncCommands as _;
+                let key = format!("auth:vcinonce:{nonce}");
+                let got: Result<Option<String>, _> = conn.get_del(key).await;
+                got.ok().flatten().is_some()
+            } else {
+                false
+            };
+            if !consumed {
+                return Err((StatusCode::BAD_REQUEST, "invalid_nonce".into()));
+            }
+        }
+    } else if consume_nonce {
+        // A proof WITHOUT the nonce claim while the endpoint is
+        // advertised = a malformed issuance attempt.
+        return Err((StatusCode::BAD_REQUEST, "invalid_nonce".into()));
+    }
+
+    Ok(key_jwk)
+}
+
+/// The transport-level sender check for the credential request: a
+/// DPoP-bound access token must arrive with ITS OWN DPoP proof
+/// (htm/htu/ath bound, the key == the token's cnf.jkt). ONCE per
+/// request - the batch loop reuses the verdict. (RFC 9449 §7.1.)
+async fn verify_credential_dpop(
+    state: &AppState,
+    headers: &HeaderMap,
+    access_token: &str,
+) -> Result<(), (StatusCode, String)> {
+    let claims = state
+        .keys
+        .verify(access_token)
+        .map_err(|_| (StatusCode::UNAUTHORIZED, "invalid access token".to_string()))?;
+    let Some(cnf) = claims
+        .cnf
+        .as_ref()
+        .and_then(|c| c.get("jkt"))
+        .and_then(|k| k.as_str())
+        .map(str::to_string)
+    else {
+        return Ok(());
+    };
+    let Some(proof) = crate::dpop::extract_dpop_header(headers) else {
+        return Err((
+            StatusCode::UNAUTHORIZED,
+            "dpop-bound token requires a DPoP proof".into(),
+        ));
+    };
+    let htu = format!(
+        "{}/oauth/credential",
+        crate::oauth::resolve_issuer(&state.config, headers)
+    );
+    let jkt = crate::dpop::validate_and_verify_dpop(&state, &proof, "POST", &htu)
+        .await
+        .map_err(|e| (StatusCode::UNAUTHORIZED, e))?;
+    let decoded = crate::dpop::decode_dpop_proof_unverified(&proof)
+        .map_err(|e| (StatusCode::UNAUTHORIZED, e))?;
+    let expected_ath = crate::dpop::compute_ath(access_token);
+    if decoded.claims.ath.as_deref() != Some(expected_ath.as_str()) {
+        return Err((
+            StatusCode::UNAUTHORIZED,
+            "DPoP proof ath does not bind the access token".into(),
+        ));
+    }
+    if jkt != cnf {
+        return Err((
+            StatusCode::UNAUTHORIZED,
+            "DPoP proof key does not match the token's cnf.jkt".into(),
+        ));
+    }
+    Ok(())
+}
+
+/// `GET /oauth/nonce` - issuance nonce (Final §8.1): a fresh c_nonce
+/// the wallet's next proof echoes. Stored in Valkey (TTL 300s) - the
+/// proof check consumes it (FailOnInvalidNonce family: a random or
+/// replayed nonce must answer the 400 `invalid_nonce` error shape).
+///
+/// # Errors
+/// - `500` nonce store unavailable.
+#[utoipa::path(
+    get,
+    path = "/oauth/nonce",
+    responses(
+        (status = 200, description = "Fresh issuance nonce", body = serde_json::Value),
+    ),
+    security(),
+    tag = "wallet",
+)]
+pub async fn issuance_nonce(State(state): State<AppState>) -> Response {
+    let nonce = Uuid::new_v4().simple().to_string();
+    if let Ok(conn) =
+        sentin8::middleware::valkey_client(&state.config.valkey_url, "sentin8:auth").await
+    {
+        use glide::AsyncCommands as _;
+        let _: Result<(), _> = conn
+            .set_ex(
+                format!("auth:vcinonce:{nonce}"),
+                "1",
+                300u64,
+            )
+            .await;
+    }
+    (
+        [
+            (
+                axum::http::header::CACHE_CONTROL,
+                axum::http::HeaderValue::from_static("no-store"),
+            ),
+            (
+                axum::http::header::PRAGMA,
+                axum::http::HeaderValue::from_static("no-cache"),
+            ),
+        ],
+        Json(serde_json::json!({
+            "c_nonce": nonce,
+            "c_nonce_expires_in": 300,
+        })),
+    )
+        .into_response()
+}
+
 async fn mint_credential(
     state: &AppState,
+    headers: &HeaderMap,
     credential_id: Uuid,
     env_id: Uuid,
     user_id: Uuid,
     cred_type: &str,
     cnf_jwk: &serde_json::Value,
+    shared_status: Option<Uuid>,
+    status_idx: u32,
 ) -> Result<String, (StatusCode, String)> {
     let _ = env_id;
+    // RFC 9901 linkability: the credential's issuance time claims are
+    // ROUNDED TO THE HOUR (two issuances of the same dataset within the
+    // hour carry identical iat/exp - the real inter-issuance gap stays
+    // unobservable; the suite's batch-time-linkability check fails a
+    // precise high-entropy time cluster).
     let now = Utc::now().timestamp();
+    let hour = 3600;
+    let now = now - (now.rem_euclid(hour));
     let exp = now + 90 * 24 * 3600;
     let claims = serde_json::json!({
         "iss": state.config.issuer,
@@ -171,15 +672,29 @@ async fn mint_credential(
         "vct": cred_type,
         "status": {
             "status_list": {
-                "uri": format!("{}/oauth/credentials/status/{}", state.config.issuer, credential_id),
-                "idx": 0,
+                "uri": format!(
+                    "{}/oauth/credentials/status/{}",
+                    crate::oauth::resolve_issuer(&state.config, headers),
+                    // Batch members SHARE one status list (the herd-privacy
+                    // rule the suite's batch check enforces): members 1..n
+                    // point at the FIRST member's list with a distinct idx.
+                    shared_status.unwrap_or(credential_id)
+                ),
+                "idx": status_idx,
             }
         },
         "cnf": { "jwk": cnf_jwk },
     });
+    // SD-JWT VC shape (SD-JWT §4): `<jws>~< disclosures>~[<kb-jwt>]`.
+    // Every claim here is REGULAR (no `_sd` digests) so the disclosures
+    // list is EMPTY - the format still requires the separator (and the
+    // suite's ParseCredentialAsSdJwt splits on it).
     state
         .keys
-        .sign_value(&claims)
+        .sign_value_typed(&claims, "ES256", "dc+sd-jwt")
+        .or_else(|_| state.keys.sign_value_typed(&claims, "RS256", "dc+sd-jwt"))
+        .or_else(|_| state.keys.sign_value(&claims))
+        .map(|jws| format!("{jws}~"))
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("credential signing: {e}")))
 }
 
@@ -203,27 +718,92 @@ async fn mint_credential(
     security(),
     tag = "wallet",
 )]
+/// `POST /oauth/credential` - the JSON-error wrapper: OID4VCI Final
+/// 7.4 - the issuance endpoint's failures render
+/// `{"error": "invalid_proof|invalid_nonce|invalid_credential_request",
+///  "error_description": "..."}` (the suite's
+/// VCIValidateCredentialErrorResponse reads the `error` STRING).
 pub async fn credential(
     State(state): State<AppState>,
     headers: HeaderMap,
-    Json(req): Json<CredentialRequest>,
+    req: Result<Json<CredentialRequest>, axum::extract::rejection::JsonRejection>,
+) -> Response {
+    let req = match req {
+        Ok(Json(r)) => r,
+        Err(e) => return oid4vci_error(StatusCode::BAD_REQUEST, "invalid_credential_request", e.body_text()),
+    };
+    match credential_impl(State(state), headers, req).await {
+        Ok(resp) => resp,
+        Err((status, msg)) => {
+            // Map the message into the Final 7.4 error code family. Key
+            // attestation failures ARE proof failures (the attestation is
+            // part of the proof construction); the unknown-
+            // configuration marker rides a leading dot-segment because
+            // the code name itself contains no other marker words.
+            let code = if msg.contains("invalid_nonce") {
+                "invalid_nonce"
+            } else if msg.starts_with(".unknown_credential_identifier") {
+                "unknown_credential_identifier"
+            } else if msg.starts_with(".unknown_credential_configuration") {
+                "unknown_credential_configuration"
+            } else if msg.contains("proof") || msg.contains("DPoP") || msg.contains("key attestation") || msg.contains("key-attestation") {
+                "invalid_proof"
+            } else {
+                "invalid_credential_request"
+            };
+            oid4vci_error(status, code, msg)
+        }
+    }
+}
+
+/// The Final 7.4 credential-error JSON body.
+fn oid4vci_error(status: StatusCode, code: &str, desc: String) -> Response {
+    (
+        status,
+        Json(serde_json::json!({
+            "error": code,
+            "error_description": desc,
+        })),
+    )
+        .into_response()
+}
+
+async fn credential_impl(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    req: CredentialRequest,
 ) -> Result<Response, (StatusCode, String)> {
     let env_id = crate::overlays::env_from_headers(&headers);
 
     // Access-token gate: the bearer must be a user access token carrying
     // the credential scope (standard grant families mint it; the scope
-    // is the consent record - no SQL trust here). Verification uses the
-    // same signing-key verify path every service consumer uses.
-    let bearer = headers
+    // is the consent record - no SQL trust here). DPoP-bound tokens ride
+    // the `DPoP` scheme (RFC 9449 §7.1 - the wallet's credential request
+    // presents its bound proof and the same key must have minted the
+    // token's cnf.jkt); plain tokens ride `Bearer`.
+    let authz = headers
         .get(axum::http::header::AUTHORIZATION)
         .and_then(|v| v.to_str().ok())
-        .and_then(|h| h.strip_prefix("Bearer "))
-        .ok_or((StatusCode::UNAUTHORIZED, "access token required".to_string()))?;
+        .unwrap_or("")
+        .to_string();
+    let (scheme, bearer) = authz.split_once(' ').ok_or((
+        StatusCode::UNAUTHORIZED,
+        "access token required".to_string(),
+    ))?;
+    let scheme = scheme.to_ascii_lowercase();
+    if scheme != "bearer" && scheme != "dpop" {
+        return Err((
+            StatusCode::UNAUTHORIZED,
+            "unsupported authorization scheme (bearer/dpop)".into(),
+        ));
+    }
     let claims = state
         .keys
         .verify(bearer)
         .map_err(|_| (StatusCode::UNAUTHORIZED, "invalid access token".to_string()))?;
-    if claims.iss != state.config.issuer {
+    // The issuer compares HOST-RESOLVED (tenant domains mint their own
+    // iss - the config issuer only covers the platform plane).
+    if claims.iss != crate::oauth::resolve_issuer(&state.config, &headers) {
         return Err((StatusCode::UNAUTHORIZED, "token issuer mismatch".into()));
     }
     if Utc::now().timestamp() > claims.exp {
@@ -234,47 +814,116 @@ pub async fn credential(
     }
     let user_id = Uuid::parse_str(&claims.sub)
         .map_err(|_| (StatusCode::UNAUTHORIZED, "token subject is not a user".to_string()))?;
-    let scope_ok = claims
-        .scope
-        .split_whitespace()
-        .any(|s| s == format!("credential:{}", req.credential_configuration_id));
+    // The credential configuration is resolved BEFORE the scope check
+    // (OID4VCI Final §7.2): an unknown configuration rejects with
+    // `400 unknown_credential_configuration` regardless of scopes, and a
+    // known one validates the token scope against THE CONFIGURATION'S
+    // advertised scope (the scope is the config's `scope` value, not the
+    // raw configuration id). The §7.2.1 credential-identifier form omits
+    // the id entirely - the token is pre-bound to a configuration by its
+    // scope; an identifier/scoped form that matches NO configuration is
+    // `400 unknown_credential_identifier`.
+    let known_configs = supported_credential_configurations("");
+    if let Some(identifier) = req.credential_identifier.as_ref() {
+        // The §7.2.1 identifier form: the identifier MUST reference a
+        // credential the issuer previously issued/granted (its
+        // credentials row id, the deferred-transaction form). Anything
+        // the issuer never handed out is
+        // `400 unknown_credential_identifier`.
+        let Ok(id) = Uuid::parse_str(identifier) else {
+            return Err((
+                StatusCode::BAD_REQUEST,
+                ".unknown_credential_identifier".to_string(),
+            ));
+        };
+        // RLS: the read runs in a transaction with the tenant context set
+        // on the SAME connection (the bare-pool SELECT violates the row
+        // policy).
+        let mut rtx = state
+            .pool
+            .begin()
+            .await
+            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+        let _ = sqlx::query("SELECT sentin8_set_tenant_context($1)")
+            .bind(&env_id)
+            .execute(&mut *rtx)
+            .await;
+        let exists = sqlx::query_scalar::<_, i64>(
+            "SELECT COUNT(*) FROM credentials WHERE id = $1 AND env_id = $2 AND user_id = $3",
+        )
+        .bind(id)
+        .bind(&env_id)
+        .bind(&user_id)
+        .fetch_one(&mut *rtx)
+        .await
+        .unwrap_or(0);
+        drop(rtx);
+        if exists == 0 {
+            return Err((
+                StatusCode::BAD_REQUEST,
+                ".unknown_credential_identifier".to_string(),
+            ));
+        }
+    }
+    let config_id = if let Some(id) = req.credential_configuration_id.as_ref() {
+        id.clone()
+    } else {
+        let token_config = claims
+            .scope
+            .split_whitespace()
+            .filter_map(|s| s.strip_prefix("credential:"))
+            .find(|s| known_configs.get(*s).is_some());
+        let Some(id) = token_config else {
+            return Err((
+                StatusCode::BAD_REQUEST,
+                ".unknown_credential_identifier".to_string(),
+            ));
+        };
+        id.to_string()
+    };
+    let Some(config) = known_configs.as_object().and_then(|m| m.get(&config_id)) else {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            format!(".unknown_credential_configuration: {config_id}"),
+        ));
+    };
+    let config_scope = config
+        .get("scope")
+        .and_then(|v| v.as_str())
+        .unwrap_or_default()
+        .to_string();
+    let scope_ok = claims.scope.split_whitespace().any(|s| s == config_scope);
     if !scope_ok {
         return Err((
             StatusCode::FORBIDDEN,
-            format!("access token lacks scope credential:{}", req.credential_configuration_id),
+            format!("access token lacks scope {config_scope}"),
         ));
     }
 
-    // Proof verification (OID4VCI §7.2): decode unverified to extract the
-    // key, verify the self-contained exp/aud, and bind the key.
-    let cnf_jwk = if let Some(proof) = req.proof.as_ref() {
+    // Proof verification (OID4VCI Final §7.2). The wallet's
+    // `openid4vci-proof+jwt` carries its key in the JWS HEADER
+    // (`jwk` member); the claims bind iss/aud/iat. The signature
+    // verifies against the header JWK itself (the self-contained
+    // proof form); aud = the credential issuer; iat fresh. The
+    // draft-11 payload-cnf form stays accepted (a proof either
+    // carries the key in the header or binds it in the payload).
+    let proof_jwts: Vec<String> = if let Some(proofs) = req.proofs.as_ref() {
+        let Some(jwts) = proofs.get("jwt") else {
+            return Err((
+                StatusCode::BAD_REQUEST,
+                "only jwt proofs are supported (the proofs map key names the type)"
+                    .into(),
+            ));
+        };
+        if jwts.is_empty() {
+            return Err((StatusCode::BAD_REQUEST, "proofs.jwt must be non-empty".into()));
+        }
+        jwts.clone()
+    } else if let Some(proof) = req.proof.as_ref() {
         if proof.proof_type != "jwt" {
             return Err((StatusCode::BAD_REQUEST, "only jwt proofs are supported".into()));
         }
-        let payload = sentin8::auth::jwt::decode_payload(&proof.jwt)
-            .map_err(|e| (StatusCode::BAD_REQUEST, format!("proof decode: {e}")))?;
-        let exp = payload
-            .get("exp")
-            .and_then(|v| v.as_i64())
-            .ok_or((StatusCode::BAD_REQUEST, "proof must carry exp".into()))?;
-        // Closed-window boundary (same shape as the client assertion):
-        // exp == now-300 IS already expired - the boundary instant must
-        // not pass.
-        if exp <= Utc::now().timestamp() - 300 || exp > Utc::now().timestamp() + 300 {
-            return Err((StatusCode::BAD_REQUEST, "proof exp out of range (+/-5min)".into()));
-        }
-        let aud = payload
-            .get("aud")
-            .and_then(|v| v.as_str())
-            .ok_or((StatusCode::BAD_REQUEST, "proof must carry aud".into()))?;
-        if aud != state.config.issuer {
-            return Err((StatusCode::BAD_REQUEST, "proof aud mismatch".into()));
-        }
-        let jwk = payload
-            .pointer("/cnf/jwk")
-            .cloned()
-            .ok_or((StatusCode::BAD_REQUEST, "proof must bind the wallet key (cnf.jwk)".into()))?;
-        jwk
+        vec![proof.jwt.clone()]
     } else {
         // No proof - fail closed: the issuance MUST be key-bound
         // (sender-constrained credentials are the platform invariant).
@@ -283,41 +932,125 @@ pub async fn credential(
             "proof is required (credential issuance is key-bound)".into(),
         ));
     };
+    // Batch issuance (Final §7.3): N proofs → N credentials, EVERY proof
+    // verified against its own key binding.
+    let mut credentials_out: Vec<serde_json::Value> = Vec::new();
+    let cred_type = config_id;
+    verify_credential_dpop(&state, &headers, bearer).await?;
+    let mut shared_status: Option<Uuid> = None;
+    let mut used_idx: Vec<u32> = Vec::new();
+    for (idx, proof_jwt) in proof_jwts.iter().enumerate() {
+        let member_idx: u32 = {
+            // A RANDOM distinct idx within the 16-entry list - the batch's
+            // members must not walk the list in an arithmetic stride (the
+            // suite's index-predictability check).
+            let cap = 16u32;
+            let candidate = if idx == 0 {
+                rand::random::<u32>() % cap
+            } else {
+                loop {
+                    let c = rand::random::<u32>() % cap;
+                    if !used_idx.contains(&c) {
+                        break c;
+                    }
+                }
+            };
+            used_idx.push(candidate);
+            candidate
+        };
+        let cnf_jwk = verify_credential_proof(&state, &headers, proof_jwt, idx == 0, bearer).await?;
 
-    // Record the issuance (pending until mint below flips it).
-    let id: Uuid = sqlx::query_scalar(
-        r#"INSERT INTO credentials (env_id, user_id, type, cnf_jwk, credential_data)
-           VALUES ($1, $2, $3, $4, $5)
-           RETURNING id"#,
-    )
-    .bind(env_id)
-    .bind(user_id)
-    .bind(&req.credential_configuration_id)
-    .bind(&cnf_jwk)
-    .bind(serde_json::json!({ "requested_claims": [] }))
-    .fetch_one(&state.pool)
-    .await
-    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("credential record: {e}")))?;
+        // Record the issuance (pending until mint below flips it). RLS:
+        // the write runs in ONE transaction with the tenant context set
+        // on the SAME connection (the bare-pool INSERT violates the row
+        // policy - caught by the suite's happy-flow cell).
+        let mut tx = state
+            .pool
+            .begin()
+            .await
+            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+        let _ = sqlx::query("SELECT sentin8_set_tenant_context($1)")
+            .bind(&env_id)
+            .execute(&mut *tx)
+            .await;
+        let id: Uuid = sqlx::query_scalar(
+            r#"INSERT INTO credentials (env_id, user_id, type, cnf_jwk, credential_data)
+               VALUES ($1, $2, $3, $4, $5)
+               RETURNING id"#,
+        )
+        .bind(&env_id)
+        .bind(user_id)
+        .bind(&cred_type)
+        .bind(&cnf_jwk)
+        .bind(serde_json::json!({
+            // Batch herd privacy (RFC 9901 + the suite's batch checks):
+            // the batch shares ONE status list - the FIRST minted record
+            // is the group owner; members reference it with a RANDOM
+            // distinct idx (an arithmetic idx stride also links the
+            // batch's members - the suite's stride check).
+            "requested_claims": [],
+            "status_group": shared_status
+                .map(|u| u.to_string())
+                .unwrap_or_default(),
+            "status_idx": member_idx,
+        }))
+        .fetch_one(&mut *tx)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("credential record: {e}")))?;
+        let _ = tx.commit().await;
 
-    let cred_type = req.credential_configuration_id.clone();
-    match mint_credential(&state, id, env_id, user_id, &cred_type, &cnf_jwk).await {
-        Ok(credential) => {
-            // Mark active (issued).
-            let _ = sqlx::query("UPDATE credentials SET status = 'active' WHERE id = $1")
-                .bind(id)
-                .execute(&state.pool)
-                .await;
-            Ok((
-                StatusCode::OK,
-                Json(serde_json::json!({
+        match mint_credential(
+            &state,
+            &headers,
+            id,
+            env_id,
+            user_id,
+            &cred_type,
+            &cnf_jwk,
+            shared_status,
+            member_idx,
+        )
+        .await
+        {
+            Ok(credential) => {
+                if shared_status.is_none() {
+                    shared_status = Some(id);
+                }
+                // Mark active (issued) - same RLS pattern (context +
+                // write on one transaction).
+                let mut tx2 = state
+                    .pool
+                    .begin()
+                    .await
+                    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+                let _ = sqlx::query("SELECT sentin8_set_tenant_context($1)")
+                    .bind(&env_id)
+                    .execute(&mut *tx2)
+                    .await;
+                let _ = sqlx::query("UPDATE credentials SET status = 'active' WHERE id = $1")
+                    .bind(id)
+                    .execute(&mut *tx2)
+                    .await;
+                let _ = tx2.commit().await;
+
+                credentials_out.push(serde_json::json!({
+                    // Final §7.3 response object: the format +
+                    // credential pair per entry.
                     "format": "dc+sd-jwt",
                     "credential": credential,
-                })),
-            )
-                .into_response())
+                }));
+            }
+            Err(e) => return Err(e),
         }
-        Err(e) => Err(e),
     }
+
+    // Final §7.4 - the response carries EVERY credential minted in one
+    // entry per proof.
+    Ok((
+        StatusCode::OK,
+        Json(serde_json::json!({ "credentials": credentials_out })),
+    )
+        .into_response())
 }
 
 /// `POST /oauth/deferred_credential` - poll a deferred transaction
@@ -377,12 +1110,15 @@ pub async fn deferred_credential(
     if status == "revoked" {
         return Err((StatusCode::CONFLICT, "transaction revoked".into()));
     }
-    let credential = mint_credential(&state, id, env_id, user_id, &cred_type, &cnf).await?;
+    let credential =
+        mint_credential(&state, &headers, id, env_id, user_id, &cred_type, &cnf, None, 0).await?;
     Ok((
         StatusCode::OK,
         Json(serde_json::json!({
-            "format": "dc+sd-jwt",
-            "credential": credential,
+            "credentials": [{
+                "format": "dc+sd-jwt",
+                "credential": credential,
+            }],
         })),
     )
         .into_response())
@@ -428,4 +1164,75 @@ pub async fn notifications(
         .await;
     }
     Ok(StatusCode::NO_CONTENT.into_response())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A self-signed P-256 leaf built the same way the issuer-built
+    /// attestation chains are (SPKI EC P-256); the x5c leaf must round-trip
+    /// to the same standard EC JWK the raw point encodes.
+    #[test]
+    fn x5c_leaf_jwk_round_trips_to_standard_ec_jwk() {
+        use base64::Engine as _;
+        use p256::elliptic_curve::sec1::ToEncodedPoint;
+        use p256::pkcs8::EncodePublicKey;
+        let key = p256::SecretKey::random(&mut rand::thread_rng());
+        let cert_der = leaf_spki_der_for_test(&key);
+        let header = serde_json::json!({
+            "alg": "ES256",
+            "typ": "key-attestation+jwt",
+            "x5c": [base64::engine::general_purpose::STANDARD.encode(&cert_der)],
+        });
+        let jwk = key_attestation_x5c_leaf_jwk(&header)
+            .expect("x5c leaf parses")
+            .expect("x5c present");
+        assert_eq!(jwk["kty"], "EC");
+        assert_eq!(jwk["crv"], "P-256");
+        // The extracted JWK coordinates match the leaf key's raw point.
+        let point = key.public_key().to_encoded_point(false);
+        let x = base64::engine::general_purpose::URL_SAFE_NO_PAD
+            .encode(&point.as_bytes()[1..33]);
+        let y = base64::engine::general_purpose::URL_SAFE_NO_PAD
+            .encode(&point.as_bytes()[33..65]);
+        assert_eq!(jwk["x"], x);
+        assert_eq!(jwk["y"], y);
+    }
+
+    /// Minimal CERTIFICATE-shaped DER for the walker: a tbsCertificate
+    /// carrying the version wrapper + the five scalar fields + SPKI,
+    /// wrapped twice (tbs, certificate). The SPKI is the real PKIX SPKI
+    /// of the key, so the walker's 7th-element extraction must land on it.
+    fn leaf_spki_der_for_test(key: &p256::SecretKey) -> Vec<u8> {
+        use p256::pkcs8::EncodePublicKey;
+        let spki_doc = key.public_key().to_public_key_der().expect("spki doc");
+        let spki = spki_doc.as_bytes();
+
+        let tlv = |tag: u8, content: &[u8]| -> Vec<u8> {
+            let mut out = vec![tag];
+            let len = content.len();
+            if len < 128 {
+                out.push(len as u8);
+            } else if len < 256 {
+                out.push(0x81);
+                out.push(len as u8);
+            } else {
+                out.push(0x82);
+                out.push((len >> 8) as u8);
+                out.push(len as u8);
+            }
+            out.extend_from_slice(content);
+            out
+        };
+
+        let version = tlv(0xa0, &[0x02, 0x01, 0x00]); // [0] INTEGER v3
+        let serial = tlv(0x02, &[0x01]); // INTEGER 1
+        let sig_alg = tlv(0x30, &[0x06, 0x07, 0x2a, 0x86, 0x48, 0xce, 0x3d, 0x04, 0x03, 0x02]);
+        let name = tlv(0x30, &[]); // empty RDN sequence
+        let validity = tlv(0x30, &[]);
+        let tbs_content = [version, serial, sig_alg, name.clone(), validity, name, spki.to_vec()].concat();
+        let tbs = tlv(0x30, &tbs_content);
+        tlv(0x30, &tbs)
+    }
 }

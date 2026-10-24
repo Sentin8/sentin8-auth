@@ -940,17 +940,55 @@ the existing SD-JWT/KB-JWT/Status-List core, all issuer-hosted on auth:
 
 - `/.well-known/openid-credential-issuer` — metadata:
   `credential_issuer`, `credential_configurations_supported` (one entry
-  per credential type auth mints), `credential_endpoint`,
-  `deferred_credential_endpoint`, `notification_endpoint`,
-  `credential_issuer_session` metadata as needed by the flow variant.
-- `POST /oauth/credential` — single-credential issuance request:
-  `credential_configuration_id`, optional `proof` (a `jwt` proof holding
-  the wallet's attestation key: `iss=client_id`, `aud=issuer`, `exp`,
-  nonce-bound); authorization rides the existing grant families
-  (authorization_code with the credential scope via the standard
-  authorize flow, or pre-authorized_code for QR-initiated flows).
-  Response: the signed SD-JWT credential (format `sd-jwt`), or
-  `transaction_id` + HTTP 202 for deferred issuance.
+  per credential type auth mints, each with `format`/`scope`/
+  `cryptographic_binding_methods_supported`/
+  `credential_signing_alg_values_supported`/`vct` and
+  `proof_types_supported.jwt` incl. `key_attestations_required`),
+  `nonce_endpoint` (`/oauth/nonce`, Final §8.1 - fresh `c_nonce` per
+  proof, TTL 300s, Valkey-owned), `batch_credential_issuance`
+  (`batch_size` 10), `credential_endpoint`,
+  `deferred_credential_endpoint`, `notification_endpoint`.
+- `POST /oauth/credential` — issuance request (Final §7.2). Two
+  configuration forms: `credential_configuration_id` (a key of the
+  metadata) or the §7.2.1 `credential_identifier` (references a
+  credentials row previously issued to the caller - unknown ids reject
+  `400 unknown_credential_identifier`, unknown configuration ids
+  reject `400 unknown_credential_configuration`). Configuration
+  resolution happens BEFORE the scope check; the access token must then
+  carry the configuration's advertised `scope`. Proofs: the Final
+  proofs map (`{"jwt": [...]}`) with the draft-11 single `proof`
+  accepted (one-of); N proofs mint N credentials (batch §7.3) sharing
+  ONE status list with random distinct indices (herd privacy).
+  Authorization rides the standard grant families (`Bearer` or
+  `DPoP` scheme; a DPoP-bound token requires its own RFC 9449 proof
+  with `htu`/`ath`/`cnf.jkt` verified ONCE per request).
+- **Proof verification (wallet key binding).** The `openid4vci-proof+jwt`
+  carries its key in the JWS header `jwk` (or the draft-11 payload
+  `cnf.jwk`); `aud` = the issuer, `iat` fresh (±5 min). When the
+  configuration requires key attestation (App. D), the proof header's
+  `key_attestation` JWT must itself verify: its signing key is read
+  from EXACTLY ONE trusted source - the attestation's inlined `jwk`
+  header member, or the x5c leaf certificate's
+  SubjectPublicKeyInfo (a minimal RFC 5280 DER walk extracts the SPKI;
+  no x509 crate dependency). A tampered attestation (the suite's
+  FailOnInvalidKeyAttestationSignature family) rejects with
+  `400 invalid_proof`; an attestation with neither key form also
+  rejects. Credential errors render the Final §7.4 JSON shape
+  (`invalid_proof` / `invalid_nonce` /
+  `unknown_credential_configuration` /
+  `unknown_credential_identifier` /
+  `invalid_credential_request`) on every failure path.
+- Response: DC+SD-JWT object entries (`{"credentials": [{"format":
+  "dc+sd-jwt", "credential": ...", ...]}`) - the minted JWS carries
+  typ `dc+sd-jwt`, the trailing SD-JWT separator, hour-rounded
+  `iat`/`exp` (RFC 9901 linkability), `cnf.jwk` = the proof key, and a
+  `status` claim pointing at the shared status list (signed
+  `status-list+jwt` served per group at
+  `/oauth/credentials/status/{id}`). Immediate or `transaction_id` +
+  HTTP 202 for deferred issuance. Issuer metadata is also published as
+  signed metadata (`openidvci-issuer-metadata+jwt`, Accept-negotiated)
+  and mirrored on the RFC 8414
+  `/.well-known/oauth-authorization-server` alias.
 - `POST /oauth/deferred_credential` — poll a `transaction_id` →
   credential once minted.
 - `POST /oauth/notifications` — the wallet's events (credential

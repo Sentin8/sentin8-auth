@@ -475,7 +475,10 @@ impl SigningKeys {
                     rsa_pem_b64: None,
                     ec_encoding_key: Some(encoding_key),
                     ec_pk_b64: Some(pk_b64),
-                    ec_pem_b64: None,
+                    ec_pem_b64: Some(
+                        base64::engine::general_purpose::STANDARD
+                            .encode(pem_str.as_bytes()),
+                    ),
                 }
             } else {
                 // RS256 rows store the PKCS#8 PEM (sealed with the envelope).
@@ -493,7 +496,10 @@ impl SigningKeys {
                     rsa_encoding_key: Some(encoding_key),
                     rsa_n_b64,
                     rsa_e_b64,
-                    rsa_pem_b64: None,
+                    rsa_pem_b64: Some(
+                        base64::engine::general_purpose::STANDARD
+                            .encode(pem_str.as_bytes()),
+                    ),
                     ec_encoding_key: None,
                     ec_pk_b64: None,
                     ec_pem_b64: None,
@@ -714,6 +720,219 @@ impl SigningKeys {
             let header = jsonwebtoken::Header {
                 alg: jsonwebtoken::Algorithm::RS256,
                 typ: Some("JWT".to_string()),
+                kid: Some(key.key_id.clone()),
+                ..Default::default()
+            };
+            jsonwebtoken::encode(&header, claims, ek).map_err(|e| format!("RS256 sign error: {e}"))
+        } else {
+            Err(format!("no usable {alg} signing key"))
+        }
+    }
+
+    /// Sign a JWT with an explicit JWS `typ` header value (the OID4VCI
+    /// issuer's signed metadata JWT carries
+    /// `typ: openidvci-issuer-metadata+jwt` - a generic `JWT` typ is
+    /// spec-noncompliant there). Same key-selection and signing paths as
+    /// [`Self::sign_value_alg`]; the claims payload is an arbitrary JSON
+    /// value.
+    ///
+    /// # Errors
+    /// - Unknown family, or no signing material for it.
+    /// - Claims serialization / encoding failures.
+    /// [`Self::sign_value_typed`] with the signing key's PUBLIC JWK
+    /// inlined in the JWS header (`jwk` header parameter - the OID4VCI
+    /// signed-metadata contract requires the key discoverable from the
+    /// header itself: `jwk` or `x5c`; auth does not mint certs for its
+    /// signing keys, so `jwk` is the honest form).
+    ///
+    /// # Errors
+    /// Same as [`Self::sign_value_typed`]; plus no public JWK material
+    /// for the selected key.
+    /// Sign a STATUS-LIST JWT (draft-ietf-oauth-status-list-jwt):
+    /// `typ: status-list+jwt`, the key INLINED as the header `jwk`
+    /// member (the OIDF suite verifies via the embedded header JWK),
+    /// ES256 preferred, RS256 fallback. Claims ride `iss`/`sub`/`iat`/
+    /// `exp`/`status_list`.
+    ///
+    /// # Errors
+    /// - No ES256/RS256 key with PEM material.
+    /// - Claims serialization.
+    pub fn status_list_jwt(
+        &self,
+        claims: &serde_json::Value,
+        _jwk_hdr: &serde_json::Value,
+    ) -> Result<String, String> {
+        self.sign_value_typed_inlined_jwk(claims, "ES256", "status-list+jwt")
+            .map_err(|_| ())
+            .or_else(|_| {
+                self.sign_value_typed_inlined_jwk(claims, "RS256", "status-list+jwt")
+            })
+            .map_err(|_| "no ES256/RS256 key for the status-list token".to_string())
+    }
+
+    /// [`Self::sign_value_typed`] with the signing key's PUBLIC JWK
+    /// inlined in the JWS header (`jwk` header parameter - the OID4VCI
+    /// signed-metadata contract requires the key discoverable from the
+    /// header itself: `jwk` or `x5c`; auth does not mint certs for its
+    /// signing keys, so `jwk` is the honest form).
+    ///
+    /// # Errors
+    /// Same as [`Self::sign_value_typed`]; plus no public JWK material
+    /// for the selected key.
+    pub fn sign_value_typed_inlined_jwk(
+        &self,
+        claims: &serde_json::Value,
+        alg: &str,
+        typ: &str,
+    ) -> Result<String, String> {
+        // ML-DSA headers cannot carry the standard `jwk` member (its
+        // kty is not in the JWK registry section the suite validates) -
+        // fall through to the plain typed signer.
+        let key = self
+            .signing_key_for(alg)
+            .ok_or_else(|| format!("no {alg} signing key available"))?;
+        if key.ml_dsa_key.is_some() {
+            return self.sign_value_typed(claims, alg, typ);
+        }
+        // Resolve the public JWK from the published set (same kid) so the
+        // inline form is EXACTLY the advertised key.
+        let jwks = JwksResponse::from_keys(self);
+        let jwk = jwks
+            .keys
+            .iter()
+            .find(|j| j.kid == key.key_id)
+            .ok_or_else(|| format!("no published jwk for kid {}", key.key_id))?;
+        let jwk_hdr =
+            serde_json::to_value(jwk).map_err(|e| format!("jwk serialize: {e}"))?;
+
+        let b64 = |b: &[u8]| base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(b);
+        let payload_b64 = b64(
+            &serde_json::to_vec(claims).map_err(|e| format!("serialize claims: {e}"))?,
+        );
+
+        if let Some(pem) = &key.ec_pem_b64 {
+            // ES256 (P-256): manual JWS with the jwk member; the
+            // signature is the FIXED-WIDTH r||s 64-byte form (JWS §3.4).
+            // The stored EC material is a PKCS#8 PEM; parse it through the
+            // pkcs8 path (from_slice expects raw SEC1 scalar bytes and
+            // rejects PKCS#8 DER).
+            use p256::elliptic_curve::pkcs8::DecodePrivateKey;
+            let sk = {
+                let pem_text = String::from_utf8(
+                    base64::engine::general_purpose::STANDARD
+                        .decode(pem)
+                        .map_err(|e| format!("pem decode: {e}"))?,
+                )
+                .map_err(|e| format!("pem utf8: {e}"))?;
+                let secret = p256::SecretKey::from_pkcs8_pem(&pem_text)
+                    .map_err(|e| format!("p256 key: {e}"))?;
+                p256::ecdsa::SigningKey::from(&secret)
+            };
+            let header = serde_json::json!({
+                "alg": "ES256",
+                "typ": typ,
+                "kid": key.key_id,
+                "jwk": jwk_hdr,
+            });
+            let header_b64 = b64(
+                &serde_json::to_vec(&header).map_err(|e| format!("header: {e}"))?,
+            );
+            let signing_input = format!("{header_b64}.{payload_b64}");
+            use p256::ecdsa::signature::Signer;
+            let sig: p256::ecdsa::Signature = sk.sign(signing_input.as_bytes());
+            Ok(format!("{signing_input}.{}", b64(&sig.to_bytes())))
+        } else if let Some(pem) = &key.rsa_pem_b64 {
+            // RS256: manual JWS - the jsonwebtoken Header serializes the
+            // jwk member fine but its builder cannot add it, so sign the
+            // signing-input with the PKCS#8 material via rsa+sha2.
+            let header = serde_json::json!({
+                "alg": "RS256",
+                "typ": typ,
+                "kid": key.key_id,
+                "jwk": jwk_hdr,
+            });
+            let header_b64 = b64(
+                &serde_json::to_vec(&header).map_err(|e| format!("header: {e}"))?,
+            );
+            let signing_input = format!("{header_b64}.{payload_b64}");
+            // Sign the signing-input (our own header, jwk member inside)
+            // directly with the rsa crate - PKCS#1 v1.5 SHA-256.
+            use rsa::pkcs8::DecodePrivateKey;
+            let priv_key = rsa::RsaPrivateKey::from_pkcs8_der(
+                &base64::engine::general_purpose::STANDARD
+                    .decode(pem)
+                    .map_err(|e| format!("pem decode: {e}"))?,
+            )
+            .map_err(|e| format!("rsa key parse: {e}"))?;
+            use rsa::signature::{RandomizedSigner, SignatureEncoding};
+            let signer = rsa::pkcs1v15::SigningKey::<sha2::Sha256>::new(priv_key);
+            let mut rng = rand::rngs::OsRng;
+            let sig = signer
+                .sign_with_rng(&mut rng, signing_input.as_bytes())
+                .to_vec();
+            Ok(format!("{signing_input}.{}", b64(&sig)))
+        } else {
+            Err(format!("no usable {alg} key for jwk-inlined signing"))
+        }
+    }
+
+    /// Sign a JWT with an explicit JWS `typ` header value (the OID4VCI
+    /// issuer's signed metadata JWT carries
+    /// `typ: openidvci-issuer-metadata+jwt` - a generic `JWT` typ is
+    /// spec-noncompliant there). Same key-selection and signing paths as
+    /// [`Self::sign_value_alg`]; the claims payload is an arbitrary JSON
+    /// value.
+    ///
+    /// # Errors
+    /// - Unknown family, or no signing material for it.
+    /// - Claims serialization / encoding failures.
+    pub fn sign_value_typed(
+        &self,
+        claims: &serde_json::Value,
+        alg: &str,
+        typ: &str,
+    ) -> Result<String, String> {
+        if alg.eq_ignore_ascii_case("none") {
+            let header = serde_json::json!({"alg": "none", "typ": typ});
+            let header_b64 = base64::engine::general_purpose::URL_SAFE_NO_PAD
+                .encode(serde_json::to_vec(&header).map_err(|e| format!("serialize header: {e}"))?);
+            let payload_b64 = base64::engine::general_purpose::URL_SAFE_NO_PAD
+                .encode(serde_json::to_vec(claims).map_err(|e| format!("serialize claims: {e}"))?);
+            return Ok(format!("{header_b64}.{payload_b64}."));
+        }
+        let key = self
+            .signing_key_for(alg)
+            .ok_or_else(|| format!("no {alg} signing key available"))?;
+        if let Some(sk) = &key.ml_dsa_key {
+            // ML-DSA-65 is not in the JWS registry's string names for the
+            // VCI metadata validator's ALG allowlist - but the header
+            // still records the real family.
+            let header = serde_json::json!({
+                "alg": "MLDSA65",
+                "typ": typ,
+                "kid": key.key_id,
+            });
+            let header_b64 = base64::engine::general_purpose::URL_SAFE_NO_PAD
+                .encode(serde_json::to_vec(&header).map_err(|e| format!("serialize header: {e}"))?);
+            let payload_b64 = base64::engine::general_purpose::URL_SAFE_NO_PAD
+                .encode(serde_json::to_vec(claims).map_err(|e| format!("serialize claims: {e}"))?);
+            let signing_input = format!("{header_b64}.{payload_b64}");
+            let signature = sk.sign(signing_input.as_bytes());
+            let sig_b64 =
+                base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(signature.encode());
+            Ok(format!("{signing_input}.{sig_b64}"))
+        } else if let Some(ek) = &key.ec_encoding_key {
+            let header = jsonwebtoken::Header {
+                alg: jsonwebtoken::Algorithm::ES256,
+                typ: Some(typ.to_string()),
+                kid: Some(key.key_id.clone()),
+                ..Default::default()
+            };
+            jsonwebtoken::encode(&header, claims, ek).map_err(|e| format!("ES256 sign error: {e}"))
+        } else if let Some(ek) = &key.rsa_encoding_key {
+            let header = jsonwebtoken::Header {
+                alg: jsonwebtoken::Algorithm::RS256,
+                typ: Some(typ.to_string()),
                 kid: Some(key.key_id.clone()),
                 ..Default::default()
             };

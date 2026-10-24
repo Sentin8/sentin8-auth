@@ -1014,6 +1014,7 @@ pub struct DiscoveryDocument {
     pub userinfo_endpoint: String,
     /// OIDC Core §5.3.2 - the signing algs a signed userinfo response may
     /// use (advertised when the dynamic signed-userinfo form is served).
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub userinfo_signing_alg_values_supported: Option<Vec<String>>,
     /// The revocation endpoint.
     pub revocation_endpoint: String,
@@ -1291,19 +1292,17 @@ pub async fn discovery(
                 v
             }
         },
-        // DPoP signing algs - only advertised when DPoP is required or
-        // supported; the FAMILY is the tenant's resolved signing family
-        // (the same key family that signs the ID token - per-tenant
-        // §9a.9, not the process default).
-        dpop_signing_alg_values_supported: if profile.require_dpop {
-            vec![if profile.signing_alg.is_empty() {
-                crate::jwks::active_signing_alg().into()
-            } else {
-                profile.signing_alg.clone()
-            }]
+        // DPoP signing algs - SUPPORT is unconditional (the dpop gate
+        // below is per-client opt-in/opt-out); the FAMILY is the tenant's
+        // resolved signing family (the same key family that signs the ID
+        // token - per-tenant §9a.9, not the process default). An empty
+        // array while proofs are accepted is a lie and crashes
+        // registry-driven consumers (the suite indexes [0]).
+        dpop_signing_alg_values_supported: vec![if profile.signing_alg.is_empty() {
+            crate::jwks::active_signing_alg().into()
         } else {
-            vec![]
-        },
+            profile.signing_alg.clone()
+        }],
         authorization_response_iss_parameter_supported: profile.require_iss,
         // FAPI1-ADV/FAPI2-SP (the suite's FAPICheckDiscEndpointRequestObject
         // SigningAlgValuesSupported): the FAPI postures advertise the

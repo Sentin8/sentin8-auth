@@ -243,8 +243,14 @@ pub fn build_router(state: AppState) -> Router {
         )
         // Cron proxy-back target - internal JWKS key rotation (AUTH-1).
         .route("/v1/internal/keys/rotate", post(internal_keys_rotate))
-        // OIDC discovery + JWKS
+        // OIDC discovery + JWKS (+ RFC 8414 AS metadata alias -
+        // the OID4VCI issuer cell resolves authorization_servers against
+        // the RFC 8414 well-known path; same document, same issuer).
         .route("/.well-known/openid-configuration", get(oauth::discovery))
+        .route(
+            "/.well-known/oauth-authorization-server",
+            get(oauth::discovery),
+        )
         .route("/.well-known/jwks.json", get(jwks_endpoint))
         // WebFinger (OIDC Discovery §2.1 / RFC 7033) - Dynamic OP profile.
         .route("/.well-known/webfinger", get(crate::webfinger::webfinger))
@@ -259,6 +265,10 @@ pub fn build_router(state: AppState) -> Router {
         .route(
             "/oauth/deferred_credential",
             post(crate::oid4vci::deferred_credential),
+        )
+        .route(
+            "/oauth/nonce",
+            get(crate::oid4vci::issuance_nonce).post(crate::oid4vci::issuance_nonce),
         )
         .route("/oauth/notifications", post(crate::oid4vci::notifications))
         // OID4VP verifier metadata (DESIGN §9a.7).

@@ -22,6 +22,7 @@
 
 use axum::extract::{Path, Query, State};
 use axum::http::{HeaderMap, StatusCode};
+use axum::response::{IntoResponse, Response};
 use axum::Json;
 use chrono::Duration;
 use glide::AsyncCommands as _;
@@ -801,20 +802,146 @@ pub async fn credential_issue(
 pub async fn credential_status(
     State(state): State<AppState>,
     Path(id): Path<Uuid>,
-) -> Result<Json<StatusListDocument>, (StatusCode, String)> {
-    let status: Option<String> = sqlx::query_scalar("SELECT status FROM credentials WHERE id = $1")
-        .bind(id)
-        .fetch_optional(&state.pool)
-        .await
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
-    let Some(status) = status else {
-        return Err((StatusCode::NOT_FOUND, "credential not found".into()));
+    headers: HeaderMap,
+) -> Response {
+    // The shared status-list model: a credential either OWNS its list
+    // (solo issuance) or MEMBERS a batch's group list (the group owner's
+    // id is `credential_data.status_group`). The endpoint serves the
+    // GROUP list: every member's revoked bit lands at its stored
+    // `status_idx` (the herd-privacy shape the suite's batch checks
+    // require - members share a list, indices are not sequential).
+    let env_id = crate::overlays::env_from_headers(&headers);
+    let status: Option<Vec<(u8, u32)>> = match state.pool.begin().await {
+        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+        Ok(mut tx) => {
+            let _ = sqlx::query("SELECT sentin8_set_tenant_context($1)")
+                .bind(env_id)
+                .execute(&mut *tx)
+                .await;
+            // Fetch THIS record + its group key.
+            match sqlx::query(
+                r#"SELECT status,
+                          COALESCE(credential_data->>'status_group', '') AS status_group,
+                          COALESCE(credential_data->>'status_group', id::text) AS group_key,
+                          id::text AS self_key
+                   FROM credentials WHERE id = $1"#,
+            )
+            .bind(id)
+            .fetch_one(&mut *tx)
+            .await
+            {
+                Err(e) => {
+                    return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response();
+                }
+                Ok(row) => {
+                    use sqlx::Row as _;
+                    let own_status: String = row.try_get("status").unwrap_or_default();
+                    let group_key: String = row.try_get("group_key").unwrap_or_default();
+                    let self_key: String = row.try_get("self_key").unwrap_or_default();
+                    let group: String = if group_key.is_empty() {
+                        self_key.clone()
+                    } else {
+                        group_key.clone()
+                    };
+                    // EVERY member of the group (solo lists have exactly one).
+                    match sqlx::query(
+                        r#"SELECT status,
+                                  COALESCE(credential_data->>'status_group','') AS sg,
+                                  id::text AS sid,
+                                  COALESCE((credential_data->>'status_idx')::int, 0) AS sidx
+                           FROM credentials
+                           WHERE COALESCE(credential_data->>'status_group', id::text) = $1"#,
+                    )
+                    .bind(&group)
+                    .fetch_all(&mut *tx)
+                    .await
+                    {
+                        Err(e) => {
+                            return (
+                                StatusCode::INTERNAL_SERVER_ERROR,
+                                e.to_string(),
+                            )
+                                .into_response();
+                        }
+                        Ok(rows) => {
+                            let _ = tx.commit();
+                            // Every revoked member lands its bit at its
+                            // OWN stored idx (the shared list's per-member
+                            // slot). Non-members stay VALID (0).
+                            let mut entries: Vec<(u8, u32)> = Vec::new();
+                            for r in &rows {
+                                let st: String =
+                                    r.try_get("status").unwrap_or_default();
+                                if st == "revoked" {
+                                    let si: i32 = r.try_get("sidx").unwrap_or(0);
+                                    entries.push((1, si.max(0) as u32));
+                                }
+                            }
+                            // Solo-credential fallback (no data row?).
+                            if entries.is_empty() && own_status == "revoked" {
+                                entries.push((1, 0));
+                            }
+                            let _ = self_key;
+                            Some(entries)
+                        }
+                    }
+                }
+            }
+        }
     };
-    // Single-credential status list: bit 0 = revoked flag.
-    let bit: u8 = if status == "revoked" { 1 } else { 0 };
-    Ok(Json(StatusListDocument {
-        status_list: serde_json::json!({ "idx": 0, "list": status_list_b64(bit) }),
-    }))
+    let Some(entries) = status else {
+        return (StatusCode::NOT_FOUND, "credential not found".to_string()).into_response();
+    };
+    let list_cap: Option<u32> = entries.last().map(|(_, _)| 16u32);
+    // The status-list token (draft-ietf-oauth-status-list-jwt): a JWS
+    // whose header carries the key (`jwk` member - the same
+    // embedded-key contract the OIDF suite verifies with ) and
+    // `typ: status-list+jwt`; the claims ride iss/sub/iat/exp plus the
+    // `status_list` member (the uncompressed-DEFLATE base64url
+    // bitstring + this credential's idx).
+    let issuer = crate::oauth::resolve_issuer(&state.config, &headers);
+    let sub = format!("{issuer}/oauth/credentials/status/{id}");
+    let now = chrono::Utc::now().timestamp();
+    let claims = serde_json::json!({
+        "iss": issuer,
+        "sub": sub,
+        "iat": now,
+        "exp": now + 86_400,
+        // OTSL (draft-ietf-oauth-status-list-jwt) status_list claim:
+        // `bits` = bits-per-entry (1) and `lst` = the DEFLATE-compressed
+        // base64url bitstring (the OIDF CheckCredentialStatus decodes
+        // `lst` with the `bits` width; entry bit order is LSB-first).
+        "status_list": {
+            "bits": 1,
+            "lst": list_b64_with_bits(&entries, list_cap.unwrap_or(16)),
+        },
+    });
+    let Some(jwk_hdr) = status_list_signing_jwk(&state) else {
+        return (StatusCode::INTERNAL_SERVER_ERROR, "no signing key".to_string()).into_response();
+    };
+    let token = crate::jwks::SigningKeys::status_list_jwt(&state.keys, &claims, &jwk_hdr)
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))
+        .unwrap_or_else(|_| String::new());
+    (
+        [(axum::http::header::CONTENT_TYPE, "application/statuslist+jwt")],
+        token,
+    )
+        .into_response()
+}
+
+/// The ACTIVE ES256 (or RS256) key's PUBLIC JWK (the `jwk` header member
+/// of the status-list token - the verifier needs the key discoverable
+/// from the token itself).
+fn status_list_signing_jwk(
+    state: &AppState,
+) -> Option<serde_json::Value> {
+    let jwks = crate::jwks::JwksResponse::from_keys(&state.keys);
+    let want_alg = crate::jwks::active_signing_alg();
+    let pick = |alg: &str| jwks.keys.iter().find(|j| j.alg == alg);
+    pick(want_alg)
+        .or_else(|| pick("ES256"))
+        .or_else(|| pick("RS256"))
+        .and_then(|j| serde_json::to_value(j).ok())
 }
 
 /// `POST /oauth/credentials/revoke/{id}` - revoke (admin).
@@ -872,9 +999,23 @@ pub async fn credential_revoke(
 
 /// Encode a 1-byte status list (MSB-first, entry 0 = bit 7) - EUDI.2.1.
 fn status_list_b64(bit: u8) -> String {
+    list_b64_with_bits(&[(bit, 0)], 16)
+}
+
+/// Encode a status-list bitstring: `entries` = (set?, idx) pairs, LSB
+/// first (entry 0 = bit 0 of byte 0), `cap` entries total (bytes built
+/// to hold the whole list). DEFLATE-compressed + base64url (OTSL §6.2).
+fn list_b64_with_bits(entries: &[(u8, u32)], cap: u32) -> String {
     use base64::Engine as _;
     use std::io::Write as _;
-    let bits = vec![if bit != 0 { 0b1000_0000u8 } else { 0u8 }];
+    let bytes_len = ((cap as usize) + 7) / 8;
+    let mut bits = vec![0u8; bytes_len];
+    for (set, idx) in entries {
+        if *set != 0 {
+            let i = (*idx as usize) % (bytes_len * 8);
+            bits[i / 8] |= 1u8 << (i % 8);
+        }
+    }
     let mut enc = flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::default());
     let _ = enc.write_all(&bits);
     let compressed = enc.finish().unwrap_or_default();
