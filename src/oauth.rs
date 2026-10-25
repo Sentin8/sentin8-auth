@@ -3494,6 +3494,15 @@ pub async fn authorize(
             }
         }
     }
+    // The missing-redirect_uri adoption (RFC 6749 §4.1.2.1, DESIGN
+    // §9a.22): a request that omits redirect_uri against a client with
+    // EXACTLY ONE registered redirect_uri adopts that URI (and every
+    // downstream validation error redirects there). Zero or multiple
+    // registrations stay the inline 400 - the target would be an
+    // assumption.
+    if params.redirect_uri.is_empty() && client_redirect_uris.len() == 1 {
+        params.redirect_uri = client_redirect_uris[0].clone();
+    }
     if !redirect_uri_registered(&client_redirect_uris, &params.redirect_uri) {
         return (
             StatusCode::BAD_REQUEST,

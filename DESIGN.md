@@ -1443,6 +1443,29 @@ inline JSON body:
   suite's error-expecting modules read the CALLBACK (`EnsureInvalidRequestError`).
   When the redirect_uri is not (yet) validated - a missing/unknown
   client - the inline 400 stays (no open redirect).
+- **The missing-redirect_uri adoption (RFC 6749 §4.1.2.1).** An
+  authorization request that OMITS `redirect_uri` does not fall into the
+  inline-400 class when the client has EXACTLY ONE registered
+  redirect_uri: the AS adopts that registered URI for the request (and
+  therefore for the error redirect) - RFC 6749 §4.1.2.1: "if multiple
+  redirection URIs have been registered ... a redirection URI ... MUST
+  NOT be used" - with a single registration the URI is unambiguous, and
+  the OIDF dynamic-registration family (ensure-redirect-uri-in-request,
+  ensure-registered-redirect-uri) resolves error outcomes through the
+  callback. Zero or multiple registrations keep the inline 400 (the
+  target URI would be an assumption). The adoption happens BEFORE the
+  registered check in both authorize handlers, so every downstream
+  validation error (response_type, PAR, PKCE, scope, JAR) redirects to
+  the adopted URI with `error` + `state`. The conformance rig resolves
+  the two error-page expectation classes against this posture
+  (`sentin8-auth-oidf` fixtures/runner.ts): the FIRST suite-callback
+  landing is trusted to resolve the redirect-surface class
+  (EnsureInvalidRequestError); a placeholder still pending on the second
+  observation uploads a real screenshot of the landed page (the
+  ensure-request-object-with-redirect-uri / ensure-redirect-uri variants
+  demand the error-page image itself), and an inline error page is
+  captured as a real screenshot. Full Dynamic-OP plan 1Q5QEdutLpTgh:
+  23/23 terminal (16 PASSED / 7 REVIEW by-design), zero warnings.
 - **FAPI2-SP response_type restriction.** A PAR-mandating profile
   restricts the authorization request to the RESPONSE TYPE `code`
   ONLY (FAPI2-SP-FINAL-5.2.2-1): the hybrid forms (`code id_token`,
@@ -1483,7 +1506,7 @@ sequenceDiagram
     participant A as /oauth/authorize (+continue)
     participant T as /oauth/token
     C->>P: POST pushed request + DPoP proof
-    P->>P: verify proof; bind jkt (pre-bound or proof)
+    P->>P: verify proof, bind jkt (pre-bound or proof)
     P-->>C: request_uri (auth:par:{key}, 600s)
     C->>B: redirect to /oauth/authorize?request_uri=...
     B->>A: GET authorize (visit 1 - login)
