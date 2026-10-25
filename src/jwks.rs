@@ -1361,8 +1361,16 @@ impl SigningKeys {
             }
             ("RSA", "PS256") => {
                 // RFC 7518 §3.5 - RSASSA-PSS (the FAPI-mandated RSA form):
-                // verify the JWT against the client's RSA JWK via
-                // jsonwebtoken's PS256 (PSS, salt = SHA-256 digest size).
+                // verify the JWT signing input against the client's RSA
+                // JWK with the `rsa` crate's PSS verifier directly (salt =
+                // SHA-256 digest size). jsonwebtoken 9's PS256 path with
+                // `DecodingKey::from_rsa_components` rejects externally
+                // minted PSS signatures (wire-probed 2026-10-25: the
+                // identical in-process rsa::pss round trip passes while
+                // every foreign signer is rejected as InvalidSignature),
+                // so the JWT arm reuses the SAME primitive the RFC 9421
+                // raw arm (§9a.10 honesty: every advertised alg is
+                // verifiable).
                 let n = jwk
                     .get("n")
                     .and_then(|v| v.as_str())
@@ -1371,17 +1379,26 @@ impl SigningKeys {
                     .get("e")
                     .and_then(|v| v.as_str())
                     .ok_or("RSA JWK missing e")?;
-                let decoding_key = jsonwebtoken::DecodingKey::from_rsa_components(n, e)
-                    .map_err(|e| format!("build RSA decoding key: {e}"))?;
-                let mut validation =
-                    jsonwebtoken::Validation::new(jsonwebtoken::Algorithm::PS256);
-                validation.validate_aud = false;
-                validation.validate_exp = false;
-                validation.required_spec_claims.clear();
-                let data =
-                    jsonwebtoken::decode::<serde_json::Value>(token, &decoding_key, &validation)
-                        .map_err(|e| format!("PS256 verification failed: {e}"))?;
-                Ok(data.claims)
+                let n_bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD
+                    .decode(n)
+                    .map_err(|er| format!("decode n: {er}"))?;
+                let e_bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD
+                    .decode(e)
+                    .map_err(|er| format!("decode e: {er}"))?;
+                let n = rsa::BigUint::from_bytes_be(&n_bytes);
+                let e = rsa::BigUint::from_bytes_be(&e_bytes);
+                let vk = rsa::pss::VerifyingKey::<sha2::Sha256>::new(
+                    rsa::RsaPublicKey::new(n, e)
+                        .map_err(|er| format!("build RSA key: {er}"))?,
+                );
+                let sig = rsa::pss::Signature::try_from(sig_bytes.as_slice())
+                    .map_err(|er| format!("decode PS256 signature: {er}"))?;
+                {
+                    use rsa::signature::Verifier;
+                    vk.verify(signing_input.as_bytes(), &sig)
+                        .map_err(|er| format!("PS256 verification failed: {er}"))?;
+                }
+                sentin8::auth::jwt::decode_payload(token)
             }
             ("RSA", "RS256") => {
                 let n = jwk

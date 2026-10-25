@@ -1153,8 +1153,13 @@ Advanced keeps the permissive RFC 7523/9126 endpoint/ARRAY set; (c) PAR
 from the request object before the DPoP gate (JAR value wins over the
 form), persisted in the PAR record, enforced at token (thumbprint
 mismatch → `invalid_dpop_proof`); (d) PS256 (RSASSA-PSS, RFC 7518 §3.5)
-implemented in both raw-JWS and jsonwebtoken verification arms - closing
-the "advertised-but-unverifiable" honesty gap; (e) the multi-DPoP
+verified through the `rsa` crate's PSS primitive in BOTH the raw-JWS and
+the JWT arms (one PSS implementation; salt = SHA-256 digest size per
+RFC 7518 §3.5; wire-proven: a salt=32 PS256 client assertion with
+registered jwks pushes PAR 201, and a 222-byte max-salt assertion - the
+non-RFC form - is rejected, as are unregistered-key assertions per
+RFC 7523 key registration) - closing the "advertised-but-unverifiable"
+honesty gap; (e) the multi-DPoP
 negative is suite JVM-collapse-skip (two proofs become one wire header;
 the wire 2-line case is proven at the proxy level).
 
