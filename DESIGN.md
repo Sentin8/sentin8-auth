@@ -1141,7 +1141,11 @@ the grant at bc-authorize and the poll must present the SAME cert
 
 ### 9a.16 FAPI 2.0 Message Signing (final plan, dpop + mtls cells)
 
-The full `fapi2-message-signing` plan is GREEN: (a) the plan's "request
+The full `fapi2-message-signing` plan is GREEN (2026-10-25, run14:
+111 module-instances across both cells = 97 PASSED / 10 REVIEW
+by-design screenshot confirms / 3 SKIP-SANCTIONED RS256-negatives
+(ES256-clients) / 1 FAIL-SANCTIONED multi-DPoP JVM collapse (HAIP-3);
+zero warnings): (a) the plan's "request
 signing" (`fapi_request_method=signed_non_repudiation`) is the SIGNED
 REQUEST OBJECT (JAR), NOT RFC 9421 HTTP signatures -
 `fapi_2_message_signing` posture keeps `require_http_signatures: false`;
