@@ -1161,7 +1161,14 @@ non-RFC form - is rejected, as are unregistered-key assertions per
 RFC 7523 key registration) - closing the "advertised-but-unverifiable"
 honesty gap; (e) the multi-DPoP
 negative is suite JVM-collapse-skip (two proofs become one wire header;
-the wire 2-line case is proven at the proxy level).
+the wire 2-line case is proven at the proxy level); (f) the request
+object's `exp` is MANDATORY under the message-signing posture - a
+signed (`alg` != none) object without `exp` rejects
+`invalid_request_object` (the non-repudiation freshness binding: a
+signature whose validity window an attacker cannot shorten is
+meaningless under FAPI2-MS; the plain RFC 9101 form keeps exp
+RECOMMENDED - the alg-none unsigned object keeps its TLS-integrity
+story and exp stays optional).
 
 ### 9a.17 OIDC Core Config + Dynamic OP certification
 

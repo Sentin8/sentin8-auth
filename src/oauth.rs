@@ -2954,7 +2954,12 @@ pub async fn pushed_authorization_request(
         // host-resolved issuer (x-sentin8-hostname/Host), not the static
         // platform config (multi-tenant instance).
         let issuer = resolve_issuer(&state.config, &headers);
-        let jar = verify_jar_request(&state, &client.client_id, request_jwt, &issuer)
+        let require_exp = crate::fapi::FapiProfile::from_str(
+            &resolve_security_profile(&state.pool, &headers, "env").await.profile,
+        )
+        .map(|p| p == crate::fapi::FapiProfile::Fapi20MessageSigning)
+        .unwrap_or(false);
+        let jar = verify_jar_request(&state, &client.client_id, request_jwt, &issuer, require_exp)
             .await
             .map_err(|e| {
                     json_error(
@@ -3329,7 +3334,12 @@ pub async fn authorize(
         None
     };
     if let Some(request_jwt) = jar_jwt {
-        match verify_jar_request(&state, &params.client_id, &request_jwt, &resolve_issuer(&state.config, &headers)).await
+        let require_exp = crate::fapi::FapiProfile::from_str(
+            &resolve_security_profile(&state.pool, &headers, "env").await.profile,
+        )
+        .map(|p| p == crate::fapi::FapiProfile::Fapi20MessageSigning)
+        .unwrap_or(false);
+        match verify_jar_request(&state, &params.client_id, &request_jwt, &resolve_issuer(&state.config, &headers), require_exp).await
         {
             Ok(jar) => {
                 if !jar.redirect_uri.is_empty() {
@@ -7866,6 +7876,7 @@ async fn verify_jar_request(
     client_id: &str,
     request_jwt: &str,
     issuer: &str,
+    require_exp: bool,
 ) -> Result<crate::jar::JarClaims, String> {
     // Unverified decode first - to read routing claims and find the key.
     let claims = crate::jar::decode_jar_unverified(request_jwt)?;
@@ -7877,7 +7888,17 @@ async fn verify_jar_request(
     // an object with no integrity claim to bind). exp is enforced only
     // when PRESENT (±10 min); signed objects keep the mandatory exp
     // binding below via the signature-freshness pairing.
+    // DESIGN §9a.16 (f): under the fapi_2_message_signing posture the
+    // SIGNED object's `exp` is MANDATORY (the non-repudiation freshness
+    // binding) - an exp-less signed object rejects
+    // `invalid_request_object` before the key/claim work.
+    let header_alg = sentin8::auth::jwt::decode_header_typed::<serde_json::Value>(request_jwt)
+        .ok()
+        .and_then(|h| h.get("alg").and_then(|a| a.as_str()).map(str::to_string));
     let raw = sentin8::auth::jwt::decode_payload(request_jwt)?;
+    if require_exp && header_alg.as_deref() != Some("none") && raw.get("exp").is_none() {
+        return Err("FAPI2 message-signing requires an exp claim on the signed request object".into());
+    }
     if let Some(exp) = raw.get("exp").and_then(|v| v.as_i64()) {
         let now = chrono::Utc::now().timestamp();
         // Closed-window boundary (same shape as the client assertion): exp
