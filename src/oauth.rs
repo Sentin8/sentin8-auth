@@ -2928,6 +2928,26 @@ pub async fn pushed_authorization_request(
     }
 
     // No JAR: the form's own response_type validates (the standard five).
+    // DESIGN §9a.16 (f) - under the fapi_2_message_signing posture the
+    // PAR push MUST carry a SIGNED request object: an unsigned push
+    // (no `request` parameter) rejects `invalid_request_object` - the
+    // non-repudiation posture has no unsigned message surface.
+    if crate::fapi::FapiProfile::from_str(
+        &resolve_security_profile(&state.pool, &headers, "env").await.profile,
+    )
+    .map(|p| p == crate::fapi::FapiProfile::Fapi20MessageSigning)
+    .unwrap_or(false)
+        && req.request.as_deref().map(str::trim).unwrap_or("").is_empty()
+    {
+        return Err(json_error(
+            StatusCode::BAD_REQUEST,
+            "invalid_request",
+            // PAR-2.3: the PAR push's rejection error code is
+            // `invalid_request` (the suite's EnsurePARInvalidRequestError);
+            // `invalid_request_object` is the by-value/authorize form.
+            "FAPI2 message-signing requires a signed request object on the PAR push".into(),
+        ));
+    }
     if req.request.as_deref().map(str::trim).unwrap_or("").is_empty()
         && !crate::oauth::is_supported_response_type(
             req.response_type.as_deref().unwrap_or(""),
@@ -3532,6 +3552,26 @@ pub async fn authorize(
     // the ensure-unsigned-authorization-request-without-using-par-fails
     // module's EnsureInvalidRequestError).
     if missing_par {
+        // JARM wraps the reject as well (response_mode=jwt - the suite's
+        // ExtractJARMFromURLQuery reads the callback's `response` param
+        // even for errors; a plain error redirect = no response at all).
+        if profile.require_jarm && params.response_mode.as_deref() == Some("jwt") {
+            let jarm_claims = crate::jarm::build_jarm_error(
+                &resolve_issuer(&state.config, &headers),
+                &params.client_id,
+                "invalid_request",
+                Some("PAR is required - provide a request_uri from /oauth/par"),
+                if params.state.is_empty() {
+                    None
+                } else {
+                    Some(&params.state)
+                },
+            );
+            if let Ok(jwt) = crate::jarm::sign_jarm_jwt(&state.keys, &jarm_claims, &profile.signing_alg) {
+                let url = crate::jarm::build_jarm_redirect_url(&params.redirect_uri, &jwt);
+                return (StatusCode::FOUND, [("location", url)]).into_response();
+            }
+        }
         return authorize_error_redirect(
             &params.redirect_uri,
             "invalid_request",
@@ -3544,6 +3584,11 @@ pub async fn authorize(
     // the deferred site above): the client and redirect_uri are valid, so
     // the error goes back to the RP as a redirect.
     if response_type_invalid {
+        // The response-type reject = the PLAIN url-query error (the
+        // suite's DetectWhetherErrorResponseIsInQueryOrFragment class
+        // owns this module family - it reads `error` from the callback
+        // query directly; the JARM-wrapped form logs
+        // 'unexpected parameters' + no-JARM decode chain).
         let mut url = format!(
             "{}?error=unsupported_response_type&error_description={}",
             params.redirect_uri,
@@ -7896,8 +7941,43 @@ async fn verify_jar_request(
         .ok()
         .and_then(|h| h.get("alg").and_then(|a| a.as_str()).map(str::to_string));
     let raw = sentin8::auth::jwt::decode_payload(request_jwt)?;
-    if require_exp && header_alg.as_deref() != Some("none") && raw.get("exp").is_none() {
-        return Err("FAPI2 message-signing requires an exp claim on the signed request object".into());
+    if require_exp {
+        // FAPI2-MS: the request object MUST be signed (alg=none is the
+        // plain-RFC-9101 relaxation; the non-repudiation posture forbids
+        // it).
+        if header_alg.as_deref() == Some("none") {
+            return Err("FAPI2 message-signing forbids an unsigned request object".into());
+        }
+        for claim in ["exp", "nbf"] {
+            if raw.get(claim).is_none() {
+                return Err(format!(
+                    "FAPI2 message-signing requires the {claim} claim on the signed request object"
+                ));
+            }
+        }
+        // FAPI2-MS freshness windows (the suite's nbf-over-60 negative):
+        // a not-before further than 60s in the future is a freshness
+        // violation - the object is not yet usable and never will be
+        // within the flow's lifetime.
+        let now = chrono::Utc::now().timestamp();
+        if let Some(nbf) = raw.get("nbf").and_then(|v| v.as_i64()) {
+            // A stale not-before (the suite's 70-min-past negative)
+            // defeats the freshness binding just as much as a future one
+            // far out: the object was usable long before its signing
+            // journey, and cannot be pinned to THIS issuance - reject
+            // beyond the same 10-min slack the exp window allows.
+            if nbf > now + 60 {
+                return Err("request object nbf more than 60s in the future".into());
+            }
+            if nbf < now - 600 {
+                return Err("request object nbf more than 10 minutes in the past".into());
+            }
+        }
+        if let Some(iat) = raw.get("iat").and_then(|v| v.as_i64()) {
+            if iat > now + 60 {
+                return Err("request object iat more than 60s in the future".into());
+            }
+        }
     }
     if let Some(exp) = raw.get("exp").and_then(|v| v.as_i64()) {
         let now = chrono::Utc::now().timestamp();
