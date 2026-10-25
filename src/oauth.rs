@@ -5246,10 +5246,24 @@ async fn handle_code_exchange(
     // sender-constrain=dpop posture, an exchange with NO live proof AND
     // NO pre-bound record jkt cannot satisfy the sender-constraint -
     // reject (DPOP-10.1 + the suite's ensure-holder-of-key-required).
-    // The mTLS-bound cells are unaffected (the certificate is the
-    // sender); the pre-bound record carries the PAR/authorize's key.
+    // The pre-bound record carries the PAR/authorize's key. An
+    // mTLS-presented certificate IS the sender constraint (RFC 8705
+    // §3): the exchange's TLS client cert (the proxy-injected
+    // thumbprint context) satisfies the gate - the cert-bound cnf mint
+    // takes over below (no jkt, `Bearer`). DESIGN §9a.12 (2)/(3) +
+    // §9a.22.
+    let mtls_presented = client
+        .cert_thumbprint
+        .clone()
+        .or_else(|| {
+            crate::mtls::extract_mtls_identity(&headers)
+                .map(|(t, _)| t)
+                .filter(|t| !t.is_empty())
+        })
+        .is_some();
     if !is_dpop_exempt(&client)
         && profile.require_dpop
+        && !mtls_presented
         && dpop_jkt.is_none()
         && code_data
             .get("dpop_jkt")

@@ -1491,8 +1491,13 @@ inline JSON body:
   token-exchange WITHOUT a live DPoP proof AND without a pre-bound
   code-record `dpop_jkt` cannot satisfy the sender-constraint: it
   rejects `400 invalid_dpop_proof` (DPOP-10.1: sender-constrained
-  authorization requires proof of possession). The mTLS-bound cells
-  are unaffected (the certificate is the sender).
+  authorization requires proof of possession). The mTLS-presented
+  certificate IS the sender constraint (RFC 8705 §3): when the token
+  exchange presents a client certificate (the proxy's thumbprint
+  context) the DPoP gate is satisfied by the cert - the cert-bound cnf
+  mint takes over (no jkt, `Bearer`). A client whose registered auth
+  method is the certificate (self_signed/tls_client_auth) or whose
+  exchange presents ANY thumbprint is unaffected.
 - **The revocation cascade on the resource surface.** The code-replay
   revocation (RFC 6749 §4.1.2 - `crate::grants::revoke_by_id` on the
   detected replay) must hold EVERYWHERE the grant's tokens speak: the
