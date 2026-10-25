@@ -838,6 +838,18 @@ pub async fn get_client(
     })?;
     let rat_hash = hash_token(&rat);
 
+    // The RFC 7592 read runs under the request's tenant context (RLS-scoped
+    // rows - the raw pool connection has no context and FORCE RLS denies
+    // every row). The same resolution the POST used.
+    let mut tx = state
+        .pool
+        .begin()
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    let _ = sqlx::query("SELECT sentin8_set_tenant_context($1)")
+        .bind(resolve_tenant(&headers))
+        .execute(&mut *tx)
+        .await;
     let row = sqlx::query!(
         r#"SELECT
                client_id, client_id_issued_at, client_secret_expires_at,
@@ -851,9 +863,10 @@ pub async fn get_client(
            WHERE client_id = $1 AND dcr_protected = true"#,
         client_id,
     )
-    .fetch_optional(&state.pool)
+    .fetch_optional(&mut *tx)
     .await
     .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    let _ = tx.commit().await;
 
     let row = row.ok_or_else(|| (StatusCode::NOT_FOUND, "client not found".into()))?;
 
