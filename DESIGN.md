@@ -1507,6 +1507,26 @@ inline JSON body:
   by the bound-to-client module's 3-way set; the resolution result and
   the client-binding check share one site so the redirect decision
   happens exactly once, after redirect_uri validation).
+- **The PKCE reject family rides the same channels.** A missing
+  `code_challenge` (the profile mandates PKCE) or a non-S256
+  `code_challenge_method` (the `plain` method is out of posture) defers
+  to the same post-validation site: `error=invalid_request` redirect,
+  JARM-wrapped (`response=<JWT>`) when the profile requires JARM and the
+  request carried `response_mode=jwt` (the PKCE-negative family reads the
+  callback with EnsurePARInvalidRequestError - the plain form there
+  logs the 'unexpected parameters' warning, the wrapped form decodes).
+  Wire-proven: par-ensure-pkce-required + par-plain-pkce-rejected PASS in
+  both cells.
+- **Campaign terminal state (2026-10-26).** Both f2 plans run
+  terminal-ZERO-WARNING-ZERO-REVIEW green against the same deployed
+  binary: fapi2-message-signing run16 = 117 module-instances (116 PASSED
+  + 1 FAIL-SANCTIONED multi-DPoP JVM collapse) and fapi2-security run7 =
+  89 module-instances (88 PASSED + the same sanctioned FAIL) - the
+  request_uri-negative family (reuse/expired/bound-to-client), the PKCE
+  negatives, and every error-page placeholder class resolve PASSED with
+  zero warnings; the seed publishes RSA-PS256 keys (single-key JWKS per
+  client) so the suite's RS256-negatives RUN (the alg-mandate rejects
+  RS256-signed material) instead of skipping.
 - **The missing-redirect_uri adoption (RFC 6749 §4.1.2.1).** An
   authorization request that OMITS `redirect_uri` does not fall into the
   inline-400 class when the client has EXACTLY ONE registered
