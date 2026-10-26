@@ -3499,18 +3499,18 @@ pub async fn authorize(
         || (profile.require_par
             && params.response_type.split_whitespace().ne(std::iter::once("code").collect::<Vec<&str>>()));
 
-    // Validate PKCE if code_challenge is present.
-    if let Some(ref method) = params.code_challenge_method {
-        if method != "S256" {
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(serde_json::json!({
-                    "error": "invalid_request",
-                    "error_description": "code_challenge_method must be S256"
-                })),
-            )
-                .into_response();
-        }
+    // Validate PKCE if code_challenge is present. S256-only (RFC 7636
+    // §4.2 - the 'plain' method is out of the FAPI/our posture): the
+    // reject DEFERS to the post-validation site (DESIGN §9a.22) - the
+    // suite's plain-pkce-rejected module reads the callback
+    // (EnsurePARInvalidRequestError).
+    let pkce_method_invalid = params
+        .code_challenge_method
+        .as_deref()
+        .map(|m| m != "S256")
+        .unwrap_or(false);
+    if pkce_method_invalid {
+        deferred_pkce_reject = Some("code_challenge_method must be S256".to_string());
     }
     // PKCE is mandatory when the profile mandates PAR
     // (FAPI 2.0 default): the reject DEFERS to the post-validation site
@@ -3673,8 +3673,26 @@ pub async fn authorize(
     }
     // DESIGN §9a.22 - the deferred PKCE-missing reject (the same
     // post-validation channel; the PAR-flow PKCE negatives read the
-    // callback with an invalid_request error).
+    // callback with an invalid_request error - in the JARM form when the
+    // profile mandates it (response_mode=jwt rides the object).
     if let Some(desc) = deferred_pkce_reject {
+        if profile.require_jarm && params.response_mode.as_deref() == Some("jwt") {
+            let jarm_claims = crate::jarm::build_jarm_error(
+                &resolve_issuer(&state.config, &headers),
+                &params.client_id,
+                "invalid_request",
+                Some(&desc),
+                if params.state.is_empty() {
+                    None
+                } else {
+                    Some(&params.state)
+                },
+            );
+            if let Ok(jwt) = crate::jarm::sign_jarm_jwt(&state.keys, &jarm_claims, &profile.signing_alg) {
+                let url = crate::jarm::build_jarm_redirect_url(&params.redirect_uri, &jwt);
+                return (StatusCode::FOUND, [("location", url)]).into_response();
+            }
+        }
         return authorize_error_redirect(
             &params.redirect_uri,
             "invalid_request",

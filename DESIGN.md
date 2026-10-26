@@ -812,10 +812,42 @@ graph TD
    into the compose build context, and the compose nginx service
    bind-mounts them over the image's self-signed paths (no image
    rebuild).
-2. **Certification environment** - a dedicated org + env (`cert`) whose
-   security profile is `standard` (OIDC Core/Config/Dynamic runs) or
-   `fapi_2` / `fapi_1_advanced` (FAPI runs). One test user with a known
-   password, seeded through the platform API only (no direct SQL).
+2. **Certification environments - profile-per-env (OC-20).** Each test
+   family runs against its OWN environment (and its own suite alias) so
+   every env's security-profile row is permanent - the whole battery
+   (`npm run test` / `make conformance-all`) runs the families in
+   sequence with NO seed-order coupling, and two profiles could later
+   run concurrently (the suite serializes per alias; distinct aliases
+   de-conflict):
+
+   | env (org `conformance-local`) | suite alias | profile |
+   |---|---|---|
+   | `cert` | `sentin8-local` | `standard` |
+   | `cert-fapi2` | `sentin8-fapi2` | `fapi_2` |
+   | `cert-f2m` | `sentin8-f2m` | `fapi_2_message_signing` |
+   | `cert-fapi1` | `sentin8-fapi1` | `fapi_1_advanced` |
+   | `cert-ciba` | `sentin8-ciba` | `fapi_ciba` |
+   | `cert-vci` | `sentin8-vci` | `vci` |
+   | `cert-haip` | `sentin8-haip` | `vci_haip` |
+
+   The seed (`conformance-seed.sh`) parameterizes the env slug + alias
+   (`CONFORMANCE_ENV_SLUG` / `CONFORMANCE_ALIAS`, deriving
+   `auth.<slug>.conformance-local.<domain>` + the callback
+   `/test/a/<alias>/callback`) and writes **per-env** seed-out files
+   (`.tmp/conformance/seed-out/<slug>.txt` + `cert-user-<slug>.env`) -
+   the flat `seed-out.txt` keys (`client_id(basic)`) would collide
+   across envs. Platform-side NOTHING changes: the profile resolves
+   per-request from `X-Sentin8-Env-Id` (TLS host-context resolve →
+   `sys.environments` by slug), the issuer is host-derived, and Valkey
+   keys carry the env in record VALUES (UUID identifiers) - no
+   collision across parallel envs. Host DNS resolves the wildcard
+   `*.local.sentin8.dev`; the suite container needs one `extra_hosts`
+   line per env host (`conformance/docker-compose.yml`), pinned to the
+   host-gateway IPv4. One user per env (own email - the shared-email
+   rate buckets stay per-env users). One test user with a known
+   password per env, seeded through the platform API only (no direct
+   SQL). The legacy single-env form (env `cert`, alias `sentin8-local`,
+   flat seed-out) remains the DEFAULT for the standard family.
 3. **Suite-visible posture (classical mode)** - the rig environment
    sets `SENTIN8_TLS_PQ_MODE=classical` (TLS 1.2/1.3 + RSA/ECDSA certs,
    JWT signing RS256) because the suite's Java client cannot speak the
