@@ -1647,3 +1647,53 @@ sequenceDiagram
     A-->>B: rejected - auth:par-used:{key}
 ```
 
+
+### 9a.23 Logout error surface - the unregistered post_logout_redirect_uri page (OIDC RP-Initiated Logout)
+
+The suite's `oidcc-rp-initiated-logout-bad-post-logout-redirect-uri`
+module (`ExpectPostLogoutRedirectUriNotRegisteredErrorPage`) demands
+that the OP **show an error page saying the request is invalid as the
+`post_logout_redirect_uri` is not a registered one** - a real, visible
+rejection, not a silent fallback. The pre-9a.23 posture redirected an
+unregistered `post_logout_redirect_uri` (when the parameter was
+PRESENTED) to the bare `/sign-in` SPA: the page said nothing, the
+suite's browser interaction placeholder
+(`post_logout_redirect_uri_not_registered_error`) never resolved, and
+the module stalled in WAITING until the harness's visit cap called it
+INTERRUPTED.
+
+**Target state.** When a `post_logout_redirect_uri` is PRESENTED but
+refused (not registered for the identified client, or no client
+identified), `/oauth/logout` serves a **server-rendered error page**
+(the same JS-free posture as §9a.8: stable element ids, no JS) with an
+HTTP 200 and the body text `Invalid request - the
+post_logout_redirect_uri is not registered for this client`. When the
+parameter is absent/empty (a session-scoped logout with no landing
+target) the clean 302 → `/sign-in` fallback stays (open-redirect
+defense unchanged). The error page is a TERMINAL response: it clears
+the session cookie exactly as the redirect path does (the logout side
+effect completes), so a browser landing on it is logged out AND
+informed.
+
+The harness (sentin8-auth-oidf fixtures/runner.ts) recognizes the
+auth-served error page by its URL (`/oauth/logout-error` path or the
+`?`-carried marker) and uploads a real screenshot of it - the module's
+placeholder resolves with the page visible.
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant B as browser (suite)
+    participant L as /oauth/logout
+    participant D as oauth_clients (RLS)
+    B->>L: GET logout?post_logout_redirect_uri=BAD&client_id=...
+    L->>D: resolve client (id_token_hint aud or client_id)
+    alt uri IS registered
+        L-->>B: 302 uri (+echoed state)
+    else uri NOT registered (PRESENTED)
+        L-->>B: 200 error page ("post_logout_redirect_uri is not registered")
+        B->>L: (harness screenshots the error page)
+    else NO post_logout_redirect_uri in the request
+        L-->>B: 302 /sign-in (clean session-scoped logout)
+    end
+```

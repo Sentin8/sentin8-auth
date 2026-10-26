@@ -231,6 +231,43 @@ input:focus {{ outline: 1px solid #D4AF37; }}
     )
 }
 
+/// A server-rendered TERMINAL error page for a refused logout
+/// parameter (DESIGN §9a.23): the browser is logged out AND informed.
+/// JS-free with a stable element id (`#error_message`), like §9a.8.
+pub fn logout_error_page(msg: &str) -> String {
+    format!(
+        r#"<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Logout error - Sentin8</title>
+<style>
+body {{ font-family: Inter, system-ui, sans-serif; background: #0f1117; color: #
+e6e8ee;
+       display: flex; align-items: center; justify-content: center; min-height:
+100vh; margin: 0; }}
+.panel {{ background: #171a23; border: 1px solid #262b38; border-radius: 12px;
+        padding: 2rem; width: 100%; max-width: 420px; box-sizing: border-box; }}
+h1 {{ font-size: 1.25rem; margin: 0 0 1rem; }}
+p {{ font-size: 0.95rem; margin: 0.5rem 0; }}
+.error {{ color: #ff8080; }}
+a {{ color: #D4AF37; }}
+</style>
+</head>
+<body>
+<div class="panel">
+<h1>Logout error</h1>
+<p>You have been signed out.</p>
+<p id="error_message" class="error">{msg}</p>
+<p><a href="/sign-in">Sign in again</a></p>
+</div>
+</body>
+</html>"#,
+        msg = esc(msg),
+    )
+}
+
 /// `GET /oauth/login` - render the HTML login form (DESIGN §9a.8).
 /// The authorize handler redirects here with the OAuth context in the
 /// query string; it is signed into the hidden field.

@@ -7863,11 +7863,36 @@ pub async fn logout(
                     }
                 }
                 _ => {
+                    // An UNREGISTERED landing target - the OIDC
+                    // RP-Initiated Logout suite surface
+                    // (ExpectPostLogoutRedirectUriNotRegisteredErrorPage,
+                    // DESIGN 9a.23) demands a VISIBLE invalid-request page,
+                    // not a silent /sign-in fallback: the silent redirect
+                    // left the suite's screenshot placeholder pending
+                    // forever (the module WAITING until the visit cap =
+                    // INTERRUPTED). Serve the terminal error page (the
+                    // response carries the session-cookie clear).
                     tracing::warn!(
                         uri = %uri,
-                        "logout: unregistered post_logout_redirect_uri refused - falling back to /sign-in"
+                        "logout: unregistered post_logout_redirect_uri refused - serving the logout error page"
                     );
-                    "/sign-in".to_string()
+                    let cookie_domain = crate::sessions::cookie_domain_from_headers(&headers, &state.config.sentin8_domain);
+                    let body = crate::login_page::logout_error_page(
+                        "Invalid request - the post_logout_redirect_uri is not registered for this client",
+                    );
+                    let mut resp = (StatusCode::OK, body).into_response();
+                    *resp.status_mut() = StatusCode::OK;
+                    resp.headers_mut().insert(
+                        axum::http::header::SET_COOKIE,
+                        Session::clear_cookie(&cookie_domain)
+                            .parse()
+                            .unwrap_or(axum::http::HeaderValue::from_static("")),
+                    );
+                    resp.headers_mut().insert(
+                        axum::http::header::CONTENT_TYPE,
+                        axum::http::HeaderValue::from_static("text/html; charset=utf-8"),
+                    );
+                    return resp;
                 }
             }
         }
@@ -7973,10 +7998,18 @@ fn redirect_uri_registered(registered: &[String], uri: &str) -> bool {
     }
     // Query-string extension: a presented redirect_uri that EXTENDS a
     // registered one with ONLY additional query parameters (same
-    // scheme/host/port/path, no fragment) matches - the registered URI
-    // is the security anchor; extra query parameters carry per-request
-    // state (the suite's happy-flow appends ?dummy1/dummy2 to the
-    // registered callback).
+    // scheme/host/port/path, no fragment, and the registered query's
+    // own params CARRIED FORWARD unchanged) matches - the registered
+    // URI is the security anchor; extra query parameters carry
+    // per-request state (the suite's happy flow appends
+    // ?dummy1=lorem&dummy2=ipsum to the registered callback). A
+    // presented value that DIFFERS from the registered value is a
+    // MISMATCH, not an extension (the suite's
+    // oidcc-redirect-uri-query-mismatch registers ?bar=foo then
+    // presents ?foo=bar and expects the reject - the pre-9a.24 rule
+    // compared only scheme/host/port/path and accepted every
+    // same-path ?uri, calling the registered redirect on the negative
+    // test).
     if registered.iter().any(|r| redirect_uri_query_extension(r, uri)) {
         return true;
     }
@@ -7988,7 +8021,8 @@ fn redirect_uri_registered(registered: &[String], uri: &str) -> bool {
 }
 
 /// Whether `uri` equals `registered_uri` plus ONLY extra query
-/// parameters (identical scheme/host/port/path, no fragment).
+/// parameters (identical scheme/host/port/path, no fragment, and every
+/// registered query parameter present with THE SAME value).
 fn redirect_uri_query_extension(registered_uri: &str, uri: &str) -> bool {
     let Ok(reg) = url::Url::parse(registered_uri) else {
         return false;
@@ -7996,12 +8030,39 @@ fn redirect_uri_query_extension(registered_uri: &str, uri: &str) -> bool {
     let Ok(presented) = url::Url::parse(uri) else {
         return false;
     };
-    reg.scheme() == presented.scheme()
+    if !(reg.scheme() == presented.scheme()
         && reg.host_str() == presented.host_str()
         && reg.port_or_known_default() == presented.port_or_known_default()
         && reg.path() == presented.path()
         && presented.fragment().is_none()
-        && uri.contains('?')
+        && uri.contains('?'))
+    {
+        return false;
+    }
+    // Every registered query param must appear in the presented query
+    // with the same value (order-insensitive). A bare-base registered
+    // URI carries no query = no constraint. The presented query may
+    // only ADD - never alter.
+    use std::collections::BTreeMap;
+    let to_map = |q: Option<&str>| -> BTreeMap<String, String> {
+        let mut m = BTreeMap::new();
+        if let Some(q) = q {
+            for pair in q.split('&') {
+                if pair.is_empty() {
+                    continue;
+                }
+                let (k, v) = match pair.split_once('=') {
+                    Some((k, v)) => (k, v),
+                    None => (pair, ""),
+                };
+                m.insert(k.to_string(), v.to_string());
+            }
+        }
+        m
+    };
+    let reg_q = to_map(reg.query());
+    let pre_q = to_map(presented.query());
+    reg_q.iter().all(|(k, v)| pre_q.get(k) == Some(v))
 }
 
 /// Look up an OAuth client's routing metadata (consent_required,
