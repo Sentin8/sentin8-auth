@@ -98,7 +98,7 @@ mint tokens or publish signing keys. The business value it delivers:
 | Introspection | Honest introspection - `none`-auth clients hard-rejected; signed JWT responses per profile |
 | OIDC claim scopes | All four claim scopes (`email`, `profile`, `phone`, `address`) are advertised and served: the consented scope selects the claim family; every advertised scope is demonstrable end-to-end, and delivers nothing when not consented |
 | Revocation | OAuth revocation with grant cascade; uniform protocol errors (no existence oracles) |
-| Token binding | DPoP proof validation with jti replay protection; mTLS cert thumbprint binding; HTTP message signatures (FAPI2-MS); the PAR-to-token sender-constraint journey - the key bound at the pushed request must be the key at the token endpoint (mismatch = rejected grant); a reused `request_uri` after an authorization outcome is refused |
+| Token binding | DPoP proof validation with jti replay protection; mTLS cert thumbprint binding; HTTP message signatures (FAPI2-MS); the PAR-to-token sender-constraint journey - the key bound at the pushed request must be the key at the token endpoint (mismatch = rejected grant); a reused `request_uri` after an authorization outcome is refused; an unresolvable or foreign (`different client`) `request_uri` rejects with the OAuth error redirect `invalid_request_uri` on the client's registered callback - the browser-driven RP always receives the error back, never an off-callback JSON body |
 | Wallet/SD-JWT issuance | SD-JWT selective disclosure, key binding (embedded jwk, key attestation verified against exactly one trusted key), status-list revocation enforcement, hour-rounded time claims (batch linkability protection) |
 
 ### 3.3 RBAC & Client Administration

@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT require_par, require_mtls, require_jarm, require_dpop,\n                  require_http_signatures, require_jwt_introspection, require_iss,\n                  max_token_lifetime, refresh_rotation, profile, signing_alg\n           FROM security_profiles\n           WHERE scope = $1\n             AND (org_id IS NOT DISTINCT FROM $2)\n             AND (env_id IS NOT DISTINCT FROM $3)",
+  "query": "SELECT require_par, require_mtls, require_jarm, require_dpop,\n                  require_http_signatures, require_jwt_introspection, require_iss,\n                  max_token_lifetime, refresh_rotation, profile, signing_alg,\n                  allow_client_attestation, client_attestation_trust_anchor_pem,\n                  client_attestation_issuer, issuance_leaf_pem, issuance_chain_pem\n           FROM security_profiles\n           WHERE scope = $1\n             AND (org_id IS NOT DISTINCT FROM $2)\n             AND (env_id IS NOT DISTINCT FROM $3)",
   "describe": {
     "columns": [
       {
@@ -57,6 +57,31 @@
         "ordinal": 10,
         "name": "signing_alg",
         "type_info": "Text"
+      },
+      {
+        "ordinal": 11,
+        "name": "allow_client_attestation",
+        "type_info": "Bool"
+      },
+      {
+        "ordinal": 12,
+        "name": "client_attestation_trust_anchor_pem",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 13,
+        "name": "client_attestation_issuer",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 14,
+        "name": "issuance_leaf_pem",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 15,
+        "name": "issuance_chain_pem",
+        "type_info": "Text"
       }
     ],
     "parameters": {
@@ -77,8 +102,13 @@
       false,
       false,
       false,
+      false,
+      false,
+      false,
+      false,
+      false,
       false
     ]
   },
-  "hash": "f7d0db9aa2a53b689d74249dda452a1e5af643caf697f2f2e4da2e25be64f2a9"
+  "hash": "7fadfaf1f48262f0ad7e509961892b2bae7becf8b03e31192b37cdca195111ec"
 }

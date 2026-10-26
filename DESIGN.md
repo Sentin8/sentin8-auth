@@ -1173,7 +1173,32 @@ signer; the suite's production objects ship exp + nbf) (the non-repudiation fres
 binding: a signature whose validity window an attacker cannot shorten
 is meaningless under FAPI2-MS; the plain RFC 9101 form keeps exp
 RECOMMENDED - the alg-none unsigned object keeps its TLS-integrity
-story and the claims stay optional).
+story and the claims stay optional); the freshness windows mirror the
+exp slack - a `nbf`/`iat` more than 60s in the future, or a stale
+`nbf` more than 10 minutes in the past, rejects; (g) the PAR push
+under the MS posture MUST carry a signed request object - an
+unsigned/no-object push rejects `400 invalid_request` (PAR-2.3's
+error code; the by-value/authorize form uses `invalid_request_object`);
+(h) the error-redirect CHANNEL follows the module family's owning
+suite check class, not the object's `response_mode` claim: the
+missing-PAR reject = the JARM-wrapped `response=<JWT>`
+(ExtractJARMFromURLQuery's flow) while the response-type reject = the
+plain url-query `error=` (DetectWhetherErrorResponseIsInQueryOrFragment
+reads `error` from the callback query directly; a JARM there logs
+'unexpected parameters'); (i) the client-assertion ALG MANDATE
+(FAPI 2.0 BSA/BE): client assertions and JAR request objects accept
+ES256/PS256 ONLY - an RS256-signed assertion rejects `401
+invalid_client` under the FAPI2 postures ('fapi_2' and
+'fapi_2_message_signing'), and discovery advertises the env-resolved
+`token_endpoint_auth_signing_alg_values_supported` as `[PS256, ES256]`
+there (RS256 drops with it; FAPI 1 Advanced keeps the full
+`[active, RS256, PS256, ES256]` set where RS256 remains valid). The
+suite's RS256-negatives ("requires RSA keys... If your server does
+not support PS256 then this will not prevent you certifying") run
+against a multi-key client (the seed provisions an ES256 and an
+RSA/PS256 key in the same jwks doc - the suite signs the negative
+with the RSA key while the positives keep ES256) and resolve with the
+AS's reject.
 
 ### 9a.17 OIDC Core Config + Dynamic OP certification
 
@@ -1460,6 +1485,28 @@ inline JSON body:
   suite's error-expecting modules read the CALLBACK (`EnsureInvalidRequestError`).
   When the redirect_uri is not (yet) validated - a missing/unknown
   client - the inline 400 stays (no open redirect).
+- **The PAR-urn-resolution reject (`invalid_request_uri`).** A
+  `request_uri` that does not resolve (unknown urn or expired/retired
+  PAR record) rejects as a 302 error REDIRECT to the (validated)
+  redirect_uri with `error=invalid_request_uri` once the query's
+  client + redirect_uri are verified - the target client PUSHED the
+  request_uri itself, so its registered redirect_uri is the RFC 9126
+  §4.1.3 error destination; the suite's request_uri-negative family
+  (attempt-to-use-expired-request_uri, attempt-reuse-request_uri,
+  request-uri-is-bound-to-client) reads `error` from the CALLBACK
+  (EnsureInvalidRequestUriError - exact `invalid_request_uri`; the
+  3-way permitted sets {invalid_request, invalid_request_uri,
+  access_denied}) and renders the ExpectInvalidRequestUriErrorPage
+  placeholder from the landed callback. An inline 400 there leaves the
+  browser on the AS origin with a JSON body - neither an error message
+  to the client nor an error page (the hollow-REVIEW class this closes).
+  When the query's client_id/redirect_uri are THEMSELVES invalid, the
+  inline 400 stays (no redirect to an unvalidated target). The
+  different-client violation (the urn resolves for another client)
+  rejects the same channel with `error=invalid_request_uri` (permitted
+  by the bound-to-client module's 3-way set; the resolution result and
+  the client-binding check share one site so the redirect decision
+  happens exactly once, after redirect_uri validation).
 - **The missing-redirect_uri adoption (RFC 6749 §4.1.2.1).** An
   authorization request that OMITS `redirect_uri` does not fall into the
   inline-400 class when the client has EXACTLY ONE registered

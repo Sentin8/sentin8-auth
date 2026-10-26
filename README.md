@@ -123,6 +123,11 @@ graph TD
   marks the `request_uri` used) - the full RFC 9449 §10.1
   sender-constraint journey spanning PAR proof → browser journey →
   token exchange is designed in the Detailed Design Document §9a.21.
+  Every authorization-endpoint reject reached after the client and
+  redirect_uri are validated (missing PAR, unresolvable/expired/foreign
+  `request_uri`, restricted response_type, PKCE) returns as the RFC
+  6749 §4.1.2.1 error REDIRECT on the validated callback - the
+  browser-driven RP always receives the error back (§9a.22).
 - **Authorization pipeline** — extract bearer (RFC 6750 §2.2) → verify
   (issuer/signature/expiry/audience/token type) → resolve tenant →
   feature gate → authorize via Shield → set RLS context → execute →

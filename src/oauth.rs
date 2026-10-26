@@ -285,6 +285,27 @@ async fn verify_client_assertion(
     client: &sqlx::postgres::PgRow,
     assertion: &str,
 ) -> Result<(), (StatusCode, String)> {
+    // The FAPI2 alg mandate (DESIGN §9a.16 (i)): under the FAPI 2.0
+    // postures client assertions are signed with ES256/PS256 ONLY - an
+    // RS256-signed assertion rejects 401 invalid_client BEFORE the key
+    // work (the profile's own BSA/BE signing-alg contract).
+    let assertion_alg = sentin8::auth::jwt::decode_header_typed::<serde_json::Value>(assertion)
+        .ok()
+        .and_then(|h| h.get("alg").and_then(|a| a.as_str()).map(str::to_string));
+    if assertion_alg.as_deref() == Some("RS256") {
+        let profile = resolve_security_profile(&state.pool, headers, "env").await;
+        if crate::fapi::FapiProfile::from_str(&profile.profile)
+            .map(|p| {
+                matches!(p, crate::fapi::FapiProfile::Fapi20 | crate::fapi::FapiProfile::Fapi20MessageSigning)
+            })
+            .unwrap_or(false)
+        {
+            return Err((
+                StatusCode::UNAUTHORIZED,
+                "invalid_client: RS256 is not a permitted client_assertion algorithm under the FAPI 2.0 security profile".to_string(),
+            ));
+        }
+    }
     let claims_json = sentin8::auth::jwt::decode_payload(assertion).map_err(|e| {
         (
             StatusCode::UNAUTHORIZED,
@@ -1568,13 +1589,14 @@ pub async fn discovery(
         // mandated set {PS256, ES256} (the client-side request objects -
         // every member IS verifiable: verify_client_signed_jwt checks
         // per-key) + `none` (RFC 9101 §5 - unsigned objects, TLS-bound).
+        // every member IS verifiable: verify_client_signed_jwt checks
+        // per-key + `none` (RFC 9101 §5 - unsigned objects, TLS-bound).
+        // DESIGN 9a.16 (i): under the PAR/FAPI2 postures the request
+        // objects sign ES256/PS256 ONLY (RS256 = the alg mandate; the
+        // unsigned form = the TLS-bound relaxation stays on the
+        // non-FAPI branch).
         request_object_signing_alg_values_supported: if profile.require_par || profile.require_mtls {
-            vec![
-                "PS256".into(),
-                "ES256".into(),
-                crate::jwks::active_signing_alg().into(),
-                "none".into(),
-            ]
+            vec!["ES256".into(), "PS256".into()]
         } else {
             vec![
                 crate::jwks::active_signing_alg().into(),
@@ -1625,15 +1647,29 @@ pub async fn discovery(
         software_statement_supported: false,
         // DESIGN §9a.4 - required-when-advertised signing algs for
         // private_key_jwt client assertions. The same algorithm set the
-        // client-assertion verifier accepts.
-        token_endpoint_auth_signing_alg_values_supported: vec![
-            crate::jwks::active_signing_alg().into(),
-            // RFC 7518 §3.5 - PS256 (RSASSA-PSS): the FAPI-mandated RSA
-            // signing form; the verify set (RSA JWK + Algorithm::PS256)
-            // makes every advertised member verifiable (§9a.10 honesty).
-            "PS256".into(),
-            "ES256".into(),
-        ],
+        // client-assertion verifier accepts. DESIGN §9a.16 (i): under
+        // the FAPI 2.0 postures (fapi_2 / fapi_2_message_signing) the
+        // FAPI2-BSA mandate drops RS256 from the advertised + accepted
+        // set - [PS256, ES256] only.
+        token_endpoint_auth_signing_alg_values_supported: {
+            let fapi2_posture = crate::fapi::FapiProfile::from_str(&profile.profile)
+                .map(|p| {
+                    matches!(p, crate::fapi::FapiProfile::Fapi20 | crate::fapi::FapiProfile::Fapi20MessageSigning)
+                })
+                .unwrap_or(false);
+            if fapi2_posture {
+                vec!["PS256".into(), "ES256".into()]
+            } else {
+                vec![
+                    crate::jwks::active_signing_alg().into(),
+                    // RFC 7518 §3.5 - PS256 (RSASSA-PSS): the FAPI-mandated RSA
+                    // signing form; the verify set (RSA JWK + Algorithm::PS256)
+                    // makes every advertised member verifiable (§9a.10 honesty).
+                    "PS256".into(),
+                    "ES256".into(),
+                ]
+            }
+        },
         // DESIGN §9a.3 - the claims request parameter is
         // accepted at authorize; claims_supported lists what ID tokens
         // and userinfo can carry (the standard OIDC set auth mints).
@@ -2618,7 +2654,11 @@ async fn resolve_par_request(state: &AppState, request_uri: &str) -> Option<serd
 
 /// Mark a PAR request_uri consumed after its code issuance (auth DESIGN
 /// §9a.19 note): the authorize handlers call this with the PAR key once
-/// the code record is written; later resolutions refuse.
+/// the code record is written; later resolutions refuse. The argument
+/// MAY already carry the urn prefix (call sites pass `params.par_key`,
+/// the full `request_uri`) - strip at MOST one prefix here; wrapping an
+/// already-prefixed key produced `auth:par-used:urn:...:urn:...` (a key
+/// the resolver never reads) and the reuse negative never rejected.
 pub async fn mark_par_used(state: &AppState, request_uri: &str) {
     let key = request_uri
         .strip_prefix("urn:ietf:params:oauth:request_uri:")
@@ -2974,12 +3014,17 @@ pub async fn pushed_authorization_request(
         // host-resolved issuer (x-sentin8-hostname/Host), not the static
         // platform config (multi-tenant instance).
         let issuer = resolve_issuer(&state.config, &headers);
-        let require_exp = crate::fapi::FapiProfile::from_str(
+        let resolved_profile = crate::fapi::FapiProfile::from_str(
             &resolve_security_profile(&state.pool, &headers, "env").await.profile,
-        )
-        .map(|p| p == crate::fapi::FapiProfile::Fapi20MessageSigning)
-        .unwrap_or(false);
-        let jar = verify_jar_request(&state, &client.client_id, request_jwt, &issuer, require_exp)
+        );
+        let require_exp = resolved_profile
+            .as_ref()
+            .map(|p| *p == crate::fapi::FapiProfile::Fapi20MessageSigning)
+            .unwrap_or(false);
+        let fapi2_posture = resolved_profile
+            .map(|p| matches!(p, crate::fapi::FapiProfile::Fapi20 | crate::fapi::FapiProfile::Fapi20MessageSigning))
+            .unwrap_or(false);
+        let jar = verify_jar_request(&state, &client.client_id, request_jwt, &issuer, require_exp, fapi2_posture)
             .await
             .map_err(|e| {
                     json_error(
@@ -3221,6 +3266,13 @@ pub async fn authorize(
     // (RFC 6749 §4.1.2.1: the error redirect goes to a VALIDATED
     // redirect_uri; the flag rides to the post-validation site below).
     let missing_par = profile.require_par && q.request_uri.is_none();
+    // The deferred PAR-urn reject (DESIGN §9a.22): set when the request_uri
+    // did not resolve or resolved for a different client - the reject is
+    // DELIVERED after the client + redirect_uri validation (error redirect).
+    let mut deferred_par_reject: Option<String> = None;
+    // The deferred PKCE-missing reject (same post-validation channel -
+    // the PAR-flow PKCE negatives read the callback).
+    let mut deferred_pkce_reject: Option<String> = None;
 
     // PAR urns resolve from Valkey (single-use). Anything else is a JAR
     // request-object reference (RFC 9101 §5.2.1, DESIGN §9a.7) and falls
@@ -3231,6 +3283,14 @@ pub async fn authorize(
         .map(|u| u.starts_with("urn:ietf:params:oauth:request_uri:"))
         .unwrap_or(false);
     if let (Some(ref request_uri), true) = (q.request_uri.as_deref(), is_par_uri) {
+        // DESIGN §9a.22 (PAR-urn-resolution reject): an unresolvable (expired
+        // /retired/unknown) urn or one bound to another client DEFERS its
+        // reject to the post-(client,redirect_uri)-validation site - the
+        // browser then receives the OAuth error REDIRECT on the validated
+        // callback (error=invalid_request_uri), never an inline 400 body
+        // (the suite's request_uri-negative family + the error-page
+        // placeholder class both read the callback).
+        let mut par_reject: Option<&'static str> = None;
         match resolve_par_request(&state, request_uri).await {
             Some(stored) => {
                 // the PAR record is client-bound: the query
@@ -3240,15 +3300,13 @@ pub async fn authorize(
                     .and_then(|v| v.as_str())
                     .unwrap_or("");
                 if par_client != params.client_id {
-                    return (
-                        StatusCode::BAD_REQUEST,
-                        Json(serde_json::json!({
-                            "error": "invalid_request",
-                            "error_description": "request_uri was issued to a different client"
-                        })),
-                    )
-                        .into_response();
-                }
+                    // DIFFERENT-CLIENT: the resolution result exists but is
+                    // not ours - same deferred channel (invalid_request_uri
+                    // is permitted by the bound-to-client module's 3-way
+                    // error set {invalid_request, invalid_request_uri,
+                    // access_denied}).
+                    par_reject = Some("request_uri was issued to a different client");
+                } else {
                 // Override with PAR-stored params (authoritative source).
                 if let Some(rt) = stored.get("response_type").and_then(|v| v.as_str()) {
                     params.response_type = rt.to_string();
@@ -3306,17 +3364,16 @@ pub async fn authorize(
                         params.acr = Some(a.to_string());
                     }
                 }
+                }
             }
             None => {
-                return (
-                    StatusCode::BAD_REQUEST,
-                    Json(serde_json::json!({
-                        "error": "invalid_request",
-                        "error_description": "invalid or expired request_uri"
-                    })),
-                )
-                    .into_response();
+                // Expired / retired / unknown PAR urn - the DEFERRED reject
+                // (DESIGN §9a.22): redirect after redirect_uri validation.
+                par_reject = Some("invalid or expired request_uri");
             }
+        }
+        if let Some(desc) = par_reject {
+            deferred_par_reject = Some(desc.to_string());
         }
     }
 
@@ -3354,12 +3411,17 @@ pub async fn authorize(
         None
     };
     if let Some(request_jwt) = jar_jwt {
-        let require_exp = crate::fapi::FapiProfile::from_str(
+        let resolved_profile = crate::fapi::FapiProfile::from_str(
             &resolve_security_profile(&state.pool, &headers, "env").await.profile,
-        )
-        .map(|p| p == crate::fapi::FapiProfile::Fapi20MessageSigning)
-        .unwrap_or(false);
-        match verify_jar_request(&state, &params.client_id, &request_jwt, &resolve_issuer(&state.config, &headers), require_exp).await
+        );
+        let require_exp = resolved_profile
+            .as_ref()
+            .map(|p| *p == crate::fapi::FapiProfile::Fapi20MessageSigning)
+            .unwrap_or(false);
+        let fapi2_posture = resolved_profile
+            .map(|p| matches!(p, crate::fapi::FapiProfile::Fapi20 | crate::fapi::FapiProfile::Fapi20MessageSigning))
+            .unwrap_or(false);
+        match verify_jar_request(&state, &params.client_id, &request_jwt, &resolve_issuer(&state.config, &headers), require_exp, fapi2_posture).await
         {
             Ok(jar) => {
                 if !jar.redirect_uri.is_empty() {
@@ -3451,16 +3513,14 @@ pub async fn authorize(
         }
     }
     // PKCE is mandatory when the profile mandates PAR
-    // (FAPI 2.0 default): reject requests without a code_challenge.
-    if profile.require_pkce && params.code_challenge.as_deref().unwrap_or("").is_empty() {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(serde_json::json!({
-                "error": "invalid_request",
-                "error_description": "PKCE code_challenge is required by the active security profile"
-            })),
-        )
-            .into_response();
+    // (FAPI 2.0 default): the reject DEFERS to the post-validation site
+    // (DESIGN §9a.22) - the suite's PKCE-negative family reads the
+    // CALLBACK (EnsurePARInvalidRequestError); the inline 400 stays only
+    // for the pre-validated client case.
+    let pkce_missing = profile.require_pkce
+        && params.code_challenge.as_deref().unwrap_or("").is_empty();
+    if pkce_missing {
+        deferred_pkce_reject = Some("PKCE code_challenge is required by the active security profile".to_string());
     }
 
     // (FAPI 1.0 Advanced §5.2.3.2, DESIGN §9a.3) - the `resource`
@@ -3576,6 +3636,49 @@ pub async fn authorize(
             &params.redirect_uri,
             "invalid_request",
             "PAR is required - provide a request_uri from /oauth/par",
+            Some(params.state.as_str()),
+        );
+    }
+
+    // DESIGN §9a.22 (PAR-urn-resolution reject): the deferred
+    // invalid/expired/different-client request_uri reject - delivered now
+    // that the client + redirect_uri are validated, as the OAuth error
+    // redirect with `invalid_request_uri` (the suite's
+    // EnsureInvalidRequestUriError exact-match channel; the bound-to-client
+    // module's 3-way permitted set includes it as well).
+    if let Some(desc) = deferred_par_reject {
+        if profile.require_jarm && params.response_mode.as_deref() == Some("jwt") {
+            let jarm_claims = crate::jarm::build_jarm_error(
+                &resolve_issuer(&state.config, &headers),
+                &params.client_id,
+                "invalid_request_uri",
+                Some(&desc),
+                if params.state.is_empty() {
+                    None
+                } else {
+                    Some(&params.state)
+                },
+            );
+            if let Ok(jwt) = crate::jarm::sign_jarm_jwt(&state.keys, &jarm_claims, &profile.signing_alg) {
+                let url = crate::jarm::build_jarm_redirect_url(&params.redirect_uri, &jwt);
+                return (StatusCode::FOUND, [("location", url)]).into_response();
+            }
+        }
+        return authorize_error_redirect(
+            &params.redirect_uri,
+            "invalid_request_uri",
+            &desc,
+            Some(params.state.as_str()),
+        );
+    }
+    // DESIGN §9a.22 - the deferred PKCE-missing reject (the same
+    // post-validation channel; the PAR-flow PKCE negatives read the
+    // callback with an invalid_request error).
+    if let Some(desc) = deferred_pkce_reject {
+        return authorize_error_redirect(
+            &params.redirect_uri,
+            "invalid_request",
+            &desc,
             Some(params.state.as_str()),
         );
     }
@@ -3817,7 +3920,7 @@ pub async fn authorize(
                 .into_response();
         }
         if let Some(pk) = params.par_key.as_deref().filter(|s| !s.is_empty()) {
-            mark_par_used(&state, &format!("urn:ietf:params:oauth:request_uri:{}", pk)).await;
+            mark_par_used(&state, pk).await;
         }
         // DESIGN §9a.13 - the fragment cells: the silent response
         // encodes id_token/token + code members in the FRAGMENT
@@ -4034,7 +4137,7 @@ pub async fn authorize(
             {
 
         if let Some(pk) = params.par_key.as_deref().filter(|s| !s.is_empty()) {
-            mark_par_used(&state, &format!("urn:ietf:params:oauth:request_uri:{}", pk)).await;
+            mark_par_used(&state, pk).await;
         }
                 let set_result: Result<(), _> = valkey_conn
                     .set_ex(&code_key, code_data.to_string(), 600)
@@ -4433,8 +4536,15 @@ pub async fn authorize_continue(
     // Use Valkey for auth codes (TTL 600s).
     let valkey_url = &state.config.valkey_url;
 
-    if let Some(pk) = req.par_key.as_deref().filter(|s| !s.is_empty()) {
-        mark_par_used(&state, &format!("urn:ietf:params:oauth:request_uri:{}", pk)).await;
+    // mark_par_used consumes the RESOLVED interaction key (the SPA's
+    // consent hop drops `par_key` — the state-keyed memo carries it,
+    // auth DESIGN §9a.21); using `req.par_key` alone left the used-key
+    // unset and the reuse-after-outcome negative never rejected.
+    if let Some(pk) = interaction_par_key
+        .as_deref()
+        .filter(|s| !s.is_empty())
+    {
+        mark_par_used(&state, pk).await;
     }
     let valkey_conn = sentin8::middleware::valkey_client(valkey_url, "sentin8:auth")
         .await
@@ -7922,6 +8032,7 @@ async fn verify_jar_request(
     request_jwt: &str,
     issuer: &str,
     require_exp: bool,
+    fapi2_posture: bool,
 ) -> Result<crate::jar::JarClaims, String> {
     // Unverified decode first - to read routing claims and find the key.
     let claims = crate::jar::decode_jar_unverified(request_jwt)?;
@@ -7947,6 +8058,12 @@ async fn verify_jar_request(
         // it).
         if header_alg.as_deref() == Some("none") {
             return Err("FAPI2 message-signing forbids an unsigned request object".into());
+        }
+        // The FAPI2 alg mandate (DESIGN §9a.16 (i)): request objects
+        // sign with ES256/PS256 only - an RS256-signed object rejects
+        // under both FAPI2 postures.
+        if fapi2_posture && header_alg.as_deref() == Some("RS256") {
+            return Err("RS256 is not a permitted request-object algorithm under the FAPI 2.0 security profile".into());
         }
         for claim in ["exp", "nbf"] {
             if raw.get(claim).is_none() {
