@@ -794,20 +794,66 @@ impl SigningKeys {
         _jwk_hdr: &serde_json::Value,
         x5c_chain: Option<&[String]>,
     ) -> Result<String, String> {
-        // HAIP (the suite's ValidateStatusListTokenX5cCertificateChain):
-        // the status-list JWS header carries an x5c CERTIFICATE chain -
-        // prefer the x5c signer, fall back to the inlined-jwk form for
-        // the plain-OAuth slices (no certificate minted).
-        self.sign_value_typed_x5c(claims, "ES256", "status-list+jwt", x5c_chain)
-            .map_err(|_| ())
-            .or_else(|_| {
-                self.sign_value_typed_inlined_jwk(claims, "ES256", "status-list+jwt")
-            })
-            .map_err(|_| ())
-            .or_else(|_| {
-                self.sign_value_typed_inlined_jwk(claims, "RS256", "status-list+jwt")
-            })
-            .map_err(|_| "no ES256/RS256 key for the status-list token".to_string())
+        // HYBRID header (DESIGN 9a.18): BOTH `jwk` AND `x5c` ride the
+        // JWS header - the OIDF suite's status-list signature condition
+        // (`VerifyStatusListTokenSignatureUsingEmbeddedJwk`) verifies from
+        // the EMBEDDED jwk only (it reads neither x5c nor JWKS-by-kid),
+        // while the HAIP plan's
+        // `ValidateStatusListTokenX5cCertificateChain` requires the x5c
+        // chain. RFC 7515 permits coexisting header members.
+        let key = self
+            .signing_key_for("ES256")
+            .or_else(|| self.signing_key_for("RS256"))
+            .ok_or_else(|| "no ES256/RS256 key for the status-list token".to_string())?;
+        let alg = if key.ml_dsa_key.is_none() { "ES256" } else { active_signing_alg() };
+        let jwks = JwksResponse::from_keys(self);
+        let jwk = jwks
+            .keys
+            .iter()
+            .find(|j| j.kid == key.key_id)
+            .ok_or_else(|| format!("no published jwk for kid {}", key.key_id))?;
+        let jwk_val =
+            serde_json::to_value(jwk).map_err(|e| format!("jwk serialize: {e}"))?;
+        let chain: Vec<String> = match x5c_chain {
+            Some(c) if !c.is_empty() => c.to_vec(),
+            _ => key
+                .ec_cert_der_b64
+                .as_deref()
+                .map(|c| vec![c.to_string()])
+                .unwrap_or_default(),
+        };
+        let b64 = |b: &[u8]| base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(b);
+        let payload_b64 = b64(
+            &serde_json::to_vec(claims).map_err(|e| format!("claims: {e}"))?,
+        );
+        let mut header = serde_json::json!({
+            "alg": alg,
+            "typ": "status-list+jwt",
+            "kid": key.key_id,
+            "jwk": jwk_val,
+        });
+        if !chain.is_empty() {
+            header["x5c"] = serde_json::json!(chain);
+        }
+        let header_b64 = b64(
+            &serde_json::to_vec(&header).map_err(|e| format!("header: {e}"))?,
+        );
+        let signing_input = format!("{header_b64}.{payload_b64}");
+        match alg {
+            "ES256" => {
+                use p256::elliptic_curve::pkcs8::DecodePrivateKey;
+                let pem = key.ec_private_pem().ok_or("no EC PEM material")?;
+                let secret = p256::SecretKey::from_pkcs8_pem(&pem)
+                    .map_err(|e| format!("p256 key: {e}"))?;
+                let sk = p256::ecdsa::SigningKey::from(&secret);
+                use p256::ecdsa::signature::Signer;
+                use p256::ecdsa::Signature as P256Sig;
+                let sig: P256Sig = sk.sign(signing_input.as_bytes());
+                let sig_b64 = b64(&sig.to_bytes());
+                Ok(format!("{signing_input}.{sig_b64}"))
+            }
+            _ => self.sign_value_typed(claims, alg, "status-list+jwt"),
+        }
     }
 
     /// The x5c form of [`Self::sign_value_typed_inlined_jwk`] (HAIP

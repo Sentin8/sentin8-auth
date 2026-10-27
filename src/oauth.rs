@@ -293,16 +293,15 @@ async fn verify_client_assertion(
         .ok()
         .and_then(|h| h.get("alg").and_then(|a| a.as_str()).map(str::to_string));
     if assertion_alg.as_deref() == Some("RS256") {
+        // OC-28: the alg mandate covers EVERY FAPI posture (the suite's
+        // ensure-signed-client-assertion-with-RS256-fails cell in the
+        // fapi1-advanced plan asserts the reject; Part2 §8.6 - PS256/ES256
+        // only, RS256 'shall not use'). The default posture keeps RS256.
         let profile = resolve_security_profile(&state.pool, headers, "env").await;
-        if crate::fapi::FapiProfile::from_str(&profile.profile)
-            .map(|p| {
-                matches!(p, crate::fapi::FapiProfile::Fapi20 | crate::fapi::FapiProfile::Fapi20MessageSigning)
-            })
-            .unwrap_or(false)
-        {
+        if crate::fapi::FapiProfile::from_str(&profile.profile).is_some() {
             return Err((
                 StatusCode::UNAUTHORIZED,
-                "invalid_client: RS256 is not a permitted client_assertion algorithm under the FAPI 2.0 security profile".to_string(),
+                "invalid_client: RS256 is not a permitted client_assertion algorithm under the FAPI security profile".to_string(),
             ));
         }
     }
@@ -3017,22 +3016,44 @@ pub async fn pushed_authorization_request(
         let resolved_profile = crate::fapi::FapiProfile::from_str(
             &resolve_security_profile(&state.pool, &headers, "env").await.profile,
         );
-        let require_exp = resolved_profile
+        // OC-27 (DESIGN 9a.14): the mandate table resolves from the
+        // FAPI posture ONCE - no per-call-site booleans.
+        let jar_flags = resolved_profile
             .as_ref()
-            .map(|p| *p == crate::fapi::FapiProfile::Fapi20MessageSigning)
-            .unwrap_or(false);
-        let fapi2_posture = resolved_profile
-            .map(|p| matches!(p, crate::fapi::FapiProfile::Fapi20 | crate::fapi::FapiProfile::Fapi20MessageSigning))
-            .unwrap_or(false);
-        let jar = verify_jar_request(&state, &client.client_id, request_jwt, &issuer, require_exp, fapi2_posture)
+            .map(|p| p.required_flags())
+            .unwrap_or_else(crate::fapi::required_flags_default);
+        let jar = verify_jar_request(
+            &state,
+            &client.client_id,
+            request_jwt,
+            &issuer,
+            &jar_flags,
+            req.scope.as_str(),
+        )
             .await
             .map_err(|e| {
-                    json_error(
-                        StatusCode::BAD_REQUEST,
-                        "invalid_request_object",
-                        format!("pushed request object rejected: {e}"),
-                    )
-                })?;
+                // OC-28: the reject's precise code rides the "<code>: <text>"
+                // head (the pairing rule's unsupported_response_type among
+                // them); unknown prefixes keep the JAR-shape default.
+                let (code, desc) = match e.split_once(": ") {
+                    Some((c, d))
+                        if matches!(
+                            c,
+                            "invalid_request"
+                                | "invalid_request_object"
+                                | "unsupported_response_type"
+                        ) =>
+                    {
+                        (c.to_string(), d.to_string())
+                    }
+                    _ => ("invalid_request_object".to_string(), e.clone()),
+                };
+                json_error(
+                    StatusCode::BAD_REQUEST,
+                    &code,
+                    format!("pushed request object rejected: {desc}"),
+                )
+            })?;
         let effective = if jar.response_type.is_empty() {
             req.response_type.clone().unwrap_or_default()
         } else {
@@ -3414,14 +3435,23 @@ pub async fn authorize(
         let resolved_profile = crate::fapi::FapiProfile::from_str(
             &resolve_security_profile(&state.pool, &headers, "env").await.profile,
         );
-        let require_exp = resolved_profile
+        // OC-27 (DESIGN 9a.14): the mandate table resolves from the FAPI
+        // posture ONCE - no per-call-site booleans. The nonce gate reads
+        // the INLINE request scope (the object scope overlays AFTER the
+        // signature/claims pass).
+        let jar_flags = resolved_profile
             .as_ref()
-            .map(|p| *p == crate::fapi::FapiProfile::Fapi20MessageSigning)
-            .unwrap_or(false);
-        let fapi2_posture = resolved_profile
-            .map(|p| matches!(p, crate::fapi::FapiProfile::Fapi20 | crate::fapi::FapiProfile::Fapi20MessageSigning))
-            .unwrap_or(false);
-        match verify_jar_request(&state, &params.client_id, &request_jwt, &resolve_issuer(&state.config, &headers), require_exp, fapi2_posture).await
+            .map(|p| p.required_flags())
+            .unwrap_or_else(crate::fapi::required_flags_default);
+        match verify_jar_request(
+            &state,
+            &params.client_id,
+            &request_jwt,
+            &resolve_issuer(&state.config, &headers),
+            &jar_flags,
+            params.scope.as_str(),
+        )
+        .await
         {
             Ok(jar) => {
                 if !jar.redirect_uri.is_empty() {
@@ -3465,11 +3495,29 @@ pub async fn authorize(
                 }
             }
             Err(e) => {
+                // OC-28: the reject message carries its PRECISE error code
+                // as the "<code>: <text>" head (the pairing rule's
+                // unsupported_response_type among them) - the inline
+                // (pre-redirect) channel passes the code through; an
+                // unprefixed message keeps invalid_request.
+                let (code, desc) = match e.split_once(": ") {
+                    Some((c, d))
+                        if matches!(
+                            c,
+                            "invalid_request"
+                                | "invalid_request_object"
+                                | "unsupported_response_type"
+                        ) =>
+                    {
+                        (c.to_string(), d.to_string())
+                    }
+                    _ => ("invalid_request".to_string(), e.clone()),
+                };
                 return (
                     StatusCode::BAD_REQUEST,
                     Json(serde_json::json!({
-                        "error": "invalid_request",
-                        "error_description": format!("JAR request rejected: {e}")
+                        "error": code,
+                        "error_description": format!("JAR request rejected: {desc}")
                     })),
                 )
                     .into_response();
@@ -3605,6 +3653,39 @@ pub async fn authorize(
     }
     // (consent_required destructured above; redirect_uris validated already)
     let consent_required = _consent_required_meta;
+
+    // DESIGN 9a.14 - the FAPI response_mode=query mandate (OC-23): under
+    // every FAPI posture the authorization response is fragment- or
+    // JARM-encoded ONLY; an explicit query mode (inline or the
+    // authoritative PAR-stored value) rejects BEFORE the code mint via
+    // the profile's deferred error-redirect channel. Non-FAPI postures
+    // keep query as their default mode.
+    {
+        let fapi_posture = crate::fapi::FapiProfile::from_str(&profile.profile)
+            .map(|p| {
+                matches!(
+                    p,
+                    crate::fapi::FapiProfile::Fapi10Advanced
+                        | crate::fapi::FapiProfile::Fapi20
+                        | crate::fapi::FapiProfile::Fapi20MessageSigning
+                )
+            })
+            .unwrap_or(false);
+        if fapi_posture && params.response_mode.as_deref() == Some("query") {
+            // JARM wraps the reject when the posture mandates JARM and the
+            // request rides response_mode=jwt... except the offending mode
+            // IS query here: the wrapped form needs the jwt transport, so
+            // the plain (unwrapped) url-query reject is the compliant
+            // channel for a query-mode request (the suite's
+            // RejectAuthCodeInUrlQuery reads `error=` from the callback).
+            return authorize_error_redirect(
+                &params.redirect_uri,
+                "invalid_request",
+                "response_mode=query is not allowed by the FAPI security profile",
+                Some(params.state.as_str()),
+            );
+        }
+    }
 
     // DESIGN §9a.22 - the deferred PAR-mandatory reject: the client and
     // redirect_uri are now validated, so the reject goes back as the
@@ -5770,10 +5851,17 @@ async fn handle_code_exchange(
         None
     };
 
-    // Issue refresh token if offline_access scope requested. The refresh
-    // token carries the ORIGINAL requested scope so refresh grants can
-    // re-issue with the same app scopes (design ).
-    let refresh_token = if scope.contains("offline_access") {
+    // OC-27b (DESIGN 9a.14): under every FAPI posture the
+    // authorization-code grant issues a REFRESH TOKEN unconditionally -
+    // sender-constrained confidential clients are refresh-bearing (the
+    // OIDF refresh-token modules request no offline_access preamble; the
+    // suite's own WARNING names the policy: refresh tokens for FAPI
+    // clients). The standard family keeps the offline_access grant rule.
+    let fapi_posture = crate::fapi::FapiProfile::from_str(
+        &resolve_security_profile(&state.pool, &headers, "env").await.profile,
+    )
+    .is_some();
+    let refresh_token = if fapi_posture || scope.contains("offline_access") {
         let refresh_claims = AuthClaims::refresh(
             &issuer,
             user_id,
@@ -7333,15 +7421,25 @@ pub async fn userinfo(
             let Some(expected_jkt) = cnf.get("jkt").and_then(|v| v.as_str()) else {
                 return Err((StatusCode::UNAUTHORIZED, "token cnf missing jkt".into()));
             };
-            // Wire-level observability: count the DPoP header entries the
-            // handler ACTUALLY sees (DESIGN §9a.16 dpop-negative - the
-            // duplicate-header negative must reach this gate as TWO lines).
+            // RFC 9449 §7.1 - EXACTLY ONE proof per request: MORE than
+            // one proof rejects 400 (invalid_request, "multiple DPoP
+            // proofs") - both the two-LINE form (headers.get_all > 1) and
+            // the comma-JOINED single line (the suite's JVM collapses the
+            // two stored values before send - the dpop-negative cell
+            // 'Try with more than one DPoP in the header').
             let dpop_seen = headers.get_all("dpop").iter().count();
-            if dpop_seen != 1 {
-                tracing::warn!(
-                    dpop_headers = dpop_seen,
-                    "userinfo DPoP header-count anomaly"
-                );
+            let dpop_joined = headers
+                .get_all("dpop")
+                .iter()
+                .next()
+                .and_then(|v| v.to_str().ok())
+                .map(std::string::ToString::to_string)
+                .unwrap_or_default();
+            if dpop_seen > 1 || dpop_joined.contains(',') {
+                return Err((
+                    StatusCode::BAD_REQUEST,
+                    "invalid_request: multiple DPoP proofs".into(),
+                ));
             }
             let Some(proof) = crate::dpop::extract_dpop_header(&headers) else {
                 return Err((
@@ -8039,10 +8137,17 @@ fn redirect_uri_query_extension(registered_uri: &str, uri: &str) -> bool {
     {
         return false;
     }
-    // Every registered query param must appear in the presented query
-    // with the same value (order-insensitive). A bare-base registered
-    // URI carries no query = no constraint. The presented query may
-    // only ADD - never alter.
+    // A bare-base registered URI (no query of its own) NEVER matches a
+    // query-bearing variant: the presented value is not a registered URI
+    // (RFC 6749 §3.1.2.3 exact string comparison - the dynamic plan's
+    // oidcc-redirect-uri-query-added cell asserts the AS must not call
+    // the ADDED-QUERY uri). The extension match exists for registered
+    // URIs that CARRY their own query (the FAPI1 8.x form): the
+    // registered query's params carry forward unchanged, the presented
+    // query may only ADD.
+    if reg.query().is_none() || reg.query() == Some("") {
+        return false;
+    }
     use std::collections::BTreeMap;
     let to_map = |q: Option<&str>| -> BTreeMap<String, String> {
         let mut m = BTreeMap::new();
@@ -8110,73 +8215,105 @@ async fn verify_jar_request(
     client_id: &str,
     request_jwt: &str,
     issuer: &str,
-    require_exp: bool,
-    fapi2_posture: bool,
+    flags: &crate::fapi::FapiSecurityFlags,
+    request_scope: &str,
 ) -> Result<crate::jar::JarClaims, String> {
     // Unverified decode first - to read routing claims and find the key.
     let claims = crate::jar::decode_jar_unverified(request_jwt)?;
     crate::jar::validate_jar_claims(&claims, issuer)?;
 
-    // RFC 9101: `exp` is RECOMMENDED, not required - the suite's
-    // alg-none unsigned request object is spec-valid without one
-    // (integrity comes from the TLS transport; freshness cannot apply to
-    // an object with no integrity claim to bind). exp is enforced only
-    // when PRESENT (±10 min); signed objects keep the mandatory exp
-    // binding below via the signature-freshness pairing.
-    // DESIGN §9a.16 (f): under the fapi_2_message_signing posture the
-    // SIGNED object's `exp` is MANDATORY (the non-repudiation freshness
-    // binding) - an exp-less signed object rejects
-    // `invalid_request_object` before the key/claim work.
     let header_alg = sentin8::auth::jwt::decode_header_typed::<serde_json::Value>(request_jwt)
         .ok()
         .and_then(|h| h.get("alg").and_then(|a| a.as_str()).map(str::to_string));
     let raw = sentin8::auth::jwt::decode_payload(request_jwt)?;
-    if require_exp {
-        // FAPI2-MS: the request object MUST be signed (alg=none is the
-        // plain-RFC-9101 relaxation; the non-repudiation posture forbids
-        // it).
-        if header_alg.as_deref() == Some("none") {
-            return Err("FAPI2 message-signing forbids an unsigned request object".into());
+
+    // OC-27 (DESIGN 9a.14 mandate table): every signed-push rule resolves
+    // from the posture's FapiSecurityFlags - no per-call-site branches.
+    // RFC 9101 baseline: `exp`/`nbf` are RECOMMENDED, `alg: none` is a
+    // legal unsigned form, and `nonce` rides the OIDC openid rule; the
+    // mandate table tightens exactly the flags a posture sets.
+    if flags.forbid_jar_alg_none && header_alg.as_deref() == Some("none") {
+        return Err(
+            "the active security profile forbids an unsigned request object".into(),
+        );
+    }
+    if flags.require_jar_exp && raw.get("exp").is_none() {
+        return Err(
+            "the signed request object must carry an exp claim".into(),
+        );
+    }
+    if flags.require_jar_nbf && raw.get("nbf").is_none() {
+        return Err(
+            "the signed request object must carry an nbf claim".into(),
+        );
+    }
+    // OC-27: the nonce gate reads the OBJECT's own scope first (a PAR
+    // push carries ALL parameters - including scope - inside the object;
+    // the outer request's scope is EMPTY there) and falls back to the
+    // outer request scope for the by-value form.
+    let effective_scope = raw
+        .get("scope")
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.is_empty())
+        .unwrap_or(request_scope);
+    if flags.require_jar_nonce
+        && effective_scope.split_whitespace().any(|s| s == "openid")
+        && raw.get("nonce").is_none()
+    {
+        return Err(
+            "openid flows require the nonce claim on the request object (FAPI1 Baseline 5.2.2.2)".into(),
+        );
+    }
+    // OC-28 (FAPI1-ADV 5.2.2-2): the response surface pairing - under this
+    // posture response_type=code REQUIRES response_mode=jwt (the object's
+    // own claim, else the outer request's explicit mode). Nothing else
+    // pairs: `code id_token` (detached-signature) and `jwt`-mode carry
+    // their own protection.
+    if flags.require_code_jarm_pairing {
+        let rt = claims.response_type.trim();
+        let mode = raw
+            .get("response_mode")
+            .and_then(|v| v.as_str())
+            .map(str::to_string)
+            .or_else(|| claims.response_mode.clone());
+        if rt == "code" && mode.as_deref() != Some("jwt") {
+            // The two PAR-side conditions reading this reject share
+            // EXACTLY ONE permitted code: the response-mode-query module's
+            // EnsurePARInvalidRequestOrInvalidRequestObjectError accepts
+            // {invalid_request, invalid_request_object} while the
+            // response-type-code module's
+            // EnsurePARUnsupportedResponseTypeOrInvalidRequestOrUnauthoriz
+            // edClientError accepts {unsupported_response_type,
+            // invalid_request, unauthorized_client} - the PAIRING violation
+            // is an invalid_request (RFC 6749 §4.1.2.1: the request's
+            // mode/type combination is not obtainable here).
+            return Err(
+                "invalid_request: response_type=code requires response_mode=jwt (FAPI1 Advanced 5.2.2-2)".into(),
+            );
         }
-        // The FAPI2 alg mandate (DESIGN §9a.16 (i)): request objects
-        // sign with ES256/PS256 only - an RS256-signed object rejects
-        // under both FAPI2 postures.
-        if fapi2_posture && header_alg.as_deref() == Some("RS256") {
-            return Err("RS256 is not a permitted request-object algorithm under the FAPI 2.0 security profile".into());
+    }
+    // The FAPI alg mandate (DESIGN 9a.16 (i)): under the signed-only
+    // postures request objects sign with ES256/PS256 ONLY.
+    if flags.forbid_jar_alg_none && header_alg.as_deref() == Some("RS256") {
+        return Err(
+            "RS256 is not a permitted request-object algorithm under the FAPI 2.0 security profile".into(),
+        );
+    }
+    let now = chrono::Utc::now().timestamp();
+    if let Some(nbf) = raw.get("nbf").and_then(|v| v.as_i64()) {
+        if nbf > now + 60 {
+            return Err("request object nbf more than 60s in the future".into());
         }
-        for claim in ["exp", "nbf"] {
-            if raw.get(claim).is_none() {
-                return Err(format!(
-                    "FAPI2 message-signing requires the {claim} claim on the signed request object"
-                ));
-            }
+        if flags.require_jar_nbf && nbf < now - 600 {
+            return Err("request object nbf more than 10 minutes in the past".into());
         }
-        // FAPI2-MS freshness windows (the suite's nbf-over-60 negative):
-        // a not-before further than 60s in the future is a freshness
-        // violation - the object is not yet usable and never will be
-        // within the flow's lifetime.
-        let now = chrono::Utc::now().timestamp();
-        if let Some(nbf) = raw.get("nbf").and_then(|v| v.as_i64()) {
-            // A stale not-before (the suite's 70-min-past negative)
-            // defeats the freshness binding just as much as a future one
-            // far out: the object was usable long before its signing
-            // journey, and cannot be pinned to THIS issuance - reject
-            // beyond the same 10-min slack the exp window allows.
-            if nbf > now + 60 {
-                return Err("request object nbf more than 60s in the future".into());
-            }
-            if nbf < now - 600 {
-                return Err("request object nbf more than 10 minutes in the past".into());
-            }
-        }
-        if let Some(iat) = raw.get("iat").and_then(|v| v.as_i64()) {
-            if iat > now + 60 {
-                return Err("request object iat more than 60s in the future".into());
-            }
+    }
+    if let Some(iat) = raw.get("iat").and_then(|v| v.as_i64()) {
+        if iat > now + 60 {
+            return Err("request object iat more than 60s in the future".into());
         }
     }
     if let Some(exp) = raw.get("exp").and_then(|v| v.as_i64()) {
-        let now = chrono::Utc::now().timestamp();
         // Closed-window boundary (same shape as the client assertion): exp
         // == now-600 IS expired - the boundary instant must not pass.
         if exp <= now - 600 || exp > now + 600 {

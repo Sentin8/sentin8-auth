@@ -1082,11 +1082,6 @@ pub(crate) fn pem_profile_to_x5c(
             .map(|der| base64::engine::general_purpose::STANDARD.encode(der))
     };
     let leaf = parse(&profile.issuance_leaf_pem)?;
-    let intermediates = profile
-        .issuance_chain_pem
-        .split("-----END CERTIFICATE-----")
-        .filter_map(|_| None::<String>)
-        .collect::<Vec<_>>();
     // The chain member is optional; the leaf is the requirement.
     let mut chain = vec![leaf];
     for block in profile.issuance_chain_pem.split("-----BEGIN CERTIFICATE-----") {
@@ -1095,13 +1090,100 @@ pub(crate) fn pem_profile_to_x5c(
             if cleaned.is_empty() {
                 continue;
             }
-            if let Ok(der) = base64::engine::general_purpose::STANDARD.decode(&cleaned) {
-                chain.push(base64::engine::general_purpose::STANDARD.encode(der));
+            let der = match base64::engine::general_purpose::STANDARD.decode(&cleaned) {
+                Ok(d) => d,
+                Err(_) => continue,
+            };
+            // HAIP §6.1 x5c rule (the OIDF suite's
+            // AbstractValidateX5cCertificateChain): the TRUST ANCHOR must
+            // NOT appear in the chain - leaf + intermediates only. The
+            // anchor is by construction the self-signed root (subject ==
+            // issuer): skip those intermediates; real intermediates
+            // (CA-signed) stay.
+            if is_self_signed_certificate(&der) {
+                continue;
             }
+            chain.push(base64::engine::general_purpose::STANDARD.encode(&der));
         }
     }
-    let _ = intermediates;
     Some(chain)
+}
+
+/// Is this DER certificate self-signed (the trust-anchor construction)?
+/// The rig's issuance_chain_pem carries the rig CA (self-signed) - the
+/// suite's x5c condition rejects an anchor member, so the chain builder
+/// skips it. The check walks the DER TLVs directly (no parser dep): a
+/// certificate is self-signed when its tbsCertificate's subject Name TLV
+/// byte-spans equal the issuer Name TLV byte-for-byte.
+fn is_self_signed_certificate(cert_der: &[u8]) -> bool {
+    fn read_tlv(buf: &[u8]) -> Option<(u8, &[u8], &[u8])> {
+        if buf.len() < 2 {
+            return None;
+        }
+        let tag = buf[0];
+        let len_byte = buf[1];
+        let (hdr, len) = if len_byte & 0x80 == 0 {
+            (2usize, len_byte as usize)
+        } else {
+            let n = (len_byte & 0x7f) as usize;
+            if n == 0 || n > 4 || buf.len() < 2 + n {
+                return None;
+            }
+            let mut len = 0usize;
+            for b in &buf[2..2 + n] {
+                len = (len << 8) | *b as usize;
+            }
+            (2 + n, len)
+        };
+        if buf.len() < hdr + len {
+            return None;
+        }
+        Some((tag, &buf[hdr..hdr + len], &buf[hdr + len..]))
+    }
+    // Certificate ::= SEQUENCE { tbsCertificate, signatureAlgorithm, sig }.
+    let Some((_, tbs, _)) = read_tlv(cert_der) else {
+        return false;
+    };
+    // tbsCertificate ::= SEQUENCE { [0] version?, serial, sigalg, issuer,
+    // validity, subject, spki, ... } - the issuer Name is the 3rd top
+    // element (2nd when the version wrapper is absent), the subject the
+    // element right after validity.
+    let Some((_, tbs_content, _)) = read_tlv(tbs) else {
+        return false;
+    };
+    let mut names: Vec<&[u8]> = Vec::new();
+    let mut rest = tbs_content;
+    // tbsCertificate children (with the [0] version wrapper):
+    //   0=[0]version, 1=serial, 2=signatureAlgorithm, 3=issuer(Name),
+    //   4=validity, 5=subject(Name). Without the wrapper the sequence
+    //   shifts down by one. Collect exactly those two Name TLVs.
+    let mut idx = 0usize;
+    let mut saw_version = false;
+    while !rest.is_empty() {
+        let Some((tag, _c, tail)) = read_tlv(rest) else {
+            return false;
+        };
+        if idx == 0 && tag == 0xA0 {
+            saw_version = true;
+        }
+        let name_idx = if saw_version { [3usize, 5] } else { [2usize, 4] };
+        if idx == name_idx[0] || idx == name_idx[1] {
+            // The whole TLV span (tag+len+content) is the comparable
+            // Name encoding - RFC 5280 requires the issuer to equal
+            // the subject for a self-signed cert.
+            let span = &rest[..rest.len() - tail.len()];
+            names.push(span);
+        }
+        rest = tail;
+        idx += 1;
+        if idx > name_idx[1] {
+            break;
+        }
+    }
+    match (names.first(), names.get(1)) {
+        (Some(issuer), Some(subject)) => *issuer == *subject,
+        _ => false,
+    }
 }
 
 /// The OID4VCI credential-offer LANDING page (auth DESIGN §9a.20): the OIDF
@@ -1203,3 +1285,35 @@ pub async fn credential_offer_landing(
 }
 
 
+
+#[cfg(test)]
+mod anchor_tests {
+    use super::is_self_signed_certificate;
+
+    /// A self-signed cert (the rig CA) reports true; a CA-signed leaf
+    /// reports false. Uses rcgen (the existing dev dep) for material.
+    #[test]
+    fn anchor_detection() {
+        // Self-signed root: subject == issuer.
+        let ca_params =
+            rcgen::CertificateParams::new(vec![]).expect("ca params");
+        let ca_key = rcgen::KeyPair::generate().expect("ca key");
+        let ca = ca_params.self_signed(&ca_key).expect("ca");
+        let ca_der = ca.der().as_ref();
+        assert!(is_self_signed_certificate(ca_der), "root must be detected");
+
+        // CA-SIGNED leaf: subject != issuer.
+        let mut leaf_params =
+            rcgen::CertificateParams::new(vec![]).expect("leaf params");
+        leaf_params
+            .distinguished_name
+            .push(rcgen::DnType::CommonName, "leaf.test");
+        let leaf = leaf_params
+            .signed_by(&ca_key, &ca, &ca_key)
+            .expect("leaf");
+        assert!(
+            !is_self_signed_certificate(leaf.der().as_ref()),
+            "signed leaf is not an anchor"
+        );
+    }
+}

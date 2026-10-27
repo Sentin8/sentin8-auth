@@ -1154,6 +1154,50 @@ the token mint (RFC 8705 §3); (d) JARM signed with the PROFILE alg +
 host-resolved iss + JARM-wrapped deny (`access_denied`); (e) no-store on
 the mtls-aliased token/introspect/revoke.
 
+**The `response_mode=query` mandate (fapi postures).** Under
+`fapi_1_advanced` / `fapi_2` / `fapi_2_message_signing` the
+authorization response is encoded in the FRAGMENT or via
+`response_mode=jwt` (JARM) ONLY - an explicit `response_mode=query`
+presented inline on /oauth/authorize (or resolved authoritative from a
+JAR/PAR-stored object) rejects with the profile's wrapped-error channel
+BEFORE any code/session work: `error=invalid_request`, JARM-wrapped
+when the posture mandates JARM, plain url-query `error=` otherwise
+(the suite's RejectAuthCodeInUrlQuery +
+CheckAuthorizationResponseWhenResponseModeQuery cells). The standard
+family (and every non-FAPI posture) keeps `query` as its default mode -
+this is strictly the FAPI response-surface rule.
+
+**The request-object mandate set is PROFILE-DERIVED (OC-27, the one
+mechanism).** Every signed-push claim rule resolves from
+`FapiSecurityFlags` (src/fapi.rs `required_flags()`) - the per-posture
+mandate table - NOT from per-module call-site branches:
+
+| Posture | exp | nbf | nonce | alg=none | Sources |
+|---|---|---|---|---|---|
+| `standard` | optional | optional | scope-gated | allowed | RFC 9101 plain form |
+| `fapi_1_advanced` | REQUIRED | REQUIRED | REQUIRED (openid scope) | forbidden | Part2 §5.2.2-1/13/17 + Baseline §5.2.2.2 |
+| `fapi_2` | REQUIRED | REQUIRED | scope-gated | forbidden | PARS+DPoP posture |
+| `fapi_2_message_signing` | REQUIRED | REQUIRED | scope-gated | forbidden | OC-18 freshness binding |
+| `fapi_ciba` | (CIBA §7.1 validator owns the object rules - separate path) | | | forbidden there | §9a.15 |
+| `vci`/`vci_haip` | optional | optional | scope-gated | allowed | wallet-initiated unsigned objects |
+
+`verify_jar_request` consumes `&FapiSecurityFlags` (no ad-hoc
+booleans); `nonce` is mandatory exactly when the mandate says so AND
+the effective scope carries `openid` (OIDC Core §3.1.2.1). The
+discovery/request-claim rules the suite's
+without-exp/without-nbf/without-nonce/with-exp-over-60/with-nbf-over-60
+negatives all read THIS table - a new claim mandate is a one-line flag
+change in `required_flags()`, never a new call-site branch. The two
+ad-hoc `require_exp`/`fapi2_posture` booleans are retired.
+
+**FAPI refresh-token issuance (OC-27b).** Under every FAPI posture the
+authorization-code grant issues a REFRESH TOKEN unconditionally (FAPI
+1.0 Advanced/FAPI 2.0 clients are sender-constrained confidential
+clients - the OIDF refresh-token modules expect one without a
+scope-preamble `offline_access` request; the suite's own WARNING text
+names this: "not to FAPI clients"). The `offline_access`-gate stays
+for the standard family (the RFC 6749 grant policy).
+
 ### 9a.15 FAPI CIBA ID1 (poll + ping, static_client / private_key_jwt)
 
 The full `fapi-ciba-id1-test-plan` is GREEN: (a) bc-authorize contract -
@@ -1264,7 +1308,13 @@ every failure path. Rig wiring: the plan config carries BOTH nested
 `vci.key_attestation_jwks` (the suite's dot-path lookup) and top-level
 `vci_key_attestation_jwks` (the PRIVATE signer jwks); the attester
 keypair carries an x5c chain (the suite requires x5c on the attestation
-signing key). Note: the suite's "Try Client1's DPoP key with Client2's
+signing key). **The status-list token header carries BOTH `jwk` AND
+`x5c`** (the hybrid embedded-key + chain form): the suite's
+`VerifyStatusListTokenSignatureUsingEmbeddedJwk` verifies from the
+EMBEDDED `jwk` only (it reads neither `x5c` nor JWKS-by-`kid`), while
+the HAIP plan's `ValidateStatusListTokenX5cCertificateChain` requires
+the `x5c` chain - one header carries both members so both verifiers
+pass on the same token. Note: the suite's "Try Client1's DPoP key with Client2's
 access token" step is a NEGATIVE probe - the RFC 9449-correct 401
 (cnf.jkt mismatch) is the expected verdict.
 
@@ -1597,6 +1647,29 @@ inline JSON body:
   (different-state-inside-and-outside, state-only-outside-not-used)
   accept this - the suite's VerifyNoStateInAuthorizationResponse /
   CheckStateInAuthorizationResponse classes.
+- **The redirect_uri match rule - exact registered string (the
+  query-ADDED reject).** A presented `redirect_uri` that differs from
+  the registered string ONLY by a query extension (`<callback>?foo=bar`
+  vs the registered bare `<callback>`) is NOT a registered URI: the
+  authorize redirect check compares the presented value against the
+  registered array EXACTLY (RFC 6749 §3.1.2.3 - simple string
+  comparison; NO query-addition, no normalization). The FAPI1
+  query-suffix LENIENCY (8.x + the suite's AddRedirectUriQuerySuffix
+  cell) is a STATIC-PLAN surface only - the dynamic-registration
+  family (oidcc-redirect-uri-query-added) asserts the AS does not call
+  a uri that was never registered (`url_query: {foo:bar, code, state}`
+  was the pre-fix capture). The reject defers to the same
+  post-validation site: `error=invalid_request` redirect (inline 400
+  when the base URI itself is unknown - no open redirect).
+- **The require_dpop resource-surface rules (RFC 9449 §7.1 wire
+  discipline).** (a) EXACTLY ONE proof per request: a resource request
+  (userinfo) carrying MORE THAN ONE `DPoP` header rejects `400
+  invalid_request` ('multiple DPoP proofs') - the suite's
+  dpop-negative cell ('Try with more than one DPoP in the header',
+  EnsureHttpStatusCodeIs400or401/DPOP-7.1; the 200-on-duplicate was the
+  live-found gap); (b) a proof REMOVED from a bound request rejects
+  401 (the sender constraint still applies); (c) `ath` bound to the
+  access token (the proof must carry the token's hash).
 - **The require-dpop gate (holder-of-key).** Under
   `require_dpop=true` (the FAPI2-SP/sender-constrain=dpop posture), a
   token-exchange WITHOUT a live DPoP proof AND without a pre-bound
