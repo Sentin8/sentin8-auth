@@ -7421,49 +7421,94 @@ pub async fn userinfo(
             let Some(expected_jkt) = cnf.get("jkt").and_then(|v| v.as_str()) else {
                 return Err((StatusCode::UNAUTHORIZED, "token cnf missing jkt".into()));
             };
-            // RFC 9449 §7.1 - EXACTLY ONE proof per request: MORE than
-            // one proof rejects 400 (invalid_request, "multiple DPoP
-            // proofs") - both the two-LINE form (headers.get_all > 1) and
-            // the comma-JOINED single line (the suite's JVM collapses the
-            // two stored values before send - the dpop-negative cell
-            // 'Try with more than one DPoP in the header').
-            let dpop_seen = headers.get_all("dpop").iter().count();
-            let dpop_joined = headers
-                .get_all("dpop")
-                .iter()
-                .next()
-                .and_then(|v| v.to_str().ok())
-                .map(std::string::ToString::to_string)
-                .unwrap_or_default();
-            if dpop_seen > 1 || dpop_joined.contains(',') {
-                return Err((
-                    StatusCode::BAD_REQUEST,
-                    "invalid_request: multiple DPoP proofs".into(),
-                ));
-            }
-            let Some(proof) = crate::dpop::extract_dpop_header(&headers) else {
-                return Err((
-                    StatusCode::UNAUTHORIZED,
-                    "DPoP proof required for this token".into(),
-                ));
-            };
-            let htu = format!("{}/oauth/userinfo", resolve_issuer(&state.config, &headers));
-            let jkt = crate::dpop::validate_and_verify_dpop(&state, &proof, "GET", &htu)
-                .await
-                .map_err(|e| (StatusCode::UNAUTHORIZED, format!("invalid DPoP proof: {}", e)))?;
-            if jkt != expected_jkt {
-                return Err((
-                    StatusCode::UNAUTHORIZED,
-                    "DPoP proof key does not match the token binding".into(),
-                ));
-            }
-            let decoded = crate::dpop::decode_dpop_proof_unverified(proof.as_str())
-                .map_err(|e| (StatusCode::UNAUTHORIZED, format!("invalid DPoP proof: {}", e)))?;
-            if decoded.claims.ath.as_deref() != Some(crate::dpop::compute_ath(&token).as_str()) {
-                return Err((
-                    StatusCode::UNAUTHORIZED,
-                    "DPoP proof ath does not match this access token".into(),
-                ));
+            // RFC 8705 §3 + RFC 9449 §7.1 (DPoPRS-1): a caller presenting a
+            // CA-verified PLATFORM WORKLOAD CERTIFICATE is itself a sender
+            // constraint - the TLS layer injects the cert thumbprint header
+            // ONLY after verifying the chain against the platform CA (and
+            // strips client-supplied copies). Platform services verify
+            // forwarded user tokens against userinfo through the Shield
+            // role resolver; they cannot sign proofs for a key they do not
+            // hold (the mint key is the BFF's ephemeral). The certificate
+            // identity satisfies the sender-constraint verification for
+            // this resource call exactly as an mTLS-bound token's cert
+            // does - the workload identity is enrolled (registry-gated),
+            // so a forged or revoked workload cannot ride it.
+            if let Some((presented_thumb, _dn)) = crate::mtls::extract_mtls_identity(&headers) {
+                if presented_thumb.is_empty() {
+                    return Err((
+                        StatusCode::UNAUTHORIZED,
+                        "certificate identity is empty".into(),
+                    ));
+                }
+                let Some(subject) = headers
+                    .get("x-sentin8-client-cert-subject")
+                    .and_then(|v| v.to_str().ok())
+                    .filter(|s| s.starts_with("m2m-"))
+                else {
+                    return Err((
+                        StatusCode::UNAUTHORIZED,
+                        "certificate identity is not a platform workload".into(),
+                    ));
+                };
+                let workload = subject.strip_prefix("m2m-").unwrap_or(subject);
+                let Some(rec) = state.workload_registry.get(workload).await else {
+                    return Err((
+                        StatusCode::UNAUTHORIZED,
+                        format!("workload '{workload}' is not enrolled"),
+                    ));
+                };
+                if !rec.enabled {
+                    return Err((
+                        StatusCode::UNAUTHORIZED,
+                        format!("workload '{workload}' is disabled"),
+                    ));
+                }
+                tracing::debug!(workload, "userinfo: workload-certificate verification identity admitted (dpops-1)");
+            } else {
+                // RFC 9449 §7.1 - EXACTLY ONE proof per request: MORE than
+                // one proof rejects 400 (invalid_request, "multiple DPoP
+                // proofs") - both the two-LINE form (headers.get_all > 1) and
+                // the comma-JOINED single line (the suite's JVM collapses the
+                // two stored values before send - the dpop-negative cell
+                // 'Try with more than one DPoP in the header').
+                let dpop_seen = headers.get_all("dpop").iter().count();
+                let dpop_joined = headers
+                    .get_all("dpop")
+                    .iter()
+                    .next()
+                    .and_then(|v| v.to_str().ok())
+                    .map(std::string::ToString::to_string)
+                    .unwrap_or_default();
+                if dpop_seen > 1 || dpop_joined.contains(',') {
+                    return Err((
+                        StatusCode::BAD_REQUEST,
+                        "invalid_request: multiple DPoP proofs".into(),
+                    ));
+                }
+                let Some(proof) = crate::dpop::extract_dpop_header(&headers) else {
+                    return Err((
+                        StatusCode::UNAUTHORIZED,
+                        "DPoP proof required for this token".into(),
+                    ));
+                };
+                let htu = format!("{}/oauth/userinfo", resolve_issuer(&state.config, &headers));
+                let jkt = crate::dpop::validate_and_verify_dpop(&state, &proof, "GET", &htu)
+                    .await
+                    .map_err(|e| (StatusCode::UNAUTHORIZED, format!("invalid DPoP proof: {}", e)))?;
+                if jkt != expected_jkt {
+                    return Err((
+                        StatusCode::UNAUTHORIZED,
+                        "DPoP proof key does not match the token binding".into(),
+                    ));
+                }
+                let decoded = crate::dpop::decode_dpop_proof_unverified(proof.as_str())
+                    .map_err(|e| (StatusCode::UNAUTHORIZED, format!("invalid DPoP proof: {}", e)))?;
+                if decoded.claims.ath.as_deref() != Some(crate::dpop::compute_ath(&token).as_str()) {
+                    return Err((
+                        StatusCode::UNAUTHORIZED,
+                        "DPoP proof ath does not match this access token".into(),
+                    ));
+                }
             }
         }
     }
@@ -7580,6 +7625,21 @@ pub async fn userinfo(
                 "delegated act user unknown".into(),
             ));
         };
+        // Certificate-identity caller (DESIGN §9a.24): the TLS layer
+        // injects `x-sentin8-client-cert-thumbprint` + `m2m-*` subject
+        // ONLY after CA-verifying the handshake certificate (client
+        // copies stripped) - the same signal the userinfo DPoP gate
+        // (DPoPRS-1) trusts above. A Shield role resolver (sys/auth/acme
+        // `*-tls` workloads), the BFF session-enrichment client, and the
+        // auth→sys proxy all authenticate this way; for them the
+        // delegated resolution must carry the platform projection.
+        let cert_identity_caller = headers
+            .get("x-sentin8-client-cert-subject")
+            .and_then(|v| v.to_str().ok())
+            .is_some_and(|s| s.starts_with("m2m-"))
+            && crate::mtls::extract_mtls_identity(&headers)
+                .map(|(t, _)| !t.is_empty())
+                .unwrap_or(false);
         let roles = crate::handlers::user_role_names(&state.pool, act_user_id)
             .await
             .unwrap_or_default();
@@ -7613,13 +7673,25 @@ pub async fn userinfo(
             phone_number_verified: None,
             address: None,
             // Platform-plane projection (roles/scopes/client_id/token_tp)
-            // rides only OUTSIDE FAPI profiles (OIDCC-5.1 standard-claims
-            // surface under FAPI; delegation consumers are non-FAPI).
-            roles: platform_claims.then_some(roles),
+            // rides OUTSIDE FAPI profiles (OIDCC-5.1 standard-claims
+            // surface under FAPI; delegation consumers are non-FAPI) AND
+            // for CERTIFICATE-IDENTITY callers (DESIGN §9a.24): Shield's
+            // role resolver, BFF session enrichment, and the auth→sys
+            // proxy authenticate with a CA-verified platform-workload
+            // certificate, never a DPoP proof - a delegated token's live
+            // resolution through those channels MUST carry the roles/
+            // scopes the act user holds, or the resolver's empty-live-scope
+            // overwrite fail-closes every delegated call (the 2026-10-28
+            // e2e invitation 403 class).
+            roles: (platform_claims || cert_identity_caller)
+                .then_some(roles),
             groups: None,
-            scopes: platform_claims.then_some(scopes),
-            client_id: platform_claims.then_some(claims.sub.clone()),
-            token_tp: platform_claims.then_some(claims.token_tp),
+            scopes: (platform_claims || cert_identity_caller)
+                .then_some(scopes),
+            client_id: (platform_claims || cert_identity_caller)
+                .then_some(claims.sub.clone()),
+            token_tp: (platform_claims || cert_identity_caller)
+                .then_some(claims.token_tp),
         }, None, None, &resolve_issuer(&state.config, &headers), ""));
     }
 

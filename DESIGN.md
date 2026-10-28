@@ -1031,7 +1031,14 @@ issuer-hosted on auth:
   credentials (§7.3) sharing ONE status list with random distinct
   indices (herd privacy). Sender-constrained tokens ride `Bearer`/`DPoP`
   schemes: a DPoP-bound token requires its own RFC 9449 proof
-  (`htu`/`ath`/`cnf.jkt`) verified ONCE per request.
+  (`htu`/`ath`/`cnf.jkt`) verified ONCE per request. Resource-side
+  callers presenting a PLATFORM WORKLOAD CERTIFICATE (the `-tls`
+  m2m plane - Shield's RoleResolver verifying a forwarded bound token
+  against userinfo) satisfy the sender constraint per RFC 8705 §3: the
+  TLS client certificate IS a sender constraint, so a
+  cert-presenting verification request is admitted for BOTH
+  `cnf.x5t#S256`-bound and `cnf.jkt`-bound tokens without the caller
+  holding the mint key (DPoPRS-1).
 - **Proof verification (wallet key binding).** The `openid4vci-proof+jwt`
   carries its key in the JWS header `jwk` (or the draft-11 payload
   `cnf.jwk`); `aud` = issuer, `iat` fresh (±5 min). When the
@@ -1769,4 +1776,73 @@ sequenceDiagram
     else NO post_logout_redirect_uri in the request
         L-->>B: 302 /sign-in (clean session-scoped logout)
     end
+```
+
+### 9a.24 Delegated (and service-projection) mints sign the TENANT family
+
+Every mint path that produces a token a DOWNSTREAM service must verify
+through the tenant-plane filtered JWKS (§9a.9) resolves the target
+tenant's `signing_alg` and signs with `sign_value_alg(claims, family)`
+— including `POST /delegate/access-token` (the delegated token's env is
+`req.env_id`, normally a NON-system target env) and the
+session-cluster data-plane projections (`/v1/session/...` service
+tokens + `delegated_from_publisher`). The family-blind
+`SigningKeys::sign()` (process-active key) is reserved for tokens that
+never cross a tenant-plane JWKS boundary. Rationale: the JWKS endpoint
+publishes ONLY the verifier's resolved family (`from_keys_family`),
+so a token signed by the other family — even with a valid signature —
+is unverifiable for every resource server the tenant-plane lookup
+serves (`key {kid} not found in JWKS` → 401). The delegated token's
+`aud` is the target resource indicator and its `env_id` is the target
+env; both sides of the contract (mint family, published family) MUST
+resolve through the same `resolve_security_profile_for_env` seam so a
+mint never races a profile row it did not consult.
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant B as BFF (delegator)
+    participant A as Auth /delegate/access-token
+    participant P as security profile (env-resolved)
+    participant K as SigningKeys
+    participant R as resource server (acme)
+    B->>A: POST /delegate/access-token (cert-bound M2M)
+    A->>P: resolve_security_profile_for_env(target_env)
+    P-->>A: signing_alg (family F)
+    A->>K: sign_value_alg(claims, F)
+    K-->>A: JWT (alg=F, kid∈F)
+    A-->>B: 200 access_token
+    B->>R: Authorization: Bearer <jwt>
+    R->>A: GET /.well-known/jwks.json (publishes F only)
+    R->>R: verify (kid found - SAME family F)
+```
+
+**The resolution projection (§9a.24b).** userinfo's delegated branch
+resolves the act user's live `roles`/`scopes` but only projects them
+when `platform_claims` holds (system-env token OR non-FAPI caller
+profile). A delegated token's `env_id` is the TARGET tenant env, so a
+Shield role resolver's resolution (the mechanism `evaluate_full` uses
+to build `ctx.scopes`) received `roles: None, scopes: []` under a FAPI
+profile — the empty live set OVERWROTE the verified JWT scope seed and
+the scope-mirror fail-closed every delegated mutation (the 2026-10-28
+e2e invitation 403). The projection also rides when the CALLER is a
+certificate identity: the TLS-injected `m2m-*` subject + non-empty
+thumbprint (the SAME signal the DPoP gate trusts in DPoPRS-1 -
+Shield resolvers, BFF session enrichment, and the auth→sys proxy all
+authenticate by certificate, never a DPoP proof). A browser-borne DPoP
+proof caller keeps the OIDC standard-claims surface.
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant S as Shield resolver (m2m-sys-tls cert)
+    participant A as Auth /oauth/userinfo
+    participant D as DB (roles, role_nesting)
+    participant E as Engine (scope-mirror)
+    S->>A: GET userinfo (delegated Bearer + cert headers)
+    A->>A: m2m-* subject + thumbprint → cert_identity_caller
+    A->>D: fetch act user's roles + scopes
+    A-->>S: 200 {sub=act, roles, scopes} (projection rides)
+    S->>E: ctx.scopes = live set (NOT empty)
+    E-->>S: allow (memberships:admin matched)
 ```

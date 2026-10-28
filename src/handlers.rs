@@ -1146,7 +1146,9 @@ pub async fn consent_accounts(
         // "bank8:ledger" → "https://bank8-ledger.ops.sys.local.sentin8.dev").
         let base_url = format!("https://{}", cfg.platform_domain(&platform_domain_key));
 
-        // Mint a short-lived JWT (60s) with the registered scope.
+        // Mint a short-lived JWT (60s) with the registered scope, signed in
+        // the session env's tenant signing family (auth DESIGN §9a.24) - the
+        // provider service verifies through the tenant-plane filtered JWKS.
         let claims = AuthClaims::access(
             &state.config.issuer,
             session.user_id,
@@ -1155,12 +1157,26 @@ pub async fn consent_accounts(
             None,
             Duration::seconds(60),
         );
-        let service_token = state.keys.sign(&claims).map_err(|e| {
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                format!("token sign: {e}"),
+        let consent_family = crate::oauth::resolve_security_profile_for_env(
+            &state.pool,
+            session.env_id,
+            "env",
+        )
+        .await
+        .signing_alg;
+        let service_token = state
+            .keys
+            .sign_value_alg(
+                &serde_json::to_value(&claims)
+                    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?,
+                &consent_family,
             )
-        })?;
+            .map_err(|e| {
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    format!("token sign: {e}"),
+                )
+            })?;
 
         tracing::info!(
             service = %service_type,
@@ -1497,7 +1513,16 @@ pub(crate) async fn exchange_for_delegated(
         None,
         None,
     );
-    keys.sign(&delegated).map_err(|e| format!("sign: {e}"))
+    // Sign in the tenant family the verification plane publishes
+    // (auth DESIGN §9a.24) - not the process-active key.
+    let family = crate::oauth::resolve_security_profile_for_env(&pool, env_id, "env")
+        .await
+        .signing_alg;
+    keys.sign_value_alg(
+        &serde_json::to_value(&delegated).map_err(|e| format!("serialize: {e}"))?,
+        &family,
+    )
+    .map_err(|e| format!("sign: {e}"))
 }
 
 /// Merge base scopes with role scopes, deduplicating.

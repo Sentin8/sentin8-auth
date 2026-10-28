@@ -353,9 +353,25 @@ pub async fn delegate_access_token(
         Some(req.audience.clone()),
     );
 
+    // Sign with the TARGET tenant's signing family (auth DESIGN §9a.24):
+    // the downstream resource server verifies through the tenant-plane
+    // filtered JWKS (§9a.9), which publishes ONLY the env-resolved family -
+    // a family-blind sign (process-active key) produces a token whose kid
+    // is absent from the verifier's JWKS (401 `key not found in JWKS`).
+    let tenant_family = crate::oauth::resolve_security_profile_for_env(
+        &state.pool,
+        target_env_id,
+        "env",
+    )
+    .await
+    .signing_alg;
     let token = state
         .keys
-        .sign(&claims)
+        .sign_value_alg(
+            &serde_json::to_value(&claims)
+                .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?,
+            &tenant_family,
+        )
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
     // 7. Audit log.
