@@ -734,6 +734,25 @@
         "security": []
       }
     },
+    "/oauth/credential-offer": {
+      "get": {
+        "tags": [
+          "wallet"
+        ],
+        "summary": "The OID4VCI credential-offer LANDING page (auth DESIGN §9a.20): the OIDF\nwallet plan opens `vci.credential_offer_endpoint` (our issuer URL) in the\nbrowser with the offer riding `credential_offer` (BY-VALUE) - the wallet\nrole's first hop. The landing handler resolves the bound client from the\npass-through query parameters the harness embeds in the endpoint URL (the\nsuite's UriComponentsBuilder preserves them), then 302s into the standard\nauthorize flow with `state` + `issuer_state` = the offer's issuer_state\n(the plan's VCIVerifyIssuerStateInAuthorizationRequest requires the request\nto echo its generated state).",
+        "description": "# Errors\n`400` on a missing/malformed offer (unknown surface answers inline).",
+        "operationId": "credentialOfferLanding",
+        "responses": {
+          "302": {
+            "description": "Redirect into the authorize flow (state + issuer_state echoed)"
+          },
+          "400": {
+            "description": "Missing/malformed offer or harness-bound params"
+          }
+        },
+        "security": []
+      }
+    },
     "/oauth/credentials": {
       "post": {
         "tags": [
@@ -9134,6 +9153,13 @@
               "null"
             ],
             "description": "OIDC nonce - bound into the ID token.\nThe nonce."
+          },
+          "par_key": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The PAR interaction key (the code issuance marks the request_uri\nused - auth DESIGN §9a.19)."
           },
           "redirect_uri": {
             "type": "string",

@@ -306,7 +306,12 @@ TLD).
 
 **Drift guard.** `tests/openapi_drift.rs` asserts BOTH directions - every
 served route appears in the compiled spec and every spec pair is served -
-via the shared shell helper (`sentin8::shell::drift_guard`).
+via the shared shell helper (`sentin8::shell::drift_guard`). The spec
+carries 185 operations (the 150-op floor is pinned by
+`spec_carries_the_full_documented_surface`); runs require the sourced
+root env + `SQLX_OFFLINE=true` (a bare `cargo test` cannot resolve the
+TLS-only PostgreSQL - the 164 `connection requires a valid client
+certificate` query errors are the wrong-env symptom).
 
 **Event flow (outbox → Bus):**
 

@@ -1198,6 +1198,17 @@ fn is_self_signed_certificate(cert_der: &[u8]) -> bool {
 ///
 /// # Errors
 /// `400` on a missing/malformed offer (unknown surface answers inline).
+#[utoipa::path(
+    get,
+    operation_id = "credentialOfferLanding",
+    path = "/oauth/credential-offer",
+    responses(
+        (status = 302, description = "Redirect into the authorize flow (state + issuer_state echoed)"),
+        (status = 400, description = "Missing/malformed offer or harness-bound params"),
+    ),
+    security(),
+    tag = "wallet",
+)]
 pub async fn credential_offer_landing(
     State(state): State<AppState>,
     headers: HeaderMap,

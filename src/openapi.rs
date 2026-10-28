@@ -95,6 +95,7 @@ paths(
         crate::oid4vci::credential,
         crate::oid4vci::deferred_credential,
         crate::oid4vci::notifications,
+        crate::wallet::credential_offer_landing,
         crate::wallet::credential_verifier_metadata,
         crate::webfinger::webfinger,
         crate::backchannel_logout::trigger_backchannel_logout,
