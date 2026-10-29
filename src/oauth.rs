@@ -7513,6 +7513,24 @@ pub async fn userinfo(
         }
     }
 
+    // Designated platform-plane caller (DPoPRS-1 carrier): a request whose
+    // handshake certificate the TLS layer CA-verified and named `m2m-*`
+    // is a platform workload identity - the Shield substrate role
+    // resolver, the BFF session-enrichment client, and the auth→sys proxy
+    // all authenticate this way. Identity resolution for those consumers
+    // is NOT a FAPI browser surface: they receive the platform projection
+    // below even when the resolved profile is a FAPI posture (RFC 8705
+    // §3 - the certificate IS the sender constraint). Computed here, ABOVE
+    // the projection gates, so the delegated and non-delegated branches
+    // share the same rule.
+    let cert_identity_caller = headers
+        .get("x-sentin8-client-cert-subject")
+        .and_then(|v| v.to_str().ok())
+        .is_some_and(|s| s.starts_with("m2m-"))
+        && crate::mtls::extract_mtls_identity(&headers)
+            .map(|(t, _)| !t.is_empty())
+            .unwrap_or(false);
+
     // OIDCC-5.1 conformance (DESIGN §9a.11): userinfo is the OIDC STANDARD
     // claims surface - under a FAPI profile the suite validates it strictly
     // and warns on members outside the standard set (the platform-plane
@@ -7532,6 +7550,7 @@ pub async fn userinfo(
         .unwrap_or(crate::config::SYSTEM_ENV_ID);
     let platform_plane = resolved_env == crate::config::SYSTEM_ENV_ID;
     let platform_claims = platform_plane
+        || cert_identity_caller
         || crate::fapi::FapiProfile::from_str(
             &resolve_security_profile(&state.pool, &headers, "env").await.profile,
         )
@@ -7633,13 +7652,8 @@ pub async fn userinfo(
         // `*-tls` workloads), the BFF session-enrichment client, and the
         // auth→sys proxy all authenticate this way; for them the
         // delegated resolution must carry the platform projection.
-        let cert_identity_caller = headers
-            .get("x-sentin8-client-cert-subject")
-            .and_then(|v| v.to_str().ok())
-            .is_some_and(|s| s.starts_with("m2m-"))
-            && crate::mtls::extract_mtls_identity(&headers)
-                .map(|(t, _)| !t.is_empty())
-                .unwrap_or(false);
+        // (Detection HOISTED above `platform_claims` - shared by the
+        // non-delegated branches, DPoPRS-1 carrier rule.)
         let roles = crate::handlers::user_role_names(&state.pool, act_user_id)
             .await
             .unwrap_or_default();
