@@ -210,6 +210,11 @@ impl FapiProfile {
                 "authorization_code",
                 "refresh_token",
                 "urn:ietf:params:oauth:grant-type:device_code",
+                // The CIBA poll grant (DESIGN §9a.4): the token router,
+                // discovery, and the BFF delegation pollers all speak the
+                // OpenID CIBA §4 URN - the IETF alias below is admitted
+                // alongside it so either form passes the profile gate.
+                "urn:openid:params:grant-type:ciba",
                 "urn:ietf:params:oauth:grant-type:ciba",
                 // RFC 8693 token exchange - the platform's delegation grant
                 // (Sentin8:Bus ): a subscriber exchanges a publisher

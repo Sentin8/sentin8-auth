@@ -1276,6 +1276,20 @@ the grant at bc-authorize and the poll must present the SAME cert
 (`invalid_grant` otherwise); (e) approval via `POST /v1/ciba/approve`
 (ping-aware, session-bound).
 
+**Grant URN vocabulary (profile allow-list parity).** The CIBA poll
+grant is served at the token endpoint under the OpenID CIBA §4 URN
+(`urn:openid:params:grant-type:ciba`) - the URN discovery advertises
+(§9a.4 honesty) and the delegation pollers (Sentin8:BFF
+`delegate/poll` + its background SSE poller) speak. The FAPI profile
+grant allow-list (`fapi.rs::allowed_grant_types`) admits that URN
+ALONGSIDE its IETF alias (`urn:ietf:params:oauth:grant-type:ciba`) -
+the profile constrains authentication strength and token binding, not
+the URN spelling, and a tenant under a FAPI posture running the
+certified CIBA flow must reach `handle_ciba_token` through either form
+(previous drift: only the IETF alias was listed, so every
+OpenID-URN poll under `fapi_2` answered `400 unauthorized_client`
+before the grant handler ran).
+
 ### 9a.16 FAPI 2.0 Message Signing (final plan, dpop + mtls cells)
 
 The full `fapi2-message-signing` plan is GREEN (2026-10-25, run14:
