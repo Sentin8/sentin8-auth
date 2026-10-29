@@ -9,10 +9,10 @@
 //!
 //! `sentin8-auth-oidf/tests/{fapi1-advanced,fapi2-security,
 //! fapi2-message-signing,ciba}.spec.ts` is the source of truth; the
-//! tests here seed the SAME per-posture profile rows (OC-20) and assert
+//! tests here seed the SAME per-posture profile rows and assert
 //! the SAME wire behaviors the suite's module families observe:
 //!
-//! - **§9a.14 mandate table** (OC-27): under every FAPI posture a signed
+//! - **§9a.14 mandate table** : under every FAPI posture a signed
 //!   request object carries exp + nbf (f2m adds freshness windows),
 //!   ` alg: none` is forbidden, the openid-scope nonce mandate is
 //!   FAPI1-only, and the refresh token is issued UNCONDITIONALLY
@@ -22,10 +22,10 @@
 //!   array forms; PS256 accepted / RS256 request-objects rejected (i);
 //!   the FAPI2-MS PAR push REQUIRES a signed object (g); unsigned
 //!   inline-value objects stay accepted on the non-FAPI branch.
-//! - **OC-28**: the code↔jwt PAIRING mandate (FAPI1-ADV 5.2.2-2) - the
+//! - ****: the code↔jwt PAIRING mandate (FAPI1-ADV 5.2.2-2) - the
 //!   missing-mode AND explicit-query forms both reject
 //!   `invalid_request_object` at the push.
-//! - **OC-23 (§9a.14)**: `response_mode=query` on the authorize endpoint
+//! - **(§9a.14)**: `response_mode=query` on the authorize endpoint
 //!   rejects with error=invalid_request under EVERY FAPI posture.
 //! - **§9a.21/§9a.22**: PAR `dpop_jkt` pre-binding (form + inside the
 //!   object), the jkt-mismatch token reject (`invalid_dpop_proof`), the
@@ -106,7 +106,7 @@ async fn authorize(app: &axum::Router, uri: &str) -> (StatusCode, String) {
 //    negatives + alg-none forbidden) ────────────────────────────────────
 
 /// Under `fapi_1_advanced` a signed push without `exp` rejects
-/// `invalid_request_object` (FAPI1 Part2 §5.2.2-13; OC-27's
+/// `invalid_request_object` (FAPI1 Part2 §5.2.2-13's
 /// without-exp family).
 #[tokio::test]
 async fn oidf_fapi1_push_without_exp_rejects_invalid_request_object() {
@@ -684,7 +684,7 @@ async fn oidf_fapi2_rs256_object_rejected_ps256_accepted() {
 
 /// §9a.16 (g) - under `fapi_2_message_signing` the PAR push MUST carry a
 /// SIGNED request object: an unsigned push (no `request` parameter)
-/// rejects `invalid_request` (PAR-2.3's error code at the push).
+/// rejects `invalid_request` (.3's error code at the push).
 #[tokio::test]
 async fn oidf_fapi2ms_par_requires_signed_object() {
     let Some((app, pool)) = oidf::spawn_server().await else {
@@ -708,7 +708,7 @@ async fn oidf_fapi2ms_par_requires_signed_object() {
     .await;
     assert!(
         status == StatusCode::BAD_REQUEST && json["error"].as_str() == Some("invalid_request"),
-        "FAPI2-MS unsigned PAR push → 400 invalid_request (PAR-2.3): {status} {json}"
+ "FAPI2-MS unsigned PAR push → 400 invalid_request (.3): {status} {json}"
     );
 }
 
@@ -813,9 +813,9 @@ async fn oidf_fapi2ms_object_freshness_mandates() {
     );
 }
 
-// ── OC-28 / OC-23: the response-surface pairing + mode mandates ────────
+// ── / the response-surface pairing + mode mandates ────────
 
-/// OC-28 (FAPI1-ADV 5.2.2-2): response_type=code REQUIRES
+/// (FAPI1-ADV 5.2.2-2): response_type=code REQUIRES
 /// response_mode=jwt - the object WITHOUT the mode rejects
 /// `invalid_request_object` at the push (the missing-mode form the
 /// suite's ensure-response-type-code module drives).
@@ -865,7 +865,7 @@ async fn oidf_fapi1_code_without_jwt_mode_rejects_pairing() {
     );
 }
 
-/// OC-23 (§9a.14): under EVERY FAPI posture an explicit
+/// (§9a.14): under EVERY FAPI posture an explicit
 /// `response_mode=query` on the authorize endpoint redirects with
 /// `error=invalid_request` (the suite's RejectAuthCodeInUrlQuery reads
 /// the callback query); the STANDARD posture keeps query as its default
@@ -1584,7 +1584,7 @@ async fn oidf_ciba_multiple_hints_rejected() {
         .unwrap();
     let json2: serde_json::Value = serde_json::from_slice(&bytes2).unwrap_or_default();
     // The CIBA grant REQUIRES a signed object ONLY under the fapi_ciba
-    // posture (OC-20's CIBA env); the standard row keeps the platform's
+    // posture ('s CIBA env); the standard row keeps the platform's
     // signed-required default OFF... The mirror asserts the ROW-DRIVEN
     // posture: standard = the objectless push is ACCEPTED (200 with
     // auth_req_id).
@@ -1634,7 +1634,7 @@ async fn oidf_ciba_auth_req_id_client_binding_and_expiry() {
 
 /// CIBA §7.1 - the request object + client-assertion pairing: a push
 /// carrying an assertion with the WRONG assertion-type URN rejects
-/// `invalid_request` (CIBA-8; the exactness of the type string).
+/// `invalid_request` (the exactness of the type string).
 #[tokio::test]
 async fn oidf_ciba_assertion_type_exactness() {
     let Some((app, pool)) = oidf::spawn_server().await else {
@@ -1687,7 +1687,7 @@ async fn oidf_ciba_assertion_type_exactness() {
     let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap_or_default();
     assert!(
         ciba8_status == StatusCode::BAD_REQUEST && json["error"].as_str() == Some("invalid_request"),
-        "CIBA-8: a non-registered assertion-type URN rejects 400 invalid_request: {ciba8_status} {json}"
+ ": a non-registered assertion-type URN rejects 400 invalid_request: {ciba8_status} {json}"
     );
 }
 

@@ -83,7 +83,7 @@ pub fn extract_mtls_identity(headers: &axum::http::HeaderMap) -> Option<(String,
     }
     // Bridged path: the PROXY (the single ingress) terminates the suite's
     // TLS and forwards the presented leaf certificate as
-    // `X-Sentin8-Client-Cert` (base64 DER, PROXY-4). The thumbprint is
+    // `X-Sentin8-Client-Cert` (base64 DER,). The thumbprint is
     // computed HERE from the forwarded DER - identical to what
     // sentin8-tls would hash (the same bytes), so both ingress postures
     // resolve to the same identity. No CA/subject trust is implied:

@@ -44,8 +44,8 @@ use tower::ServiceExt;
 
 use oidf::{b64url, register_client, ClientSpec, Posture, SYS_ENV};
 
-/// The attester identity the haip profile seeds (the OC-20 seed's
-/// `client_attestation_issuer`; the OC-26 per-env form).
+/// The attester identity the haip profile seeds (the seed's
+/// `client_attestation_issuer`; the per-env form).
 const ATTESTATION_ISSUER: &str = "https://vci-attester.oidf-mirror.test";
 
 /// The client_attestation header JWT + verifier material.
@@ -493,10 +493,10 @@ async fn oidf_haip_discovery_attestation_advertisement() {
     let _ = wrap64;
 }
 
-/// §9a.19 + OC-26 - the CLIENT attestation's iss gate: an attestation
+/// §9a.19 + - the CLIENT attestation's iss gate: an attestation
 /// whose iss != the profile's configured issuer rejects (the suite's
 /// PAR push asserts the OP-side check - the 'attestation iss mismatch'
-/// class the OC-26 per-env seed closes).
+/// class the per-env seed closes).
 #[tokio::test]
 async fn oidf_haip_attestation_iss_mismatch_rejected() {
     let Some((app, pool)) = oidf::spawn_server().await else {
@@ -547,6 +547,6 @@ async fn oidf_haip_attestation_iss_mismatch_rejected() {
     .await;
     assert!(
         s == StatusCode::UNAUTHORIZED && b["error"].as_str() == Some("invalid_client"),
-        "a foreign attestation iss → 401 (OC-26's mismatch class): {s} {b}"
+ "a foreign attestation iss → 401 ('s mismatch class): {s} {b}"
     );
 }

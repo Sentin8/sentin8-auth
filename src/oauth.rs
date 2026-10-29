@@ -163,7 +163,7 @@ pub struct AuthenticatedClient {
     /// Presented client cert thumbprint (mTLS) - used to bind issued tokens.
     /// The cert thumbprint.
     pub cert_thumbprint: Option<String>,
-    /// The ATTESTED key's RFC 7638 thumbprint (ATCA-07: the attestation's
+    /// The ATTESTED key's RFC 7638 thumbprint (the attestation's
     /// `cnf.jwk`) when the client authenticated via the OAuth-Client-
     /// Attestation header pair - the wallet's DPoP proof MUST present
     /// exactly this key, and a mismatch answers invalid_dpop_proof.
@@ -293,7 +293,7 @@ async fn verify_client_assertion(
         .ok()
         .and_then(|h| h.get("alg").and_then(|a| a.as_str()).map(str::to_string));
     if assertion_alg.as_deref() == Some("RS256") {
-        // OC-28: the alg mandate covers EVERY FAPI posture (the suite's
+        // the alg mandate covers EVERY FAPI posture (the suite's
         // ensure-signed-client-assertion-with-RS256-fails cell in the
         // fapi1-advanced plan asserts the reject; Part2 §8.6 - PS256/ES256
         // only, RS256 'shall not use'). The default posture keeps RS256.
@@ -813,7 +813,7 @@ pub async fn authenticate_client(
 
     let mut auth_method: &'static str = "none";
     let mut cert_thumbprint: Option<String> = None;
-    // ATCA-07: the attested key's thumbprint (set by the attestation arm;
+    // the attested key's thumbprint (set by the attestation arm;
     // the token exchange binds the DPoP proof to exactly this key).
     let mut attested_jkt: Option<String> = None;
 
@@ -2981,7 +2981,7 @@ pub async fn pushed_authorization_request(
         return Err(json_error(
             StatusCode::BAD_REQUEST,
             "invalid_request",
-            // PAR-2.3: the PAR push's rejection error code is
+            //.3: the PAR push's rejection error code is
             // `invalid_request` (the suite's EnsurePARInvalidRequestError);
             // `invalid_request_object` is the by-value/authorize form.
             "FAPI2 message-signing requires a signed request object on the PAR push".into(),
@@ -3016,7 +3016,7 @@ pub async fn pushed_authorization_request(
         let resolved_profile = crate::fapi::FapiProfile::from_str(
             &resolve_security_profile(&state.pool, &headers, "env").await.profile,
         );
-        // OC-27 (DESIGN 9a.14): the mandate table resolves from the
+        // (DESIGN 9a.14): the mandate table resolves from the
         // FAPI posture ONCE - no per-call-site booleans.
         let jar_flags = resolved_profile
             .as_ref()
@@ -3032,7 +3032,7 @@ pub async fn pushed_authorization_request(
         )
             .await
             .map_err(|e| {
-                // OC-28: the reject's precise code rides the "<code>: <text>"
+                // the reject's precise code rides the "<code>: <text>"
                 // head (the pairing rule's unsupported_response_type among
                 // them); unknown prefixes keep the JAR-shape default.
                 let (code, desc) = match e.split_once(": ") {
@@ -3435,7 +3435,7 @@ pub async fn authorize(
         let resolved_profile = crate::fapi::FapiProfile::from_str(
             &resolve_security_profile(&state.pool, &headers, "env").await.profile,
         );
-        // OC-27 (DESIGN 9a.14): the mandate table resolves from the FAPI
+        // (DESIGN 9a.14): the mandate table resolves from the FAPI
         // posture ONCE - no per-call-site booleans. The nonce gate reads
         // the INLINE request scope (the object scope overlays AFTER the
         // signature/claims pass).
@@ -3495,7 +3495,7 @@ pub async fn authorize(
                 }
             }
             Err(e) => {
-                // OC-28: the reject message carries its PRECISE error code
+                // the reject message carries its PRECISE error code
                 // as the "<code>: <text>" head (the pairing rule's
                 // unsupported_response_type among them) - the inline
                 // (pre-redirect) channel passes the code through; an
@@ -3536,7 +3536,7 @@ pub async fn authorize(
     // passed; see the redirect-error helper after that block.
     // The standard FIVE (DESIGN §9a.13): `code` continues into the
     // exchange; the id_token/token members make the response a FRAGMENT
-    // response (OAuth-RT-5) - the redirect encoding picks the channel
+    // response (OAuth-) - the redirect encoding picks the channel
     // downstream (is_fragment_response).
     // A FAPI2-SP posture (PAR-mandating profile) restricts the
     // authorization request to `code` ONLY (FAPI2-SP-FINAL-5.2.2-1: the
@@ -3654,7 +3654,7 @@ pub async fn authorize(
     // (consent_required destructured above; redirect_uris validated already)
     let consent_required = _consent_required_meta;
 
-    // DESIGN 9a.14 - the FAPI response_mode=query mandate (OC-23): under
+    // DESIGN 9a.14 - the FAPI response_mode=query mandate : under
     // every FAPI posture the authorization response is fragment- or
     // JARM-encoded ONLY; an explicit query mode (inline or the
     // authoritative PAR-stored value) rejects BEFORE the code mint via
@@ -3904,7 +3904,7 @@ pub async fn authorize(
     // reaches the client).
     if silent_only {
         // DESIGN §9a.13 - the fragment cells encode the response (SUCCESS
-        // and ERROR alike) in the URL FRAGMENT (OAuth-RT-5); the query
+        // and ERROR alike) in the URL FRAGMENT (OAuth-); the query
         // channel is only for the `code`-only cell.
         let fragment_mode = crate::oauth::is_fragment_response(&params.response_type);
         let error_redirect = |err: &str, desc: &str, mode: Option<&str>| -> Response {
@@ -4023,7 +4023,7 @@ pub async fn authorize(
         }
         // DESIGN §9a.13 - the fragment cells: the silent response
         // encodes id_token/token + code members in the FRAGMENT
-        // (OAuth-RT-5). The code-only cell keeps the query encoding.
+        // (OAuth-). The code-only cell keeps the query encoding.
         if crate::oauth::is_fragment_response(&params.response_type) {
             let wants_id_token = params.response_type.split_whitespace().any(|p| p == "id_token");
             let wants_token = params.response_type.split_whitespace().any(|p| p == "token");
@@ -4636,7 +4636,7 @@ pub async fn authorize_continue(
     let valkey_url = &state.config.valkey_url;
 
     // mark_par_used consumes the RESOLVED interaction key (the SPA's
-    // consent hop drops `par_key` — the state-keyed memo carries it,
+    // consent hop drops `par_key` - the state-keyed memo carries it,
     // auth DESIGN §9a.21); using `req.par_key` alone left the used-key
     // unset and the reuse-after-outcome negative never rejected.
     if let Some(pk) = interaction_par_key
@@ -4698,7 +4698,7 @@ pub async fn authorize_continue(
 
     // DESIGN §9a.13 - the hybrid/implicit cells: a response_type carrying
     // an id_token/token member delivers its members in the URL FRAGMENT
-    // (OAuth-RT-5). The id_token mints NOW (not at an exchange - there
+    // (OAuth-). The id_token mints NOW (not at an exchange - there
     // is none for members without `code`); the access_token member (the
     // `token` cells) mints a bearer token bound to this grant.
     let cell_response_type = req.response_type.clone().unwrap_or_else(|| "code".to_string());
@@ -5094,7 +5094,7 @@ pub async fn token(
         )));
     }
 
-    // ATCA-07 (draft-ietf-oauth-attestation-based-client-auth): the
+    // (draft-ietf-oauth-attestation-based-client-auth): the
     // attestation's cnf.jwk and the DPoP proof key MAY be distinct (the
     // draft leaves the DPoP key a wallet-local choice; the OIDF issuer
     // plan mints them separately). The sender-constraint surfaces:
@@ -5494,7 +5494,7 @@ async fn handle_code_exchange(
     if let Some(pre_bound) = code_data.get("dpop_jkt").and_then(|v| v.as_str()).filter(|s| !s.is_empty()) {
         match dpop_jkt {
             Some(live) if live != pre_bound => {
-                // RFC 9449 Section 10.1 (DPOP-10.1): the pre-bound
+                // RFC 9449 Section 10.1 (.1): the pre-bound
                 // sender-constraint violation answers 400
                 // invalid_dpop_proof.
                 return Err(TokenError::OAuth(OAuthTokenError::with_desc(
@@ -5509,7 +5509,7 @@ async fn handle_code_exchange(
     // DESIGN §9a.22 - the require-dpop gate (holder-of-key): under the
     // sender-constrain=dpop posture, an exchange with NO live proof AND
     // NO pre-bound record jkt cannot satisfy the sender-constraint -
-    // reject (DPOP-10.1 + the suite's ensure-holder-of-key-required).
+    // reject (.1 + the suite's ensure-holder-of-key-required).
     // The pre-bound record carries the PAR/authorize's key. An
     // mTLS-presented certificate IS the sender constraint (RFC 8705
     // §3): the exchange's TLS client cert (the proxy-injected
@@ -6198,7 +6198,7 @@ async fn handle_client_credentials(
         Duration::seconds(state.config.m2m_token_ttl_secs as i64),
     );
 
-    // VDC-2/VDC-4 (design/sentin8-vertical-data-plane-contract.md §VDC.4/§VDC.5):
+    ///(design/sentin8-vertical-data-plane-contract.md §VDC.4/§VDC.5):
     // stamp the workload's vertical + owning service claims from the DCR
     // grant row (keyed by the registered client_name - the workload name).
     // Bus's event-ownership gate checks `vertical` on produce; Sys's
@@ -7531,7 +7531,7 @@ pub async fn userinfo(
             .map(|(t, _)| !t.is_empty())
             .unwrap_or(false);
 
-    // OIDCC-5.1 conformance (DESIGN §9a.11): userinfo is the OIDC STANDARD
+    //.1 conformance (DESIGN §9a.11): userinfo is the OIDC STANDARD
     // claims surface - under a FAPI profile the suite validates it strictly
     // and warns on members outside the standard set (the platform-plane
     // roles/groups/scopes/client_id/token_tp projections). The platform
@@ -7687,7 +7687,7 @@ pub async fn userinfo(
             phone_number_verified: None,
             address: None,
             // Platform-plane projection (roles/scopes/client_id/token_tp)
-            // rides OUTSIDE FAPI profiles (OIDCC-5.1 standard-claims
+            // rides OUTSIDE FAPI profiles (.1 standard-claims
             // surface under FAPI; delegation consumers are non-FAPI) AND
             // for CERTIFICATE-IDENTITY callers (DESIGN §9a.24): Shield's
             // role resolver, BFF session enrichment, and the auth→sys
@@ -7858,7 +7858,7 @@ pub async fn userinfo(
                 } else {
                     None
                 },
-                // Platform-plane projection (§9a.11 OIDCC-5.1): FAPI
+                // Platform-plane projection (§9a.11.1): FAPI
                 // userinfo stays a pure OIDC standard-claims document -
                 // the resolved roles/groups/scopes/client_id are the
                 // platform-plane consumer surface only.
@@ -8313,7 +8313,7 @@ async fn verify_jar_request(
         .and_then(|h| h.get("alg").and_then(|a| a.as_str()).map(str::to_string));
     let raw = sentin8::auth::jwt::decode_payload(request_jwt)?;
 
-    // OC-27 (DESIGN 9a.14 mandate table): every signed-push rule resolves
+    // (DESIGN 9a.14 mandate table): every signed-push rule resolves
     // from the posture's FapiSecurityFlags - no per-call-site branches.
     // RFC 9101 baseline: `exp`/`nbf` are RECOMMENDED, `alg: none` is a
     // legal unsigned form, and `nonce` rides the OIDC openid rule; the
@@ -8333,7 +8333,7 @@ async fn verify_jar_request(
             "the signed request object must carry an nbf claim".into(),
         );
     }
-    // OC-27: the nonce gate reads the OBJECT's own scope first (a PAR
+    // the nonce gate reads the OBJECT's own scope first (a PAR
     // push carries ALL parameters - including scope - inside the object;
     // the outer request's scope is EMPTY there) and falls back to the
     // outer request scope for the by-value form.
@@ -8350,7 +8350,7 @@ async fn verify_jar_request(
             "openid flows require the nonce claim on the request object (FAPI1 Baseline 5.2.2.2)".into(),
         );
     }
-    // OC-28 (FAPI1-ADV 5.2.2-2): the response surface pairing - under this
+    // (FAPI1-ADV 5.2.2-2): the response surface pairing - under this
     // posture response_type=code REQUIRES response_mode=jwt (the object's
     // own claim, else the outer request's explicit mode). Nothing else
     // pairs: `code id_token` (detached-signature) and `jwt`-mode carry
@@ -8510,7 +8510,7 @@ pub fn is_supported_response_type(rt: &str) -> bool {
 }
 
 /// Whether the response_type encodes its response in the URL FRAGMENT
-/// (OAuth-RT-5): any type carrying a token/id_token member.
+/// (OAuth-): any type carrying a token/id_token member.
 pub fn is_fragment_response(response_type: &str) -> bool {
     response_type.split_whitespace().any(|p| p == "id_token" || p == "token")
 }
@@ -8868,7 +8868,7 @@ async fn handle_ciba_token(
         .await
         .map_err(|e| TokenError::Internal(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
     // OpenID CIBA: a consumed/TTL'd auth_req_id = expired_token
-    // (CIBA-11's ExpectExpiredTokenErrorFromTokenEndpoint).
+    // ('s ExpectExpiredTokenErrorFromTokenEndpoint).
     let data = data.ok_or_else(|| {
         TokenError::OAuth(OAuthTokenError::new(
             StatusCode::BAD_REQUEST,
@@ -8878,7 +8878,7 @@ async fn handle_ciba_token(
     let data: serde_json::Value = serde_json::from_str(&data)
         .map_err(|e| TokenError::Internal(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
-    // CIBA-11 first: the polling client must match the client that
+    // first: the polling client must match the client that
     // started the request (stored by bc_authorize) - the suite polls a
     // foreign client against client1's grant and expects invalid_grant
     // BEFORE any status-specific answer.
@@ -9077,7 +9077,7 @@ async fn handle_ciba_token(
 
     // Single-use: keep the record but flip it to `consumed` so a reuse
     // poll answers invalid_grant, while a genuinely expired (TTL'd-out)
-    // record answers expired_token (CIBA-11).
+    // record answers expired_token .
     let _: Result<(), _> = valkey_conn
         .set_ex(
             &key,

@@ -300,7 +300,7 @@ pub async fn bc_authorize(
         ));
     };
     let signed = signed_raw;
-    // FAPI-CIBA (CIBA-7.1): the signed request object is MANDATORY - a
+    // FAPI-CIBA (.1): the signed request object is MANDATORY - a
     // push with NO `request`/`request_uri` (the suite's unsigned
     // backchannel request) rejects `invalid_request`.
     if signed.is_none() {
@@ -317,9 +317,9 @@ pub async fn bc_authorize(
                 format!("invalid_request: signed request decode: {e}"),
             )
         })?;
-        // FAPI-CIBA request-object validation (CIBA-7.1/7.1.1): claims,
+        // FAPI-CIBA request-object validation (.1/7.1.1): claims,
         // then the alg policy, then the signature - a defective object
-        // rejects 400 `invalid_request` (CIBA-13). See
+        // rejects 400 `invalid_request` . See
         // validate_backchannel_request_object (bottom of this module).
         if let Err(e) = validate_backchannel_request_object(
             &claims,
@@ -329,7 +329,7 @@ pub async fn bc_authorize(
         ) {
             return Err(CibaAuthzError(e.0, e.1));
         }
-        // CIBA-7.1.1 alg policy: `none` (unsigned) and symmetric algs are
+        //.1.1 alg policy: `none` (unsigned) and symmetric algs are
         // not legal signing algs for a backchannel request object; RS256
         // is excluded by the FAPI profile's PS/ES-only rule (the suite's
         // RS256 negative module).
@@ -397,7 +397,7 @@ pub async fn bc_authorize(
         }
     }
 
-    // CIBA-8: when a client_assertion is presented, the request MUST
+    // when a client_assertion is presented, the request MUST
     // carry the exact assertion type
     // (urn:ietf:params:oauth:client-assertion-type:jwt-bearer) - absent,
     // misspelled, or different → invalid_request.
@@ -994,7 +994,7 @@ pub async fn ciba_approve(
                     let payload = serde_json::json!({
                         "auth_req_id": req.auth_req_id,
                     });
-                    // CIBA-10.2: the ping response's redirect (3xx) is
+                    //.2: the ping response's redirect (3xx) is
                     // NOT followed - a redirect to a different URI is the
                     // client misbehaving; following one would hide it.
                     let client = reqwest::Client::builder()
@@ -1291,7 +1291,7 @@ mod tests {
 
 /// bc-authorize rejection type - renders as an RFC 6749 §5.2 JSON body
 /// (`{"error": "...", "error_description": "..."}`). The suite's
-/// backchannel checkers parse the `error` field (CIBA-13); a plain-text
+/// backchannel checkers parse the `error` field; a plain-text
 /// body fails their JSON gate.
 ///
 /// The string payload follows the `"{error_code}: {description}"`
@@ -1322,7 +1322,7 @@ impl From<(StatusCode, String)> for CibaAuthzError {
     fn from((status, msg): (StatusCode, String)) -> Self {
         if status == StatusCode::UNAUTHORIZED {
             // Client-authentication failures answer `invalid_client`
-            // (CIBA-8) - authenticate_client's messages carry no OAuth
+            // - authenticate_client's messages carry no OAuth
             // code prefix, so the code is supplied here.
             return Self(status, format!("invalid_client: {msg}"));
         }
@@ -1330,7 +1330,7 @@ impl From<(StatusCode, String)> for CibaAuthzError {
     }
 }
 
-/// FAPI-CIBA request-object claim validation (CIBA-7.1/7.1.1 - the
+/// FAPI-CIBA request-object claim validation (.1/7.1.1 - the
 /// suite's `ValidateBackchannelRequestObjectClaims` + the negative
 /// Ensure* modules): the signed members REPLACE the form ones, so the
 /// object's claims are authoritative. REQUIRED members: `iss` == the
@@ -1338,7 +1338,7 @@ impl From<(StatusCode, String)> for CibaAuthzError {
 /// token_endpoint | backchannel_authentication_endpoint), `exp`
 /// within (-5min, +1h), `iat` within (-1d, +5min), `nbf` within
 /// (-10min, +5min), `jti` a non-empty string. Every defect answers
-/// 400 `invalid_request` (CIBA-13).
+/// 400 `invalid_request` .
 fn validate_backchannel_request_object(
     claims: &serde_json::Value,
     client_id: &str,
@@ -1353,7 +1353,7 @@ fn validate_backchannel_request_object(
     ];
     let bad = |desc: &str| (StatusCode::BAD_REQUEST, format!("invalid_request: {desc}"));
 
-    // iss (CIBA-7.1.1 REQUIRED): pins the client identity.
+    // iss (.1.1 REQUIRED): pins the client identity.
     match claims.get("iss").and_then(|v| v.as_str()) {
         Some(iss) if iss == client_id => {}
         _ => return Err(bad("iss is missing or does not equal the client_id")),

@@ -11,9 +11,9 @@ JWKS authority, and authentication authority. It implements the OAuth
 2.0 core ([RFC 6749](https://datatracker.ietf.org/doc/html/rfc6749)) and
 OpenID Connect
 ([OIDC Core](https://openid.net/specs/openid-connect-core-1_0.html))
-across every grant family, sender-constrained tokens — DPoP
+across every grant family, sender-constrained tokens - DPoP
 ([RFC 9449](https://datatracker.ietf.org/doc/html/rfc9449)) and mTLS
-certificate binding ([RFC 8705](https://datatracker.ietf.org/doc/html/rfc8705)) —
+certificate binding ([RFC 8705](https://datatracker.ietf.org/doc/html/rfc8705))  - 
 financial-grade profiles (FAPI 2.0, [FAPI 2.0
 SP](https://openid.net/specs/fapi-2_0-security-profile.html); FAPI 1
 Advanced, [FAPI 1.0 part
@@ -38,13 +38,13 @@ register with per-mechanism anchors is `DESIGN.md` §12.
 - **One authority or none.** Multiple issuers would fragment trust,
   key distribution, and audit. Every token in the platform
   (user, ID, refresh, API-client, actor, delegated) comes from
-  this service and verifies against its JWKS — the single-issuer
+  this service and verifies against its JWKS - the single-issuer
   property FAPI requires
   ([FAPI 2.0 SP §5](https://openid.net/specs/fapi-2_0-security-profile.html)).
 - **Sender-constrained by default.** M2M tokens are certificate-bound
   (RFC 8705 `cnf`) so a stolen token without the private key is
   useless; user tokens are DPoP-bound under the default profile; DCR
-  requires an mTLS client certificate — there is no plaintext
+  requires an mTLS client certificate - there is no plaintext
   credential M2M path (OAuth threat model, RFC 6819 §4.4).
 - **Authorization is decided live.** The JWT `scope` claim is a coarse
   pre-filter and RLS feed (RFC 6749 §3.3 semantics); the decision
@@ -52,12 +52,12 @@ register with per-mechanism anchors is `DESIGN.md` §12.
   claim in the token, so role changes take effect on the next request.
 - **Cert-bound by design out of band.** Platform workloads
   authenticate with NO token at all (TLS client-certificate identity,
-  §4.3f) — the certificate is the service identity.
+  §4.3f) - the certificate is the service identity.
 - **Conformance is a feature.** JAR
   ([RFC 9101](https://datatracker.ietf.org/doc/html/rfc9101)), PAR
   ([RFC 9126](https://datatracker.ietf.org/doc/html/rfc9126)), JARM,
   DPoP, mTLS, and SD-JWT are first-class modes, not best-effort
-  approximations — the platform targets regulated verticals.
+  approximations - the platform targets regulated verticals.
 - **OIDF certification is a program, not an event.** The OIDF
   conformance suite runs locally against a dedicated rig as the gate
   before any certification submission. Scope: OIDC Basic/Config/Dynamic
@@ -76,42 +76,42 @@ register with per-mechanism anchors is `DESIGN.md` §12.
 ```mermaid
 graph TD
     subgraph Token issuance
-        A["Authorization endpoint<br/>(RFC 6749 §4.1 + PKCE RFC 7636)"] --> B["PAR push<br/>(RFC 9126)"]
-        B --> C["Token endpoint<br/>(RFC 6749 §3.2, §6)"]
-        C --> D["Access / Refresh / ID token families<br/>(RFC 7515/7518, OIDC Core §2)"]
-        C --> E["M2M client_credentials - cert-bound<br/>(RFC 8705)"]
-        C --> F["Actor tokens - time-boxed, audited<br/>(RFC 8693 delegation semantics)"]
+        A["Authorization endpoint<br/>(RFC 6749 §4.1 + PKCE RFC 7636)"] -> B["PAR push<br/>(RFC 9126)"]
+        B -> C["Token endpoint<br/>(RFC 6749 §3.2, §6)"]
+        C -> D["Access / Refresh / ID token families<br/>(RFC 7515/7518, OIDC Core §2)"]
+        C -> E["M2M client_credentials - cert-bound<br/>(RFC 8705)"]
+        C -> F["Actor tokens - time-boxed, audited<br/>(RFC 8693 delegation semantics)"]
     end
     subgraph Authentication
-        G["Password + sessions"] --> H["MFA TOTP (RFC 6238)"]
-        H --> I["Passkeys (WebAuthn)"]
-        I --> J["Enterprise connections (OIDC/SAML)"]
-        G --> K["Bot protection - rate limits + lockout<br/>(RFC 6819 §4.5.2)"]
+        G["Password + sessions"] -> H["MFA TOTP (RFC 6238)"]
+        H -> I["Passkeys (WebAuthn)"]
+        I -> J["Enterprise connections (OIDC/SAML)"]
+        G -> K["Bot protection - rate limits + lockout<br/>(RFC 6819 §4.5.2)"]
     end
     subgraph TokenBinding["Token binding"]
-        L["DPoP (RFC 9449)"] --> D
-        M["mTLS cert binding (RFC 8705)"] --> D
-        N["HTTP message signatures (RFC 9421)"] --> D
+        L["DPoP (RFC 9449)"] -> D
+        M["mTLS cert binding (RFC 8705)"] -> D
+        N["HTTP message signatures (RFC 9421)"] -> D
     end
     subgraph Federation & provisioning
-        O["SCIM 2.0 (RFC 7643/7644)"] --> P["Enterprise identity providers"]
-        Q["Delegation Gateway (RFC 8693)"] --> D
-        R["DCR (RFC 7591/7592)"] --> S["Client store"]
+        O["SCIM 2.0 (RFC 7643/7644)"] -> P["Enterprise identity providers"]
+        Q["Delegation Gateway (RFC 8693)"] -> D
+        R["DCR (RFC 7591/7592)"] -> S["Client store"]
     end
     subgraph Platform
-        T["JWKS (RFC 7517) - rotation, PQ keys"] --> D
-        U["Back-Channel Logout (OIDC BCN) + webhooks"] --> V["Sentin8:Bus outbox"]
-        W["Admin API + RFW UI + Shield gate"] --> X["Users/roles/groups/clients/keys"]
+        T["JWKS (RFC 7517) - rotation, PQ keys"] -> D
+        U["Back-Channel Logout (OIDC BCN) + webhooks"] -> V["Sentin8:Bus outbox"]
+        W["Admin API + RFW UI + Shield gate"] -> X["Users/roles/groups/clients/keys"]
     end
 ```
 
-- **Grant surface** — authorization-code (+PKCE), refresh, device code
+- **Grant surface** - authorization-code (+PKCE), refresh, device code
   ([RFC 8628](https://datatracker.ietf.org/doc/html/rfc8628)), CIBA
   (decoupled approval + poll/ping), client_credentials (M2M), and token
-  exchange ([RFC 8693](https://datatracker.ietf.org/doc/html/rfc8693)) —
+  exchange ([RFC 8693](https://datatracker.ietf.org/doc/html/rfc8693))  - 
   each profile-gated by the caller's resolved security profile (FAPI 2.0
   default).
-- **Authorization surface** — PAR pushes
+- **Authorization surface** - PAR pushes
   ([RFC 9126](https://datatracker.ietf.org/doc/html/rfc9126)), signed
   request objects ([RFC 9101](https://datatracker.ietf.org/doc/html/rfc9101)),
   JARM signed response modes, resource indicators
@@ -128,16 +128,16 @@ graph TD
   `request_uri`, restricted response_type, PKCE) returns as the RFC
   6749 §4.1.2.1 error REDIRECT on the validated callback - the
   browser-driven RP always receives the error back (§9a.22).
-- **Authorization pipeline** — extract bearer (RFC 6750 §2.2) → verify
+- **Authorization pipeline** - extract bearer (RFC 6750 §2.2) → verify
   (issuer/signature/expiry/audience/token type) → resolve tenant →
   feature gate → authorize via Shield → set RLS context → execute →
   audit. Requests that cannot resolve a tenant context are rejected.
-- **Wallet surface** — OID4VCI issuer (§9a.7 of `DESIGN.md`): issuer
+- **Wallet surface** - OID4VCI issuer (§9a.7 of `DESIGN.md`): issuer
   metadata, `/oauth/credential`, §7.2.1 identifier form, issuance nonce
   (§8.1), batch issuance (§7.3), deferred polling, notifications, and
   signed status lists; OID4VP verifier (§11); SD-JWT verification with
   key binding and status enforcement.
-- **Admin surface** — full CRUD over users, roles (with nesting),
+- **Admin surface** - full CRUD over users, roles (with nesting),
   groups, OAuth clients, API keys, sessions, memberships, and
   invitations; every mutation emits a domain event through the local
   outbox (same transaction).
@@ -274,7 +274,7 @@ Invariants (full numbered list in `DESIGN.md` §8):
 - Hardware-backed key attestation is deferred: the WebAuthn `attestation`
   conveyance preference is the seam; OID4VCI App. D attestation verify
   accepts software-key attestations today (x5c self-consistency).
-- Handshake-level certificate revocation (CERTFREE-2) is a platform-level
+- Handshake-level certificate revocation is a platform-level
   follow-up.
 - Multi-region active-active issuer deployment is a non-goal until
   multi-region exists; the JWKS overlap-rotation design is region-safe.

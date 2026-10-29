@@ -66,7 +66,7 @@ pub struct AuthClaims {
     /// Present only for M2M tokens issued via `/mtls/oauth/token`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cnf: Option<serde_json::Value>,
-    /// The vertical this workload belongs to (VDC-2, design/
+    /// The vertical this workload belongs to (design/
     /// sentin8-vertical-data-plane-contract.md §VDC.4). Set on M2M tokens
     /// from the `auth.m2m_scope_grants.vertical` stamp - Bus's event-ownership
     /// gate rejects produce when the event_type's first colon segment
@@ -74,7 +74,7 @@ pub struct AuthClaims {
     /// Absent on user/delegated tokens (they never produce).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub vertical: Option<String>,
-    /// The service this M2M workload performs work FOR (VDC-4, design/
+    /// The service this M2M workload performs work FOR (design/
     /// sentin8-vertical-data-plane-contract.md §VDC.5) - stamped from the
     /// same enroll row as `vertical` (workload names are inconsistent, so
     /// the registry is the source of truth). Consumers use it for scoped

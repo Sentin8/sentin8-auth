@@ -7,7 +7,7 @@
 //! `sentin8-auth-oidf` (auth DESIGN §9a.2) is the source of truth for what
 //! the OIDF certification campaigns exercise; this harness spins the SAME
 //! router the fleet boots inside the test process and seeds the SAME
-//! per-posture `security_profiles` rows the OC-20 battery seeds - so every
+//! per-posture `security_profiles` rows the battery seeds - so every
 //! campaign wire behavior is asserted directly, without the OIDF suite
 //! runtime. Campaign rules carried into Rust (auth DESIGN §9b):
 //! - **No-skip** (§9a.10): a capability the discovery document advertises
@@ -44,13 +44,13 @@ pub const POST_LOGOUT_URI: &str = "https://rp.example.org/post_logout_redirect";
 // ── Posture (profile row) seeds ─────────────────────────────────────────
 
 /// The per-posture flag shape the battery seeds per family env
-/// (OC-20; auth DESIGN §9a.2 step 2). One row per posture, keyed by the
+/// (auth DESIGN §9a.2 step 2). One row per posture, keyed by the
 /// `profile` enum member.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Posture {
     /// env `standard` (the Basic/Config/Dynamic/Logout families).
     Standard,
-    /// env `fapi_1_advanced` (OC-23: PAR + JARM + strict PKCE + query-reject).
+    /// env `fapi_1_advanced` (PAR + JARM + strict PKCE + query-reject).
     Fapi1Advanced,
     /// env `fapi_2` (PAR + DPoP + JARM).
     Fapi2,
@@ -78,7 +78,7 @@ impl Posture {
         }
     }
 
-    /// The OC-27 request-object mandate table (`fapi.rs required_flags`).
+    /// The request-object mandate table (`fapi.rs required_flags`).
     pub fn fapi_profile(&self) -> Option<sentin8_auth_server::fapi::FapiProfile> {
         use sentin8_auth_server::fapi::FapiProfile;
         match self {
@@ -96,7 +96,7 @@ impl Posture {
 /// race). Same pattern as conformance_profiles.rs.
 pub static DB_MUTEX: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
-/// Seed the SYS env's profile row for a posture (the OC-20 per-env shape).
+/// Seed the SYS env's profile row for a posture (the per-env shape).
 ///
 /// `signing_alg` = RS256 (the rig's classical posture - §9a.2 step 3).
 /// `with_attestation` rides the vci_haip family's extra columns

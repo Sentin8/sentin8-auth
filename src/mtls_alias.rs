@@ -3,7 +3,7 @@
 // SPDX-FileCopyrightText: Copyright Contributors to the Sentin8:Auth
 // SPDX-License-Identifier: Apache-2.0
 
-//! mTLS endpoint aliases (RFC 8705) - .
+//! mTLS endpoint aliases (RFC 8705).
 //!
 //! `/mtls/oauth/*` routes are cert-bound: Sentin8:TLS (with optional client
 //! auth enabled) injects `X-Sentin8-Client-Cert-Thumbprint` after verifying

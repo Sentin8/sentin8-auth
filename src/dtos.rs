@@ -3,7 +3,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 //! Typed response DTOs for the OAuth/wallet/CIBA/consent/SCIM admin
-//! surfaces (OAPEC-9: no free-form 200 bodies).
+//! surfaces (no free-form 200 bodies).
 
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
@@ -105,7 +105,7 @@ pub struct OidcClaims {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub email: Option<String>,
     /// The email's verified flag (the `email` scope's second member,
-    /// OIDCC-5.4 - served with the email claim family).
+    ///.4 - served with the email claim family).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub email_verified: Option<bool>,
     /// Given (first) name.

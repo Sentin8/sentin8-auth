@@ -53,17 +53,17 @@ graph TD
         WALLET["Wallet surface<br/>OID4VCI issuer · OID4VP verifier · SD-JWT"]
     end
 
-    SYS -- "provision verbs" --> AUTH
-    SVC -- "verify bearer (SDK, JWKS)" --> AUTH
-    SVC -- "DCR / client-cert mints" --> DCR
-    BFF --> OAUTH
-    CLI --> OAUTH
-    WAL -- "OID4VCI / SD-JWT VP" --> AUTH
-    SU -- "drive full protocol flows" --> AUTH
-    AUTH -- "webhooks (HMAC)" --> HOOKS
-    AUTH -- "post_outbox → POST /v1/send" --> POST["sentin8:post"]
-    AUTH -- "audit spill → POST /v1/audit" --> SYS
-    AUTH -- "auth.outbox → produce" --> BUS["sentin8:bus"]
+    SYS - "provision verbs" -> AUTH
+    SVC - "verify bearer (SDK, JWKS)" -> AUTH
+    SVC - "DCR / client-cert mints" -> DCR
+    BFF -> OAUTH
+    CLI -> OAUTH
+    WAL - "OID4VCI / SD-JWT VP" -> AUTH
+    SU - "drive full protocol flows" -> AUTH
+    AUTH - "webhooks (HMAC)" -> HOOKS
+    AUTH - "post_outbox → POST /v1/send" -> POST["sentin8:post"]
+    AUTH - "audit spill → POST /v1/audit" -> SYS
+    AUTH - "auth.outbox → produce" -> BUS["sentin8:bus"]
 ```
 
 **Trust boundary note.** Every caller sits behind Sentin8:Proxy TLS
@@ -103,14 +103,14 @@ graph TD
         KEYS[("auth.signing_keys")]
     end
 
-    EDGE --> OAUTH & DCR & IDP & ADM & SCIMR & WALLET & SSO & HOOKS
-    OAUTH --> JARS
-    IDP --> ID["identity handlers"]
-    ADM --> POOL
-    OAUTH --> VK
-    OAUTH --> KEYS
-    PUSH --> POST2["post"]
-    HOOKS --> POOL
+    EDGE -> OAUTH & DCR & IDP & ADM & SCIMR & WALLET & SSO & HOOKS
+    OAUTH -> JARS
+    IDP -> ID["identity handlers"]
+    ADM -> POOL
+    OAUTH -> VK
+    OAUTH -> KEYS
+    PUSH -> POST2["post"]
+    HOOKS -> POOL
 ```
 
 **Request lifecycle - authorization-code token issuance (FAPI 2.0
@@ -232,22 +232,22 @@ erDiagram
 stateDiagram-v2
     direction LR
     state session {
-        [*] --> active: sign-in
-        active --> revoked : sign-out / admin
-        active --> expired : expiry
+        [*] -> active: sign-in
+        active -> revoked : sign-out / admin
+        active -> expired : expiry
     }
     state factor {
-        [*] --> pending: enroll begin
-        pending --> active: verify
-        active --> disabled
+        [*] -> pending: enroll begin
+        pending -> active: verify
+        active -> disabled
     }
     state grant {
-        [*] --> active: record_grant
-        active --> revoked: delete (cascade jti)
+        [*] -> active: record_grant
+        active -> revoked: delete (cascade jti)
     }
     state credential {
-        [*] --> active: issuance
-        active --> revoked: revoke (status list bit)
+        [*] -> active: issuance
+        active -> revoked: revoke (status list bit)
     }
 ```
 
@@ -290,7 +290,7 @@ In brief:
 **OpenAPI spec.** The single source of truth for the served surface is
 the `#[utoipa::path]` annotations + the `#[openapi(paths(...))]` list in
 `src/openapi.rs`; `docs/openapi.json` is the dumped artifact via
-`--print-registration --section=openapi` (regenerated, never hand-edited).
+`--print-registration -section=openapi` (regenerated, never hand-edited).
 The generic Shield handlers bind annotated wrappers in `src/policy_docs.rs`
 and the RFW POST-aliases bind `src/rfw_aliases.rs`.
 
@@ -348,12 +348,12 @@ open-banking grant truth; revocation emits
 
 ```mermaid
 graph LR
-    REQ["request"] --> V["verify bearer<br/>(RFC 6750 §2.2 - issuer·sig·exp·aud·token_tp)"]
-    V --> T["resolve tenant (env_id)"]
-    T --> P["Shield require_policy<br/>(live roles+scopes)"]
-    P --> RLS["set_tenant_context (tx-local)"]
-    RLS --> EXEC["handler executes"]
-    EXEC --> AUD["audit + outbox + journal"]
+    REQ["request"] -> V["verify bearer<br/>(RFC 6750 §2.2 - issuer·sig·exp·aud·token_tp)"]
+    V -> T["resolve tenant (env_id)"]
+    T -> P["Shield require_policy<br/>(live roles+scopes)"]
+    P -> RLS["set_tenant_context (tx-local)"]
+    RLS -> EXEC["handler executes"]
+    EXEC -> AUD["audit + outbox + journal"]
 ```
 
 - **Token verification** is SDK-reused by every service
@@ -382,7 +382,7 @@ graph LR
   RFC 8705 §5): middleware enforces `no-store`/`no-cache` on
   `/oauth/{token,introspect,revoke}` + `/mtls/*`.
 
-### 4.3f Token-free platform M2M (CERTFREE-1) - the certificate is the service identity
+### 4.3f Token-free platform M2M - the certificate is the service identity
 
 Platform workloads authenticate with **no token at all**: the caller presents
 its Acme-issued client certificate (`CN=m2m-{workload}`) in the TLS
@@ -433,14 +433,14 @@ path). This answers the three consumers the token previously fed:
 | Consumer | Was (token claim) | Now (map field) |
 |---|---|---|
 | Shield `RequestCtx` (scope-gated rules) | `scope` | `scopes` (roles: none - M2M workloads never had role assignments) |
-| Bus VDC-2 event-ownership gate | `vertical` | `vertical` (produce + consume identity checks) |
+| Bus event-ownership gate | `vertical` | `vertical` (produce + consume identity checks) |
 | Audit `service` stamp / Sys tenant-snapshot | `sub` (opaque hex) / `service_type` | CN directly / `service_type` |
 
 **Revocation** is the map's `enabled` flag: `vertical enroll` (or the admin
 surface) flips it, every service's cache observes it within the TTL, and the
 workload's calls are refused. This is *more immediate* than the token path
 (a minted token lives to expiry regardless). Handshake-level certificate
-revocation (a stolen cert's *validity*) remains a follow-up (CERTFREE-2).
+revocation (a stolen cert's *validity*) remains a follow-up .
 
 **Security posture:** per-call proof-of-possession (the token was a pure bearer
 at the target) and fleet-wide revocation. The multi-tenant boundary does not move:
@@ -450,22 +450,22 @@ remain the tenant gates. Two risks are ACCEPTED-AND-FILED:
 
 - **The map's write surface is authorization escalation.** Any process
   with Valkey write access can `HSET m2m:workloads` itself any scope set.
-  Countermeasure: Valkey ACLs (CERTFREE-4) - m2m:* writes
+  Countermeasure: Valkey ACLs - m2m: * writes
   restricted to the operator/enroll writer identity; services hold a
   read-only reader identity.
 - **Certificate lifetime bounds the theft window.** 30-day default mint
-  with load-path NotAfter verification and auto re-mint (CERTFREE-5),
-  alongside CERTFREE-2's CRL.
+  with load-path NotAfter verification and auto re-mint,
+  alongside's CRL.
 - Per-instance distinguishability collapses to the workload name (two
   instances share `{workload}.crt`) - accepted; audit identifies
   workloads, never instances.
 
-**Invariants (CERTFREE-1):**
+**Invariants : **
 
 - The certificate is the *only* platform-workload credential: no secret, no
   bearer, no assertion. The `m2m-` CN prefix is minted exclusively by
   Acme's guarded issuance channels (bootstrap enrollment - pinned to the
-  declared set by CERTFREE-3; self-issuance `sub == service_name`; the
+  declared set by; self-issuance `sub == service_name`; the
   enroll operator scope).
 - The TLS-injected headers are trustworthy because (a) `sentin8-tls`
   injects them only after CA verification, (b) client-supplied copies are
@@ -498,17 +498,17 @@ delegated JWT (RFC 8693); only the *workload's own* M2M JWT disappears.
 
 ```mermaid
 flowchart TD
-    A[refresh replay] --> B{denylist hit?}
-    B -- yes --> C[invalid_grant - replay detected]
-    B -- no --> D[rotate + denylist old jti]
-    E[Valkey down] --> F[denylist fail-open = false<br/>rate-limit checks skip]
-    F --> G[DB predicates backstop expiry]
-    H[webhook delivery fail] --> I[retry 30s·2^n ×5]
-    I --> J[failed_at marked]
-    K[master key wrong] --> L[boot failure - refuse to start]
-    M[Bus down] --> N[outbox rows persist<br/>5s safety poll]
-    O[Post down] --> P[post_outbox unpushed rows retried]
-    Q[signing key rotated] --> R[JWKS overlap: all keys published<br/>old tokens verify until expiry]
+    A[refresh replay] -> B{denylist hit?}
+    B - yes -> C[invalid_grant - replay detected]
+    B - no -> D[rotate + denylist old jti]
+    E[Valkey down] -> F[denylist fail-open = false<br/>rate-limit checks skip]
+    F -> G[DB predicates backstop expiry]
+    H[webhook delivery fail] -> I[retry 30s·2^n ×5]
+    I -> J[failed_at marked]
+    K[master key wrong] -> L[boot failure - refuse to start]
+    M[Bus down] -> N[outbox rows persist<br/>5s safety poll]
+    O[Post down] -> P[post_outbox unpushed rows retried]
+    Q[signing key rotated] -> R[JWKS overlap: all keys published<br/>old tokens verify until expiry]
 ```
 
 - **JWKS rotation**: insert-new-key overlap (all persisted keys published
@@ -532,14 +532,14 @@ flowchart TD
 
 ```mermaid
 graph LR
-    REQ["request tasks (axum)"] --> POOL[("capped pool (default 3)")]
-    VAL[("Valkey")] -- "codes, PAR, CIBA, denylists, rate" --> REQ
-    PP["post pusher task (10s)"] --> POST["POST /v1/send<br/>(transaction|security|marketing|system)"]
-    PO2[("auth.post_outbox")] --> PP
-    WR["webhook relay task (1s, batch 25)"] --> WO[("auth.webhook_outbox")]
-    WR --> EP["webhook endpoints"]
-    RELAY["outbox relay (shell)"] --> O[("auth.outbox")]
-    O --> RELAY
+    REQ["request tasks (axum)"] -> POOL[("capped pool (default 3)")]
+    VAL[("Valkey")] - "codes, PAR, CIBA, denylists, rate" -> REQ
+    PP["post pusher task (10s)"] -> POST["POST /v1/send<br/>(transaction|security|marketing|system)"]
+    PO2[("auth.post_outbox")] -> PP
+    WR["webhook relay task (1s, batch 25)"] -> WO[("auth.webhook_outbox")]
+    WR -> EP["webhook endpoints"]
+    RELAY["outbox relay (shell)"] -> O[("auth.outbox")]
+    O -> RELAY
 ```
 
 - Sign-in hot path: 2 PG round-trips + 3 Valkey ops (rate, lockout,
@@ -629,12 +629,12 @@ graph TD
     W["oidf_flows.rs + oidf_fapi.rs + oidf_vci.rs<br/>+ oidf_vci_haip.rs + oidf_logout.rs<br/>(wire-level mirrors of the §9a.2 profile plans<br/>- every §9a.4/§9a.14/§9a.16/§9a.19/§9a.20/<br/>§9a.22/§9a.23 surface, in-process)"]
     C["OIDF conformance rig (§9a)<br/>Basic+Config+Dynamic+Logout OP ·<br/>FAPI2+FAPI1+CIBA · OID4VCI/VP · IDA<br/>(local OIDF suite, classical mode)"]
     E["E2E - browser auth flows via BFF"]
-    U --> I1 & I2 & I3
+    U -> I1 & I2 & I3
     OG -.fails CI on any unannotated route.-> I1
-    I1 --> E
-    W --> C
-    I1 & I2 & I3 --> E
-    E --> C
+    I1 -> E
+    W -> C
+    I1 & I2 & I3 -> E
+    E -> C
     C -.gate before any certification submission.-> SUB["OIDF submission<br/>(open-source fee waiver)"]
 ```
 
@@ -643,7 +643,7 @@ graph TD
   in-service test binary. The rig is the pre-certification gate: every
   profile in §9a must be green locally before a certification submission
   is prepared.
-- **The in-process rig mirror (`tests/oidf_*.rs`, OC-30).** `sentin8-auth-oidf`
+- **The in-process rig mirror (`tests/oidf_*.rs`,).** `sentin8-auth-oidf`
   is the source of truth for WHAT the certification campaigns test; the
   Rust layer asserts every campaign-observable wire BEHAVIOR directly
   (§9a.4 discovery honesty, §9a.14 request-object mandate table, §9a.16
@@ -657,7 +657,7 @@ graph TD
 - Deliberately not covered in-service: real IdP SSO round-trips, PQ TLS
   transport (platform-level).
 
-## 9b. In-process rig mirror - the Rust coverage map (OC-30)
+## 9b. In-process rig mirror - the Rust coverage map
 
 `sentin8-auth-oidf` (the §9a.2 harness) is the truth for what the OIDF
 certification campaigns exercise; every profile plan's module families map
@@ -669,14 +669,14 @@ the ROOT behavior a suite WARNING would surface - §9a.11).
 | Profile plan (suite) | Module family / rule | Rust test layer (`tests/`) |
 |---|---|---|
 | `oidcc-basic-certification-test-plan` | prompt=none/login, max_age, scope→claims, userinfo GET/POST both, session-less authorize | `oidf_flows.rs` + `conformance.rs` (`conf_prompt_none_silent_authentication`) |
-| — (Basic, §9a.11/OC-12) | ID-token claims ride the §5.5 claims SELECTION only; `acr_values` echo; code 60s lifetime + burned-code revocation cascade | `oidf_flows.rs` |
-| — (§9a.4 honesty) | discovery ↔ behavior parity (advertised algs/methods ARE verifiable; S256-only; claims/scope families served) | `oidf_flows.rs` + `conformance.rs` (`conf_discovery_advertisement_matches_behavior`) |
+| - (Basic, §9a.11/) | ID-token claims ride the §5.5 claims SELECTION only; `acr_values` echo; code 60s lifetime + burned-code revocation cascade | `oidf_flows.rs` |
+| - (§9a.4 honesty) | discovery ↔ behavior parity (advertised algs/methods ARE verifiable; S256-only; claims/scope families served) | `oidf_flows.rs` + `conformance.rs` (`conf_discovery_advertisement_matches_behavior`) |
 | `oidcc-config-certification-test-plan` | discovery completeness block (CIBA + backchannel-logout + claims params) | `oidf_flows.rs` (`oidf_config_discovery_completeness`) |
 | `oidcc-dynamic-certification-test-plan` | RFC 7591 DCR: `invalid_redirect_uri` (fragment), `invalid_client_metadata` (bad sector), metadata persistence (id/userinfo alg, subject_type pairwise), RFC 7592 COALESCE update + delete 204; WebFinger | `oidf_flows.rs` + `conformance_profiles.rs` |
 | `oidcc-rp-initiated-logout-certification-test-plan` | state echo on registered landing; unregistered → the error PAGE (§9a.23); id_token_hint verification; no-hint fallback | `oidf_logout.rs` + `sec_auth2.rs` (`sec_auth2_logout_redirect_allowlist`) |
 | (Back-Channel Logout) | logout token shape: `events`+`sid`, no `nonce`; fan-out POST | `backchannel_logout.rs` unit tests + `oidf_logout.rs` |
-| `fapi2-security-profile-final-test-plan` (dpop/mtls cells) | PAR+DPoP pre-binding (§9a.21), jkt mismatch → `invalid_dpop_proof` (§9a.22), require-DPoP gate + cert substitute, userinfo exactly-one-proof (§9a.22), hybrid response-type rejects, JARM-wrapped vs plain-query error channels (§9a.16(h)/9a.22), FAPI response_mode=query reject (OC-23), refresh unconditional (OC-27b) | `oidf_fapi.rs` (fapi_2 profile row + `required_flags`) |
-| `fapi1-advanced-final-test-plan` | request-object mandates exp/nbf/nonce + alg-none forbidden (§9a.14), code↔jwt pairing (OC-28), permissive assertion-aud forms (alias/PAR/token/issuer array), presented-cert cnf binding (§9a.12), `s_hash` | `oidf_fapi.rs` (fapi_1_advanced) + `conformance.rs` |
+| `fapi2-security-profile-final-test-plan` (dpop/mtls cells) | PAR+DPoP pre-binding (§9a.21), jkt mismatch → `invalid_dpop_proof` (§9a.22), require-DPoP gate + cert substitute, userinfo exactly-one-proof (§9a.22), hybrid response-type rejects, JARM-wrapped vs plain-query error channels (§9a.16(h)/9a.22), FAPI response_mode=query reject, refresh unconditional (OC-27b) | `oidf_fapi.rs` (fapi_2 profile row + `required_flags`) |
+| `fapi1-advanced-final-test-plan` | request-object mandates exp/nbf/nonce + alg-none forbidden (§9a.14), code↔jwt pairing, permissive assertion-aud forms (alias/PAR/token/issuer array), presented-cert cnf binding (§9a.12), `s_hash` | `oidf_fapi.rs` (fapi_1_advanced) + `conformance.rs` |
 | `fapi2-message-signing-final-test-plan` | strict-aud (issuer-exact assertion, §9a.16(b)), PAR unsigned-push reject (§9a.16(g)), JAR freshness mandates (§9a.16(f)), PS256 accepted (§9a.16(d)), RS256 request-object reject | `oidf_fapi.rs` (fapi_2_message_signing) |
 | `fapi-ciba-id1-test-plan` (poll/ping cells) | signed request object mandatory + claim validation (CIBA §7.1 §9a.15), exactly-one-hint, poll auth_req_id single-use/expiry, binding_message enforce, ping notification contract | `oidf_fapi.rs` (fapi_ciba row) + `ciba.rs` unit tests |
 | `oid4vci-1_0-issuer-test-plan` | metadata (`credential_configurations_supported` + nonce/batch), §8.1 nonce first-proof GETDEL, unknown config/identifier errors (§7.4 shape), batch N→N, invalid proof | `oidf_vci.rs` + `oid4vci.rs` unit tests |
@@ -846,9 +846,9 @@ graph TD
         P["Sentin8:Proxy ingress<br/>*.local.sentin8.dev:443"]
         AUTH["sentin8:auth"]
     end
-    N -- "redirect_uri + bc<br/>https://localhost.emobix.co.uk:8443/test/a/{alias}/callback" --> AUTH
-    S -- "PAR / token / introspect /<br/>JWKS / DCR / bc-authorize" --> P
-    A -- "sign-in + consent via UI" --> P
+    N - "redirect_uri + bc<br/>https://localhost.emobix.co.uk:8443/test/a/{alias}/callback" -> AUTH
+    S - "PAR / token / introspect /<br/>JWKS / DCR / bc-authorize" -> P
+    A - "sign-in + consent via UI" -> P
     M --- S
 ```
 
@@ -866,7 +866,7 @@ graph TD
    into the compose build context, and the compose nginx service
    bind-mounts them over the image's self-signed paths (no image
    rebuild).
-2. **Certification environments - profile-per-env (OC-20).** Each test
+2. **Certification environments - profile-per-env .** Each test
    family runs against its OWN environment (and its own suite alias) so
    every env's security-profile row is permanent - the whole battery
    (`npm run test` / `make conformance-all`) runs the families in
@@ -1035,8 +1035,8 @@ sequenceDiagram
 
 **JAR `request_uri` (RFC 9101 §5.2.1).** When the authorize request
 carries `request_uri` (and it is NOT a PAR urn), the AS fetches the
-request-object JWT from the URI — `https` scheme only, response body
-size-capped, 10s timeout — then runs the same verification path as the
+request-object JWT from the URI - `https` scheme only, response body
+size-capped, 10s timeout - then runs the same verification path as the
 inline `request` parameter: unverified decode, `validate_jar_claims`,
 `exp` freshness (±10 min), signature against the client's registered
 `jwks`/`jwks_uri`. The fetched JWT overlays inline params identically.
@@ -1061,19 +1061,19 @@ parameters; verification is the same verifier as JAR's.
 endpoint shapes over the existing SD-JWT/KB-JWT/Status-List core, all
 issuer-hosted on auth:
 
-- `/.well-known/openid-credential-issuer` — metadata:
+- `/.well-known/openid-credential-issuer` - metadata:
   `credential_issuer`, `credential_configurations_supported` (one entry
   per credential type auth mints, each with `format`/`scope`/
   `cryptographic_binding_methods_supported`/
   `credential_signing_alg_values_supported`/`vct` and
-  `proof_types_supported.jwt` incl. `key_attestations_required` — the
+  `proof_types_supported.jwt` incl. `key_attestations_required` - the
   field rides INSIDE the jwt proof-type entry per the Final App. D
   schema), `nonce_endpoint` (§8.1), `batch_credential_issuance` (§7.3).
-- `POST /oauth/nonce` + `GET` — issuance c_nonce, TTL 300s in Valkey;
+- `POST /oauth/nonce` + `GET` - issuance c_nonce, TTL 300s in Valkey;
   the FIRST proof of a request GETDELs it (invalid/replayed nonce →
   `400 invalid_nonce` error envelope); batch members carry the same
   nonce without re-consumption.
-- `POST /oauth/credential` — issuance request (§7.2). Two configuration
+- `POST /oauth/credential` - issuance request (§7.2). Two configuration
   forms: `credential_configuration_id` (a metadata key) or the §7.2.1
   `credential_identifier` (references a credentials row previously
   issued to the caller - unknown ids reject
@@ -1114,9 +1114,9 @@ issuer-hosted on auth:
   deferred issuance. Issuer metadata is also published as signed
   metadata (`openidvci-issuer-metadata+jwt`, Accept-negotiated) and
   mirrored on the RFC 8414 alias.
-- `POST /oauth/deferred_credential` — poll a `transaction_id` →
+- `POST /oauth/deferred_credential` - poll a `transaction_id` →
   credential once minted (§10).
-- `POST /oauth/notifications` — wallet events recorded against the
+- `POST /oauth/notifications` - wallet events recorded against the
   credential record (§12.2).
 - Credential errors render the Final §7.4 JSON shape
   (`invalid_proof` / `invalid_nonce` /
@@ -1135,7 +1135,7 @@ OID4VP §5.
 **eKYC-IDA `verified_claims` (eKYC-IDA §5).** The `claims` request
 parameter (`id_token`/`userinfo` sub-objects, `essential` flags) is
 accepted at authorize and applied at the ID-token/userinfo mint as a
-claim SELECTION (never widening — a claim the consented scope did not
+claim SELECTION (never widening - a claim the consented scope did not
 grant stays absent). When the request selects `verified_claims` (or the
 user holds an active wallet credential of the matching type), the
 ID token/userinfo carries `verified_claims` built from the credentials
@@ -1228,7 +1228,7 @@ CheckAuthorizationResponseWhenResponseModeQuery cells). The standard
 family (and every non-FAPI posture) keeps `query` as its default mode -
 this is strictly the FAPI response-surface rule.
 
-**The request-object mandate set is PROFILE-DERIVED (OC-27, the one
+**The request-object mandate set is PROFILE-DERIVED (the one
 mechanism).** Every signed-push claim rule resolves from
 `FapiSecurityFlags` (src/fapi.rs `required_flags()`) - the per-posture
 mandate table - NOT from per-module call-site branches:
@@ -1238,7 +1238,7 @@ mandate table - NOT from per-module call-site branches:
 | `standard` | optional | optional | scope-gated | allowed | RFC 9101 plain form |
 | `fapi_1_advanced` | REQUIRED | REQUIRED | REQUIRED (openid scope) | forbidden | Part2 §5.2.2-1/13/17 + Baseline §5.2.2.2 |
 | `fapi_2` | REQUIRED | REQUIRED | scope-gated | forbidden | PARS+DPoP posture |
-| `fapi_2_message_signing` | REQUIRED | REQUIRED | scope-gated | forbidden | OC-18 freshness binding |
+| `fapi_2_message_signing` | REQUIRED | REQUIRED | scope-gated | forbidden | freshness binding |
 | `fapi_ciba` | (CIBA §7.1 validator owns the object rules - separate path) | | | forbidden there | §9a.15 |
 | `vci`/`vci_haip` | optional | optional | scope-gated | allowed | wallet-initiated unsigned objects |
 
@@ -1281,7 +1281,7 @@ the grant at bc-authorize and the poll must present the SAME cert
 The full `fapi2-message-signing` plan is GREEN (2026-10-25, run14:
 111 module-instances across both cells = 97 PASSED / 10 REVIEW
 by-design screenshot confirms / 3 SKIP-SANCTIONED RS256-negatives
-(ES256-clients) / 1 FAIL-SANCTIONED multi-DPoP JVM collapse (HAIP-3);
+(ES256-clients) / 1 FAIL-SANCTIONED multi-DPoP JVM collapse;
 zero warnings): (a) the plan's "request
 signing" (`fapi_request_method=signed_non_repudiation`) is the SIGNED
 REQUEST OBJECT (JAR), NOT RFC 9421 HTTP signatures -
@@ -1314,7 +1314,7 @@ story and the claims stay optional); the freshness windows mirror the
 exp slack - a `nbf`/`iat` more than 60s in the future, or a stale
 `nbf` more than 10 minutes in the past, rejects; (g) the PAR push
 under the MS posture MUST carry a signed request object - an
-unsigned/no-object push rejects `400 invalid_request` (PAR-2.3's
+unsigned/no-object push rejects `400 invalid_request` (.3's
 error code; the by-value/authorize form uses `invalid_request_object`);
 (h) the error-redirect CHANNEL follows the module family's owning
 suite check class, not the object's `response_mode` claim: the
@@ -1497,8 +1497,8 @@ cell - the fapi2-security spec owns them.
   preference is the seam; the OID4VCI App. D attestation verify accepts
   software-key attestations today (x5c self-consistency); trust
   anchoring beyond that is an issuer policy.
-- Handshake-level certificate revocation (CERTFREE-2) and Valkey ACLs
-  (CERTFREE-4) are platform-level follow-ups owned outside this service.
+- Handshake-level certificate revocation and Valkey ACLs
+   are platform-level follow-ups owned outside this service.
 - Multi-region active-active issuer deployment is a non-goal until
   multi-region exists; the JWKS overlap-rotation design is region-safe.
 - SCIM `/Bulk` is live (RFC 7644 §3.7): a thin wrapper over the per-user
@@ -1544,7 +1544,7 @@ rig-minted issuance leaf on the issuer's ES256 key - HAIP 6.1.1
 no-self-signed), the published wallet `client.jwks` (public-only - the
 plan's EnsureJwksHasNoPrivateOrSymmetricKeyMaterial), and the
 `client_attestation` block (`issuer` + `trust_anchor` +
-`attester_jwks` private keys mirroring the ATCA-07 registration).
+`attester_jwks` private keys mirroring the registration).
 
 
 ### 9a.21 DPoP sender-constraint journey - PAR lifecycle & the jkt chain
@@ -1595,7 +1595,7 @@ as unbound, never as a bound-but-empty value.
 
 **Token exchange (RFC 9449 §10.1):** when the code record carries a
 `dpop_jkt`, the live proof's thumbprint MUST equal it - mismatch
-answers `400 invalid_dpop_proof` (DPOP-10.1). A proof from an
+answers `400 invalid_dpop_proof` (.1). A proof from an
 UNBOUND key on an unbound record mints a token bound to the live
 proof's key (`token_type: DPoP` either way). The pre-bound value wins
 over the live proof for the minted `cnf.jkt` (the request's key
@@ -1727,7 +1727,7 @@ inline JSON body:
   (userinfo) carrying MORE THAN ONE `DPoP` header rejects `400
   invalid_request` ('multiple DPoP proofs') - the suite's
   dpop-negative cell ('Try with more than one DPoP in the header',
-  EnsureHttpStatusCodeIs400or401/DPOP-7.1; the 200-on-duplicate was the
+  EnsureHttpStatusCodeIs400or401/.1; the 200-on-duplicate was the
   live-found gap); (b) a proof REMOVED from a bound request rejects
   401 (the sender constraint still applies); (c) `ath` bound to the
   access token (the proof must carry the token's hash).
@@ -1735,7 +1735,7 @@ inline JSON body:
   `require_dpop=true` (the FAPI2-SP/sender-constrain=dpop posture), a
   token-exchange WITHOUT a live DPoP proof AND without a pre-bound
   code-record `dpop_jkt` cannot satisfy the sender-constraint: it
-  rejects `400 invalid_dpop_proof` (DPOP-10.1: sender-constrained
+  rejects `400 invalid_dpop_proof` (.1: sender-constrained
   authorization requires proof of possession). The mTLS-presented
   certificate IS the sender constraint (RFC 8705 §3): when the token
   exchange presents a client certificate (the proxy's thumbprint
@@ -1837,14 +1837,14 @@ sequenceDiagram
 Every mint path that produces a token a DOWNSTREAM service must verify
 through the tenant-plane filtered JWKS (§9a.9) resolves the target
 tenant's `signing_alg` and signs with `sign_value_alg(claims, family)`
-— including `POST /delegate/access-token` (the delegated token's env is
+ -  including `POST /delegate/access-token` (the delegated token's env is
 `req.env_id`, normally a NON-system target env) and the
 session-cluster data-plane projections (`/v1/session/...` service
 tokens + `delegated_from_publisher`). The family-blind
 `SigningKeys::sign()` (process-active key) is reserved for tokens that
 never cross a tenant-plane JWKS boundary. Rationale: the JWKS endpoint
 publishes ONLY the verifier's resolved family (`from_keys_family`),
-so a token signed by the other family — even with a valid signature —
+so a token signed by the other family - even with a valid signature  - 
 is unverifiable for every resource server the tenant-plane lookup
 serves (`key {kid} not found in JWKS` → 401). The delegated token's
 `aud` is the target resource indicator and its `env_id` is the target
@@ -1877,7 +1877,7 @@ when `platform_claims` holds (system-env token OR non-FAPI caller
 profile). A delegated token's `env_id` is the TARGET tenant env, so a
 Shield role resolver's resolution (the mechanism `evaluate_full` uses
 to build `ctx.scopes`) received `roles: None, scopes: []` under a FAPI
-profile — the empty live set OVERWROTE the verified JWT scope seed and
+profile - the empty live set OVERWROTE the verified JWT scope seed and
 the scope-mirror fail-closed every delegated mutation (the 2026-10-28
 e2e invitation 403). The projection also rides when the CALLER is a
 certificate identity: the TLS-injected `m2m-*` subject + non-empty

@@ -68,7 +68,7 @@ impl FapiProfile {
 
 /// The required security flags for a FAPI profile.
 
-/// OC-27: the RELAXED flag set for the non-FAPI postures (standard, vci,
+/// the RELAXED flag set for the non-FAPI postures (standard, vci,
 /// vci_haip - RFC 9101's plain form): exp/nbf optional, the unsigned
 /// object form allowed. `FapiProfile::from_str(..).map(required_flags)`
 /// unwraps to a FAPI posture; non-FAPI postures use this default.
@@ -105,18 +105,18 @@ pub struct FapiSecurityFlags {
     pub require_jar: bool,
     /// The require JWT introspection.
     pub require_jwt_introspection: bool,
-    /// OC-27 (DESIGN 9a.14 mandate table): a SIGNED push MUST carry `exp`
+    /// (DESIGN 9a.14 mandate table): a SIGNED push MUST carry `exp`
     /// (FAPI1-ADV Part2 §5.2.2-13 / the f2m freshness binding).
     pub require_jar_exp: bool,
-    /// OC-27: a SIGNED push MUST carry `nbf` (Part2 §5.2.2-17).
+    /// a SIGNED push MUST carry `nbf` (Part2 §5.2.2-17).
     pub require_jar_nbf: bool,
-    /// OC-27: the object scope carrying `openid` makes `nonce` mandatory
+    /// the object scope carrying `openid` makes `nonce` mandatory
     /// (Baseline §5.2.2.2 - nonce required for ALL openid flows).
     pub require_jar_nonce: bool,
-    /// OC-27: an UNSIGNED (alg=none) request object rejects (the
+    /// an UNSIGNED (alg=none) request object rejects (the
     /// signed-only postures: Part2 §5.2.2-1).
     pub forbid_jar_alg_none: bool,
-    /// OC-28 (FAPI1-ADV 5.2.2-2): response_type=code REQUIRES
+    /// (FAPI1-ADV 5.2.2-2): response_type=code REQUIRES
     /// response_mode=jwt (the object's own claim, else the outer
     /// request's explicit mode) - the code||jwt pairing rule.
     pub require_code_jarm_pairing: bool,
@@ -137,14 +137,14 @@ impl FapiProfile {
                 require_iss: true,
                 require_jar: true,
                 require_jwt_introspection: false,
-                // OC-27: Part2 §5.2.2-1/13/17 + Baseline §5.2.2.2 - the
+                // Part2 §5.2.2-1/13/17 + Baseline §5.2.2.2 - the
                 // signed push carries exp+nbf, nonce rides openid scope,
                 // and the object is signed (alg none forbidden).
                 require_jar_exp: true,
                 require_jar_nbf: true,
                 require_jar_nonce: true,
                 forbid_jar_alg_none: true,
-                // OC-28: 5.2.2-2 - `code` rides response_mode=jwt ONLY
+                // 5.2.2-2 - `code` rides response_mode=jwt ONLY
                 // (JARM or the detached-signature hybrid; our plan runs
                 // JARM).
                 require_code_jarm_pairing: true,
@@ -158,7 +158,7 @@ impl FapiProfile {
                 require_iss: true,
                 require_jar: false, // PAR covers request object in FAPI 2.0
                 require_jwt_introspection: false,
-                // OC-27: the DPoP posture pins signed pushes (exp+nbf).
+                // the DPoP posture pins signed pushes (exp+nbf).
                 // NONCE: NOT required under FAPI 2.0 - the suite's
                 // FAPI2SPFinalEnsureAuthorizationRequestWithoutNonceSuccess
                 // runs SUCCESS ('nonce is an optional parameter for
@@ -168,7 +168,7 @@ impl FapiProfile {
                 require_jar_nbf: true,
                 require_jar_nonce: false,
                 forbid_jar_alg_none: true,
-                // OC-28: require_jarm covers the pairing strictly more -
+                // require_jarm covers the pairing strictly more -
                 // every Fapi20 response IS jwt; the flag stays false.
                 require_code_jarm_pairing: false,
             },
@@ -181,7 +181,7 @@ impl FapiProfile {
                 require_iss: true,
                 require_jar: false,
                 require_jwt_introspection: true,
-                // OC-27: identical push mandates to Fapi20 (the f2m
+                // identical push mandates to Fapi20 (the f2m
                 // posture ADDS signed introspection; the object rules are
                 // the same posture family) - including the NO-nonce rule
                 // (FAPI 2.0 keeps nonce optional for code flow).

@@ -212,7 +212,7 @@ async fn oidf_logout_bad_or_modified_id_token_hint_refused() {
 
 /// The BC-logout TOKEN contract (the logout token shape the fan-out
 /// delivers): typ logout+jwt, `events` member names the backchannel-logout
-/// event URI, `sid` rides, NO `nonce` — the spec's REJECT rule for RPs.
+/// event URI, `sid` rides, NO `nonce` - the spec's REJECT rule for RPs.
 /// Served surface: /oauth/backchannel-logout requires the platform
 /// admin gate (the fan-out is an OPERATOR-triggered surface, not an
 /// anonymous one) - assert the 401 uniform shape (§8) + the token SHAPE

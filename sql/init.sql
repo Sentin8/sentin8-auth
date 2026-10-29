@@ -638,13 +638,13 @@ CREATE TABLE IF NOT EXISTS auth.m2m_dcr_credentials (
 CREATE TABLE IF NOT EXISTS auth.m2m_scope_grants (
     service_name    TEXT PRIMARY KEY,
     allowed_scopes  TEXT[] NOT NULL DEFAULT '{}',
-    -- VDC-2 (design/sentin8-vertical-data-plane-contract.md §VDC.4): the
+    -- (design/sentin8-vertical-data-plane-contract.md §VDC.4): the
     -- vertical this workload belongs to - stamped by `vertical enroll` from
     -- the registry's `vertical` field. Auth embeds it as the M2M token's
     -- `vertical` claim; Bus rejects produce when the event_type's first
     -- colon segment disagrees (event ownership gate).
     vertical        TEXT NOT NULL DEFAULT 'sentin8',
-    -- VDC-4 (§VDC.5): the service_type the workload performs work FOR
+    -- (§VDC.5): the service_type the workload performs work FOR
     -- (workload names are inconsistent - `bank8-ledger-bus` vs
     -- `ledger-audit` - so the registry must stamp the explicit mapping).
     -- Sys's tenant-snapshot API resolves the caller's service through this
@@ -2668,7 +2668,7 @@ CREATE TABLE IF NOT EXISTS auth.outbox (
     relayed         BOOLEAN NOT NULL DEFAULT false,
     relayed_at      TIMESTAMPTZ,
     relay_attempts  INT NOT NULL DEFAULT 0,
-    -- WARN-5 (bus DESIGN §4.3, SDK outbox DDL): the retryable-failure
+    -- (bus DESIGN §4.3, SDK outbox DDL): the retryable-failure
     -- backoff column - a 429/5xx/transport failure parks the row until
     -- this timestamp; the drain predicate skips future rows so a burst
     -- backlog drains at the rate limit instead of burning the retry
@@ -2768,7 +2768,7 @@ CREATE POLICY post_outbox_dml ON auth.post_outbox
 -- seeds per-service USAGE; the service declares it here).
 GRANT USAGE ON SCHEMA auth TO sentin8_auth_service;
 GRANT SELECT, INSERT, UPDATE, DELETE ON auth.outbox TO sentin8_auth_service;
--- GRANT-2: DCR gate table (read by the DCR endpoint on the pool role),
+-- DCR gate table (read by the DCR endpoint on the pool role),
 -- the secondary auth-domain read surfaces, and the local audit journal.
 GRANT SELECT ON auth.m2m_scope_grants TO sentin8_auth_service;
 GRANT SELECT, INSERT, UPDATE, DELETE ON

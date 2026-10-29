@@ -74,7 +74,7 @@ impl AuthConfig {
                     sentin8::config::Sentin8Config::default_database_url().to_string()
                 })
             }),
-            // VALKEYDERIVE-1 (group DESIGN.md §3.1): explicit env override,
+            // (group DESIGN.md §3.1): explicit env override,
             // else the plane-derived URL - the historical `/1` DB number was
             // inert (GLIDE connects at DB 0; ACLs are the isolation).
             valkey_url: env::var("SENTIN8_AUTH_VALKEY_URL")
@@ -124,7 +124,7 @@ impl AuthConfig {
             issuer: "https://auth.test.local.sentin8.dev".to_string(),
             jwks_url: "https://auth.test.local.sentin8.dev/.well-known/jwks.json".to_string(),
             database_url,
-            // VALKEYDERIVE-1: override → else the plane-derived URL.
+            // override → else the plane-derived URL.
             valkey_url: env::var("SENTIN8_AUTH_VALKEY_URL")
                 .ok()
                 .filter(|s| !s.trim().is_empty())

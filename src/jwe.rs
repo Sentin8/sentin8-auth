@@ -13,7 +13,7 @@
 //!
 //! - key agreement `ECDH-ES` (§4.6): the wallet's P-256 `jwk` epk, the
 //!   issuer's ephemeral `epk` in the JWE header, `apu`/`apv` exchange
-//!   headers, ConcatKDF with `alg=A256KW..-` ASCII party descriptors —
+//!   headers, ConcatKDF with `alg=A256KW..-` ASCII party descriptors  - 
 //!   produced CEK length = 32 octets (`A256GCM`).
 //! - content encryption `A256GCM` (§5.2): 96-bit IV, AAD = the ASCII
 //!   JWE Protected Header, 128-bit tag.

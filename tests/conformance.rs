@@ -35,7 +35,7 @@ async fn spawn_server() -> Option<(axum::Router, PgPool)> {
     // Load the repo .env so DATABASE_URL (superuser fixture DSN) applies -
     // session-token lookups (`Session::find_by_token`) run before any tenant
     // context exists and are denied by sessions RLS under a
-    // NOBYPASSRLS service role (see AUTH-RLS-1 in the auth backlog).
+    // NOBYPASSRLS service role.
     let _ = dotenvy::dotenv();
     let config = TestConfig::for_testing();
     let pool = match sqlx::PgPool::connect(&config.database_url).await {

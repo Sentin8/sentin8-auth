@@ -13,7 +13,7 @@
 //! - **Basic OP** (`oidcc-*` modules): prompt/none/login + max_age,
 //!   scope→claim families, userinfo GET/POST both, §5.5 claims-selection
 //!   narrow-only rule, `acr_values` echo, the 60s code lifetime + the
-//!   burned-code revocation cascade (OC-12).
+//! burned-code revocation cascade .
 //! - **Config OP**: discovery COMPLETENESS (the §9a.4 required-when-
 //!   supported members - CIBA, backchannel-logout, claims params).
 //! - **Dynamic OP** (RFC 7591/7592): registration error shapes
@@ -42,7 +42,7 @@ use oidf::{
 /// The Basic-OP happy flow rides the FULL code path: authorize (session)
 /// → code → token (code + verifier) → id_token carries nonce + sub. The
 /// suite's `oidcc-server` asserts this end-to-end; the mirror keeps the
-/// exchange contract green in-process (OC-12's regression lock).
+/// exchange contract green in-process ('s regression lock).
 #[tokio::test]
 async fn oidf_basic_happy_flow_issues_code_and_id_token_with_nonce() {
     let Some((app, pool)) = oidf::spawn_server().await else {
@@ -270,7 +270,7 @@ async fn oidf_userinfo_serves_scoped_claims_via_get_and_post() {
 
 /// The §5.5 claims request narrows but NEVER widens: an `email` selection
 /// without the `email` scope keeps email absent; with the scope granted,
-/// the selection delivers it (the oidcc-claims-essential cell + OC-12 #3).
+/// the selection delivers it (the oidcc-claims-essential cell + #3).
 #[tokio::test]
 async fn oidf_claims_request_selection_narrows_never_widens() {
     let Some((app, pool)) = oidf::spawn_server().await else {
@@ -354,7 +354,7 @@ async fn oidf_claims_request_selection_narrows_never_widens() {
     assert_eq!(json["error"], "invalid_request", "the OAuth error shape");
 }
 
-/// OC-12 #4 - `acr_values` rides the code record and echoes as the `acr`
+/// #4 - `acr_values` rides the code record and echoes as the `acr`
 /// claim on the minted ID token (the oidcc-ensure-request-with-acr-values
 /// cell); the claim's VALUE is the first requested level.
 #[tokio::test]
@@ -422,12 +422,12 @@ async fn oidf_acr_values_echo_as_acr_claim() {
                 .as_str()
                 .map(|s| !s.is_empty())
                 .unwrap_or(false),
-            "the requested acr level echoes as the acr claim (OC-12 #4): {claims}"
+ "the requested acr level echoes as the acr claim ( #4): {claims}"
         );
     }
 }
 
-/// OC-12 #5 + §9a.22 revocation cascade - a BURNED code's replay revokes
+/// #5 + §9a.22 revocation cascade - a BURNED code's replay revokes
 /// the FIRST grant: the first exchange's access token stops authorizing
 /// resources after the replay attempt (the suite's codereuse family
 /// pairs this with the userinfo 4xx check).
@@ -465,7 +465,7 @@ async fn oidf_code_replay_revokes_grant_and_tokens_go_inactive() {
 
 /// The Config-OP plan = the discovery-COMPLETENESS family: the fields
 /// required-when-supported are present and self-consistent on the
-/// `standard` posture (OC-1; §9a.4).
+/// `standard` posture (§9a.4).
 #[tokio::test]
 async fn oidf_config_discovery_completeness() {
     let Some((app, pool)) = oidf::spawn_server().await else {
