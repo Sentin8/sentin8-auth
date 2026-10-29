@@ -626,11 +626,14 @@ graph TD
     OG["openapi_drift.rs (2)<br/>router ↔ spec drift guard<br/>(OAPEC §3, both directions)"]
     I2["conformance.rs (11)<br/>PAR single-use, rotation replay,<br/>DPoP/PKCE replay, CSRF"]
     I3["conformance_profiles + sec_auth2 +<br/>publisher_exchange (20)<br/>profile overrides, forged tokens,<br/>act chains"]
+    W["oidf_flows.rs + oidf_fapi.rs + oidf_vci.rs<br/>+ oidf_vci_haip.rs + oidf_logout.rs<br/>(wire-level mirrors of the §9a.2 profile plans<br/>- every §9a.4/§9a.14/§9a.16/§9a.19/§9a.20/<br/>§9a.22/§9a.23 surface, in-process)"]
     C["OIDF conformance rig (§9a)<br/>Basic+Config+Dynamic+Logout OP ·<br/>FAPI2+FAPI1+CIBA · OID4VCI/VP · IDA<br/>(local OIDF suite, classical mode)"]
     E["E2E - browser auth flows via BFF"]
     U --> I1 & I2 & I3
     OG -.fails CI on any unannotated route.-> I1
     I1 --> E
+    W --> C
+    I1 & I2 & I3 --> E
     E --> C
     C -.gate before any certification submission.-> SUB["OIDF submission<br/>(open-source fee waiver)"]
 ```
@@ -640,8 +643,54 @@ graph TD
   in-service test binary. The rig is the pre-certification gate: every
   profile in §9a must be green locally before a certification submission
   is prepared.
+- **The in-process rig mirror (`tests/oidf_*.rs`, OC-30).** `sentin8-auth-oidf`
+  is the source of truth for WHAT the certification campaigns test; the
+  Rust layer asserts every campaign-observable wire BEHAVIOR directly
+  (§9a.4 discovery honesty, §9a.14 request-object mandate table, §9a.16
+  message-signing posture, §9a.19 attestation auth, §9a.22 reject
+  channels, §9a.23 logout error surface) WITHOUT the suite, the rig, or a
+  browser - in-process on the same router the fleet boots. The rig run
+  remains the certification gate; the mirror keeps every campaign-covered
+  behavior regression-green in seconds (a rig run takes ~3.5h; the mirror
+  is `cargo test`) so a wire change that would fail the rig fails CI
+  FIRST. The mapping from rig modules → mirror tests is §9b.
 - Deliberately not covered in-service: real IdP SSO round-trips, PQ TLS
   transport (platform-level).
+
+## 9b. In-process rig mirror - the Rust coverage map (OC-30)
+
+`sentin8-auth-oidf` (the §9a.2 harness) is the truth for what the OIDF
+certification campaigns exercise; every profile plan's module families map
+to the in-process tests below. Campaign rules carried into Rust:
+**no-skip** (every capability the discovery document advertises must
+behave - §9a.10) and **warning-zero** semantics (each assertion asserts
+the ROOT behavior a suite WARNING would surface - §9a.11).
+
+| Profile plan (suite) | Module family / rule | Rust test layer (`tests/`) |
+|---|---|---|
+| `oidcc-basic-certification-test-plan` | prompt=none/login, max_age, scope→claims, userinfo GET/POST both, session-less authorize | `oidf_flows.rs` + `conformance.rs` (`conf_prompt_none_silent_authentication`) |
+| — (Basic, §9a.11/OC-12) | ID-token claims ride the §5.5 claims SELECTION only; `acr_values` echo; code 60s lifetime + burned-code revocation cascade | `oidf_flows.rs` |
+| — (§9a.4 honesty) | discovery ↔ behavior parity (advertised algs/methods ARE verifiable; S256-only; claims/scope families served) | `oidf_flows.rs` + `conformance.rs` (`conf_discovery_advertisement_matches_behavior`) |
+| `oidcc-config-certification-test-plan` | discovery completeness block (CIBA + backchannel-logout + claims params) | `oidf_flows.rs` (`oidf_config_discovery_completeness`) |
+| `oidcc-dynamic-certification-test-plan` | RFC 7591 DCR: `invalid_redirect_uri` (fragment), `invalid_client_metadata` (bad sector), metadata persistence (id/userinfo alg, subject_type pairwise), RFC 7592 COALESCE update + delete 204; WebFinger | `oidf_flows.rs` + `conformance_profiles.rs` |
+| `oidcc-rp-initiated-logout-certification-test-plan` | state echo on registered landing; unregistered → the error PAGE (§9a.23); id_token_hint verification; no-hint fallback | `oidf_logout.rs` + `sec_auth2.rs` (`sec_auth2_logout_redirect_allowlist`) |
+| (Back-Channel Logout) | logout token shape: `events`+`sid`, no `nonce`; fan-out POST | `backchannel_logout.rs` unit tests + `oidf_logout.rs` |
+| `fapi2-security-profile-final-test-plan` (dpop/mtls cells) | PAR+DPoP pre-binding (§9a.21), jkt mismatch → `invalid_dpop_proof` (§9a.22), require-DPoP gate + cert substitute, userinfo exactly-one-proof (§9a.22), hybrid response-type rejects, JARM-wrapped vs plain-query error channels (§9a.16(h)/9a.22), FAPI response_mode=query reject (OC-23), refresh unconditional (OC-27b) | `oidf_fapi.rs` (fapi_2 profile row + `required_flags`) |
+| `fapi1-advanced-final-test-plan` | request-object mandates exp/nbf/nonce + alg-none forbidden (§9a.14), code↔jwt pairing (OC-28), permissive assertion-aud forms (alias/PAR/token/issuer array), presented-cert cnf binding (§9a.12), `s_hash` | `oidf_fapi.rs` (fapi_1_advanced) + `conformance.rs` |
+| `fapi2-message-signing-final-test-plan` | strict-aud (issuer-exact assertion, §9a.16(b)), PAR unsigned-push reject (§9a.16(g)), JAR freshness mandates (§9a.16(f)), PS256 accepted (§9a.16(d)), RS256 request-object reject | `oidf_fapi.rs` (fapi_2_message_signing) |
+| `fapi-ciba-id1-test-plan` (poll/ping cells) | signed request object mandatory + claim validation (CIBA §7.1 §9a.15), exactly-one-hint, poll auth_req_id single-use/expiry, binding_message enforce, ping notification contract | `oidf_fapi.rs` (fapi_ciba row) + `ciba.rs` unit tests |
+| `oid4vci-1_0-issuer-test-plan` | metadata (`credential_configurations_supported` + nonce/batch), §8.1 nonce first-proof GETDEL, unknown config/identifier errors (§7.4 shape), batch N→N, invalid proof | `oidf_vci.rs` + `oid4vci.rs` unit tests |
+| `oid4vci-1_0-issuer-haip-test-plan` | `OAuth-Client-Attestation`(+PoP) auth: trust-anchor pin, iss/sub/expiry checks, PoP jti replay, discovery attestation advertisement (§9a.19), credential-response ECDH-ES encryption | `oidf_vci_haip.rs` + `client_attestation.rs`/`jwe.rs` unit tests |
+| `oid4vci-1_0-wallet-test-plan` | credential-offer landing → authorize redirect state echo (`VCIVerifyIssuerStateInAuthorizationRequest`, §9a.20) | `oidf_vci.rs` |
+| Cross-plan | the alias-serialization/no-state-change rules and suite-driver specifics stay HARNESS-ONLY (fixtures/runner.ts) - not server behavior. | (deliberately not mirrored) |
+
+Deliberate suite-side sanctions the mirror does NOT reproduce (client /
+rig artifacts, not server behavior - the rig spec files document them):
+ES256-client RS256-negative SKIPPED cells, the multi-DPoP JVM header
+collapse, the HAIP refresh-token untestable skip, and the two-visit/review
+screenshot placeholder mechanics. The SERVER-side negative each of those
+hides IS mirrored (`ensure_signed_request_object_*`, userinfo
+multiple-DPoP 400, FAPI unconditional refresh).
 
 ## 10. Route Inventory (protocol-family grouped, spec-anchored)
 

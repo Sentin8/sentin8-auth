@@ -259,6 +259,11 @@ Invariants (full numbered list in `DESIGN.md` §8):
   `sd_hash`; status lists are fetched and enforced (revocation, Status
   List draft); QES signature ceremonies are delegated to the bank8
   integration (endpoint returns NOT IMPLEMENTED until then).
+- **The in-process OIDF rig mirror.** `tests/oidf_*.rs` re-asserts every
+  wire behavior the `sentin8-auth-oidf` certification campaigns exercise
+  (`oidcc-*` / `fapi*` / `oid4vci-*` module families) in-process - the
+  profile rows, the mandate tables, and the reject channels - so a
+  campaign regression fails `cargo test` first (DESIGN §9b).
 
 ## 7. Unresolved Questions / Future Designs
 

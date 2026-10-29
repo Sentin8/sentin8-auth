@@ -75,16 +75,23 @@ pub struct ClientResult {
 
 /// Logout token JWT claims (per OIDC Back-Channel Logout ).
 #[derive(Debug, Serialize)]
-struct LogoutTokenClaims {
-    iss: String,
-    aud: String,
-    iat: i64,
-    jti: String,
-    events: serde_json::Value,
+pub struct LogoutTokenClaims {
+    /// The issuer identifier (this OP).
+    pub iss: String,
+    /// The audience (the client being logged out).
+    pub aud: String,
+    /// Issued-at (unix seconds).
+    pub iat: i64,
+    /// Unique token identifier (the RP's replay key).
+    pub jti: String,
+    /// The `events` member - names the backchannel-logout event URI.
+    pub events: serde_json::Value,
+    /// The logged-out subject (optional when only `sid` is delivered).
     #[serde(skip_serializing_if = "Option::is_none")]
-    sub: Option<String>,
+    pub sub: Option<String>,
+    /// The session identifier (optional).
     #[serde(skip_serializing_if = "Option::is_none")]
-    sid: Option<String>,
+    pub sid: Option<String>,
 }
 
 /// Issue a logout token JWT signed with Auth's RSA key.

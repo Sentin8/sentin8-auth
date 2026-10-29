@@ -129,3 +129,24 @@ pub use handlers::AppState;
 pub use jwks::SigningKeys;
 /// Test re-export: router builder.
 pub use server::build_router;
+
+// ── Test-contract helpers (the in-process OIDF rig mirror uses the same
+// primitives the wire handlers run; DESIGN §9b) ────────────────────────
+
+/// The OIDC Back-Channel Logout token claims (the fan-out token's wire
+/// shape) - re-exported so the mirror asserts the EXACT struct the
+/// delivery signs.
+#[doc(hidden)]
+pub use backchannel_logout::LogoutTokenClaims;
+
+/// The PKCE S256 challenge for a verifier (RFC 7636 §4.2) - the exact
+/// function `oauth.rs` verifies code exchanges with. Test mirror of the
+/// wire helper so challenges in tests always match the server's
+/// computation.
+#[must_use]
+pub fn pkce_s256_challenge_for_tests(verifier: &str) -> String {
+    use base64::Engine as _;
+    use sha2::Digest as _;
+    base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .encode(sha2::Sha256::digest(verifier.as_bytes()))
+}
