@@ -6198,7 +6198,7 @@ async fn handle_client_credentials(
         Duration::seconds(state.config.m2m_token_ttl_secs as i64),
     );
 
-    ///(design/sentin8-vertical-data-plane-contract.md §VDC.4/§VDC.5):
+    // (design/sentin8-vertical-data-plane-contract.md §VDC.4/§VDC.5):
     // stamp the workload's vertical + owning service claims from the DCR
     // grant row (keyed by the registered client_name - the workload name).
     // Bus's event-ownership gate checks `vertical` on produce; Sys's

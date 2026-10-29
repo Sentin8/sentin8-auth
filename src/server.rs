@@ -643,6 +643,23 @@ pub fn build_router(state: AppState) -> Router {
             tower_http::services::ServeFile::new(format!("{ui_dir}/index.html")),
         ));
 
+    // Boot-time UI-bundle check (the 2026-10-29 post-reset /device 404
+    // class): the served Flutter bundle is a BUILD ARTIFACT of the
+    // `sentin8-auth-ui` repo (`flutter build web`); a `make clean` there
+    // removes it while the fleet keeps running. A missing bundle turns
+    // every UI page into a 404 device-flow/authorize failure, which e2e
+    // surfaces as global-setup death before any test runs. Fail LOUD at
+    // boot (one error, the exact fix command) instead of failing every
+    // request silently.
+    if !std::path::Path::new(&ui_dir).join("index.html").is_file() {
+        tracing::error!(
+            ui_dir = %ui_dir,
+            "auth: SENTIN8_AUTH_UI_DIR has no index.html - every auth UI page \
+             (sign-in, device approval) will 404. Run: make build (in \
+             sentin8-auth-ui), then restart sentin8:auth"
+        );
+    }
+
     let app = app.with_state(state.clone());
 
     // ── OpenAPI spec ────────────────────────────────────────────────
