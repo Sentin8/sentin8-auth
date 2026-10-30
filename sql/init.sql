@@ -2470,9 +2470,9 @@ VALUES (
         -- Sentin8:Dash: operators can create orgs and envs
         'sentin8:dash:org:create', 'sentin8:dash:env:create',
         -- Sentin8:Dash bootstrap read: the home render needs the operator's
-        // org/env census BEFORE any org exists (the dash bootstrap 403
-        // retry-loop class - deny here strands every fresh operator on the
-        // sign-in page). The scope-mirror's sys:read rule admits it.
+        -- org/env census BEFORE any org exists (the dash bootstrap 403
+        -- retry-loop class - deny here strands every fresh operator on the
+        -- sign-in page). The scope-mirror's sys:read rule admits it.
         'sentin8:sys:view',
         -- Sentin8:App: browse store + read instances
         'sentin8:app:store:read', 'sentin8:app:instances:read',
