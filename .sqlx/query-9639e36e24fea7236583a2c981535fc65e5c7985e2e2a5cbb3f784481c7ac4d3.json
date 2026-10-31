@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "INSERT INTO sessions\n                 (user_id, env_id, token_id, refresh_token, status, expires_at)\n               VALUES ($1, $2, $3, $4, 'active', $5)\n               RETURNING\n                 id, user_id, env_id, token_id,\n                 refresh_token, status, expires_at, created_at, updated_at",
+  "query": "INSERT INTO sessions\n                 (user_id, env_id, token_id, refresh_token, status, expires_at)\n               VALUES ($1, $2, $3, $4, $5, $6)\n               RETURNING\n                 id, user_id, env_id, token_id,\n                 refresh_token, status, expires_at, created_at, updated_at",
   "describe": {
     "columns": [
       {
@@ -55,6 +55,7 @@
         "Uuid",
         "Text",
         "Text",
+        "Text",
         "Timestamptz"
       ]
     },
@@ -70,5 +71,5 @@
       false
     ]
   },
-  "hash": "35cc1a76d0b80e69fcd6e2255711d339e9f40fb67717371856ccf7f4e7df868b"
+  "hash": "9639e36e24fea7236583a2c981535fc65e5c7985e2e2a5cbb3f784481c7ac4d3"
 }

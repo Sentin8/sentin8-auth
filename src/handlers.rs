@@ -218,9 +218,16 @@ pub async fn sign_in(
     //reset the failed-attempt counter on success.
     let _ = crate::bot_protection::reset_failed_signins(&state, user.id).await;
 
-    // Create a session. run inside a transaction with the
-    // tenant context on the same connection (RLS insert under the app role).
+    // Create a session. For a TOTP-enrolled user the row lands as
+    // status='pending_mfa' (DESIGN §3 "Session pending-MFA contract"):
+    // the token id the client holds is a capability to COMPLETE the MFA
+    // challenge, never a valid session - every session-authenticated
+    // surface rejects it until /v1/mfa/verify flips it to 'active'.
+    // Runs inside a transaction with the tenant context on the same
+    // connection (RLS insert under the app role).
     let token_id = Uuid::new_v4().to_string();
+    let mfa_factor = crate::mfa::user_requires_mfa(&state.pool, user.id).await;
+    let initial_status = if mfa_factor.is_some() { "pending_mfa" } else { "active" };
     let mut session_tx = state
         .pool
         .begin()
@@ -230,13 +237,14 @@ pub async fn sign_in(
         .bind(user.env_id)
         .execute(&mut *session_tx)
         .await;
-    let session = Session::create(
+    let session = Session::create_with_status(
         &mut *session_tx,
         user.id,
         user.env_id,
         &token_id,
         None,
         Duration::seconds(state.config.session_ttl_secs as i64),
+        initial_status,
     )
     .await
     .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
@@ -247,7 +255,7 @@ pub async fn sign_in(
     // and return `status: "needs_mfa"` with the `pending_token_id` instead of
     // a fully-activated session cookie. The client submits the TOTP code to
     // `POST /v1/mfa/verify` with `pending_token_id` to activate the session.
-    if let Some(factor_id) = crate::mfa::user_requires_mfa(&state.pool, user.id).await {
+    if let Some(factor_id) = mfa_factor {
         let _challenge_id =
             crate::mfa::create_signin_challenge(&state.pool, user.id, factor_id, &token_id)
                 .await

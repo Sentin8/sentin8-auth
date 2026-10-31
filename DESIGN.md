@@ -159,6 +159,82 @@ sequenceDiagram
     M-->>W: 200 m2m token (token_tp="m2m", 3600s)
 ```
 
+**Sign-in with TOTP + session pending-MFA activation (the MFA-SYNC
+contract, §3 state machine):**
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant B as browser (UI)
+    participant S as POST /v1/sign-in
+    participant DB as auth.sessions
+    participant C as mfa_challenges
+    participant V as POST /v1/mfa/verify
+
+    B->>S: {email, password}
+    S->>S: verify password + lockout/bot gates
+    alt TOTP factor enrolled
+        S->>DB: INSERT session (status=pending_mfa)
+        S->>C: INSERT challenge (pending_token_id = token)
+        S-->>B: 200 {status:"needs_mfa", pending_token_id, factor_id}
+        B->>V: {code, pending_token_id}
+        V->>V: verify TOTP + replay cache (SETNX 90s)
+        V->>DB: UPDATE session SET status='active'
+        V-->>B: 200 {status:"active", session_cookie}
+    else no factor
+        S->>DB: INSERT session (status=active)
+        S-->>B: 200 + set-cookie (active session)
+    end
+    Note over B,DB: A pending_mfa row never authenticates: find_by_token<br/>and is_valid reject it; /device/verify<br/>answers 401 mfa-required until active.
+```
+
+**Device Authorization Grant lifecycle (RFC 8628 §3.1-§3.5, per-request
+families):**
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant D as constrained device (sentin8-cli)
+    participant A as POST /oauth/device
+    participant U as user browser (second device)
+    participant V as POST /device/verify
+    participant T as POST /oauth/token
+    participant VK as Valkey
+
+    D->>A: client_id + scope (public client, no secret)
+    A->>A: client gate: grant_types contains device_code<br/>(else unauthorized_client)
+    A-->>D: {device_code, user_code, verification_uri(_complete), expires_in:900, interval:5}
+    D->>U: display "{verification_uri} + {user_code}"
+    U->>U: open verification_uri (typed code) or _complete link
+    U->>U: sign in (incl. TOTP: session must be active)
+    U->>V: {user_code} (+action: approve|deny)
+    V->>VK: stamp status=approved|denied + session user_id/env_id
+    loop every interval seconds
+        D->>T: grant_type=device_code + device_code
+        T->>VK: read record
+        alt pending
+            T-->>D: 400 authorization_pending (or slow_down)
+        else approved
+            T->>T: mint access+refresh (tenant issuer, granted =<br/>requested ∩ client scopes ∪ live role scopes)
+            T->>VK: DEL both keys (single-use)
+            T-->>D: 200 {access_token, refresh_token, ...}
+        else denied
+            T-->>D: 400 access_denied
+        else missing/expired
+            T-->>D: 400 expired_token
+        end
+    end
+```
+
+The `verification_uri` is issuer-resolved per request
+(`resolve_issuer`, the X-Sentin8-Hostname family) so a tenant host
+device response points at the tenant's own verification page - never a
+hardcoded platform host. The device-authorization response (which
+carries the `device_code` secret) is served with `Cache-Control:
+no-store`. Polling MUST honor the returned `interval`; `slow_down` is
+emitted when a poll arrives sooner (RFC 8628 §3.5) and the client
+MUST add +5s.
+
 ## 3. Data Model
 
 ```mermaid
@@ -188,7 +264,7 @@ erDiagram
     }
     SESSIONS {
         string token_id UK
-        string status "active|revoked|expired"
+        string status "pending_mfa|active|revoked|expired"
         timestamptz expires_at
     }
     OAUTH_CLIENTS {
@@ -232,7 +308,10 @@ erDiagram
 stateDiagram-v2
     direction LR
     state session {
-        [*] -> active: sign-in
+        [*] -> active: sign-in (no MFA enrolled)
+        [*] -> pending_mfa: sign-in (TOTP enrolled)
+        pending_mfa -> active: /v1/mfa/verify (challenge consumed)
+        pending_mfa -> revoked: expiry / sign-out sweep
         active -> revoked : sign-out / admin
         active -> expired : expiry
     }
@@ -240,6 +319,15 @@ stateDiagram-v2
         [*] -> pending: enroll begin
         pending -> active: verify
         active -> disabled
+    }
+    state device_code {
+        [*] -> pending: POST /oauth/device
+        pending -> approved: /device/verify (session-bound user)
+        pending -> denied: /device/verify (deny)
+        pending -> expired: TTL (900s)
+        approved -> [*]: token poll (code consumed)
+        denied -> [*]: token poll answers access_denied
+        expired -> [*]: token poll answers expired_token
     }
     state grant {
         [*] -> active: record_grant
@@ -250,6 +338,32 @@ stateDiagram-v2
         active -> revoked: revoke (status list bit)
     }
 ```
+
+**Session pending-MFA contract (MFA-SYNC invariant 1).** A session row
+created for a TOTP-enrolled user lands as `status='pending_mfa'` and is
+NOT a valid session: `Session::find_by_token` (and therefore every
+session-authenticated surface - `/v1/session`, `/device/verify`, CIBA
+assisted-complete, cookie-authenticated mutations) rejects it until
+`/v1/mfa/verify` flips it to `active`. The pre-MFA token id the client
+holds is thus a capability to *complete MFA*, never a session; the MFA
+enforcement follows the session STATUS, not cookie delivery. The
+`needs_mfa` sign-in response carries the wire fields the UI parses:
+`{status: "needs_mfa", pending_token_id, factor_id}`.
+
+**Device-flow session gate (RFC 8628 §3.3).** `/device/verify` accepts
+only an `active` session - a `pending_mfa` session is rejected with 401
+"mfa required", so a password alone can never approve a device for an
+MFA-enrolled user; the verifying user must complete TOTP first. The
+approving identity (`user_id`, `env_id`) is stamped from the session,
+never the request body.
+
+**Device-flow record contract (Valkey, TTL 900s).**
+`auth:device_code:{device_code}` holds
+`{client_id, scope, audience, user_code, status}` where status is
+`pending | approved | denied`; the mirror key `auth:user_code:{user_code}`
+maps to the device_code for the verification page (entered or URL-carried).
+`approved` records gain `{user_id, env_id}` (stamped from the approving
+session). On token issuance both keys are deleted (single-use).
 
 - **Secrets posture**: TOTP secrets, webhook secrets, client secrets are
   encrypted (`secret_cipher` BYTEA / hash); signing keys persisted
@@ -277,6 +391,7 @@ In brief:
 | Audience | Group | Gate |
 |----------|-------|------|
 | public | `/.well-known/*`, `/oauth/*` protocol endpoints, `/v1/sign-in\|up\|out`, `/v1/health` | session/cookie or client auth per flow; bot protection + lockout on sign-in (RFC 6749 §10.4) |
+| device | `POST /oauth/device` (RFC 8628 §3.1), `POST /device/verify` (§3.3) | device: client auth (public allowed) + per-client `grant_types`/`scopes` gate; verify: `active` session only (401 for `pending_mfa`) + CSRF |
 | mTLS | `/mtls/oauth/token`, `/mtls/oauth/revoke` | cert-presence guard (RFC 8705 §5) |
 | workload | `POST /oauth/register` (DCR, RFC 7591) | interactive clients open; client_credentials-only requires mTLS cert scope-proof (§8) |
 | delegated | `POST /delegate/access-token` | verified M2M bearer + `sentin8:delegate:read` + cnf match (RFC 8693) |
@@ -616,6 +731,27 @@ any subsequent tenant-plane statement.
 16. **DCR secrets are never logged or echoed back** outside the initial
     registration response (RFC 7591 §5.3.1); management reads return
     metadata WITHOUT the secret.
+17. **MFA enforcement is session-status, not cookie-delivery** (MFA-SYNC):
+    a session row for a TOTP-enrolled user exists as `pending_mfa` and
+    no session-authenticated surface accepts it until `/v1/mfa/verify`
+    flips it to `active`. The pre-MFA token id is a capability to
+    complete MFA, never a session.
+18. **Device approval requires a fully-authenticated session** (RFC 8628
+    §3.3 + §5): `/device/verify` rejects `pending_mfa` sessions (401),
+    stamps the approving `user_id`/`env_id` from the session (never the
+    body), and supports BOTH approve and deny.
+19. **Device grants are client-constrained**: `POST /oauth/device`
+    rejects a client whose `grant_types` lacks the device_code URN
+    (`unauthorized_client`). Requested scopes are validated at TOKEN
+    time, when the approving user is known: the granted set is
+    (requested ∩ client-registered scopes ∪ the approving user's live
+    role scopes) - the CLI's role-union contract (role scopes are merged
+    server-side, never enumerated per client row); a request outside
+    both sets is dropped from the grant. The poll is bound to the
+    originating `client_id` (mix-up defense).
+20. **Device codes are single-use and TTL-bounded** (900s): both Valkey
+    keys (`device_code`, `user_code`) are deleted at token issuance;
+    the authorization response carries `Cache-Control: no-store`.
 
 ## 9. Testing Strategy
 

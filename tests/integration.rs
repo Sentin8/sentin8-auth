@@ -29,6 +29,8 @@ use tower::ServiceExt;
 
 use sentin8_auth_server::{build_router, AppState, SigningKeys, TestConfig};
 
+mod support;
+
 /// Spin up an in-process Auth server with a test database pool.
 
 /// A unique client IP for a test - avoids cross-test/cross-run bot-protection
@@ -201,6 +203,227 @@ async fn users_sign_up_then_sign_in_returns_tokens() {
     let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
     assert_eq!(json["email"], email);
     // (The `realm` claim was removed - tokens are env-scoped via env_id.)
+}
+
+/// Device Authorization Grant (RFC 8628 §3.1): the device-authorization
+/// endpoint gates on the client's registered grant_types - a client
+/// without the device_code URN answers 400 `unauthorized_client`, never
+/// a device code (auth DESIGN §8 invariant 19).
+#[tokio::test]
+async fn device_authorization_rejects_client_without_device_grant() {
+    let Some((app, _pool)) = spawn_server().await else {
+        return;
+    };
+
+    // `dash` is seeded with authorization_code/refresh_token only.
+    let form = "client_id=dash&scope=openid";
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/oauth/device")
+                .header("content-type", "application/x-www-form-urlencoded")
+                .body(Body::from(form.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        response.status(),
+        StatusCode::BAD_REQUEST,
+        "a non-device client must not start a device flow"
+    );
+    let body = axum::body::to_bytes(response.into_body(), 64 * 1024)
+        .await
+        .unwrap();
+    let text = String::from_utf8_lossy(&body);
+    assert!(
+        text.contains("unauthorized_client"),
+        "expected unauthorized_client, got: {text}"
+    );
+}
+
+/// Device flow: the seeded `sentin8-cli` client starts a flow and the
+/// RFC 8628 §3.2 response shape carries the verification URI + interval;
+/// the response is served no-store (the body holds the device_code
+/// secret - RFC 6749 §5.1; auth DESIGN §8 invariant 20).
+#[tokio::test]
+async fn device_authorization_issues_rfc8628_response_shape() {
+    let Some((app, _pool)) = spawn_server().await else {
+        return;
+    };
+
+    let form = "client_id=sentin8-cli&scope=openid+profile+email+offline_access";
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/oauth/device")
+                .header("content-type", "application/x-www-form-urlencoded")
+                .body(Body::from(form.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    // RFC 6749 §5.1: token/secret-bearing responses carry no-store.
+    let cache_control = response
+        .headers()
+        .get("cache-control")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or_default()
+        .to_string();
+    assert!(
+        cache_control.to_lowercase().contains("no-store"),
+        "device authorization response must be no-store, got: {cache_control}"
+    );
+    let body = axum::body::to_bytes(response.into_body(), 64 * 1024)
+        .await
+        .unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    for field in [
+        "device_code",
+        "user_code",
+        "verification_uri",
+        "verification_uri_complete",
+        "expires_in",
+        "interval",
+    ] {
+        assert!(json[field].is_string() || json[field].is_number(), "missing {field}");
+    }
+}
+
+/// Device flow deny (RFC 8628 §3.4): a session-authenticated deny arms
+/// the polling grant's `access_denied` answer - the decision endpoint
+/// records the DENIED status, not just approvals.
+#[tokio::test]
+async fn device_verify_deny_arms_access_denied_poll() {
+    let Some((app, pool)) = spawn_server().await else {
+        return;
+    };
+
+    // 1. Start a device flow as the CLI client.
+    let form = "client_id=sentin8-cli&scope=openid";
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/oauth/device")
+                .header("content-type", "application/x-www-form-urlencoded")
+                .body(Body::from(form.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = axum::body::to_bytes(response.into_body(), 64 * 1024)
+        .await
+        .unwrap();
+    let device: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    let user_code = device["user_code"].as_str().unwrap().to_string();
+    let device_code = device["device_code"].as_str().unwrap().to_string();
+
+    // 2. Sign up + sign in a user to approve/deny with (session-bound
+    // decision; the user identity comes from the session).
+    let email = format!("devdeny_{}@test.local.sentin8.dev", uuid::Uuid::new_v4().simple());
+    let signup_body = serde_json::json!({
+        "email": email,
+        "password": "test_password_123",
+    });
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/sign-up")
+                .header("content-type", "application/json")
+                .header("x-forwarded-for", unique_ip())
+                .body(Body::from(serde_json::to_vec(&signup_body).unwrap()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::CREATED);
+    let signin_body = serde_json::json!({ "email": email, "password": "test_password_123" });
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/sign-in")
+                .header("content-type", "application/json")
+                .header("x-forwarded-for", unique_ip())
+                .body(Body::from(serde_json::to_vec(&signin_body).unwrap()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = axum::body::to_bytes(response.into_body(), 64 * 1024)
+        .await
+        .unwrap();
+    let signin: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_ne!(
+        signin["status"], "needs_mfa",
+        "fixture user has no TOTP factor - sign-in must be a full session"
+    );
+    let token = signin["token"].as_str().unwrap().to_string();
+
+    // 3. DENY the device with the session (Bearer path, CSRF-exempt).
+    let deny_body = serde_json::json!({ "user_code": user_code, "action": "deny" });
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/device/verify")
+                .header("content-type", "application/json")
+                .header("authorization", format!("Bearer {token}"))
+                .body(Body::from(serde_json::to_vec(&deny_body).unwrap()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = axum::body::to_bytes(response.into_body(), 64 * 1024)
+        .await
+        .unwrap();
+    let decided: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(decided["status"], "denied");
+
+    // 4. The polling grant must answer access_denied (not pending, not
+    // a token mint).
+    let poll_form = format!(
+        "grant_type=urn%3Aietf%3Aparams%3Aoauth%3Agrant-type%3Adevice_code&device_code={device_code}&client_id=sentin8-cli"
+    );
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/oauth/token")
+                .header("content-type", "application/x-www-form-urlencoded")
+                .body(Body::from(poll_form))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let body = axum::body::to_bytes(response.into_body(), 64 * 1024)
+        .await
+        .unwrap();
+    let poll: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(
+        poll["error"], "access_denied",
+        "a denied device grant must poll access_denied, got: {poll}"
+    );
+
+    // Silence the unused-pool notice: the decision state lives in
+    // Valkey, the pool is the sign-up path's dependency.
+    let _ = pool.acquire().await.map(|_| ());
 }
 
 #[tokio::test]
@@ -1544,4 +1767,211 @@ fn seeded_auth_engine() -> std::sync::Arc<sentin8_auth_server::policy::Engine> {
     };
     engine.upsert(record).expect("seed auth scope-mirror set");
     std::sync::Arc::new(engine)
+}
+
+/// MFA-SYNC (auth DESIGN §3 "Session pending-MFA contract"): for a
+/// TOTP-enrolled user, the password step yields `needs_mfa` + a
+/// `pending_token_id` whose session row is `pending_mfa` - it is NOT a
+/// session. Until the TOTP challenge is consumed:
+///   - `/device/verify` with the pending token answers 401 `mfa required`
+///     (a password alone can never approve a device);
+///   - after the TOTP step the SAME token decides devices normally.
+#[tokio::test]
+async fn mfa_pending_session_cannot_approve_device_until_totp_consumed() {
+    let Some((app, _pool)) = spawn_server().await else {
+        return;
+    };
+
+    // 1. Create + fully sign in a user, then enroll and ACTIVATE a TOTP
+    //    factor (the enrollment flow's own verify activates the factor).
+    let email = format!("devmfa_{}@test.local.sentin8.dev", uuid::Uuid::new_v4().simple());
+    let signup_body = serde_json::json!({
+        "email": email,
+        "password": "test_password_123",
+    });
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/sign-up")
+                .header("content-type", "application/json")
+                .header("x-forwarded-for", unique_ip())
+                .body(Body::from(serde_json::to_vec(&signup_body).unwrap()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::CREATED);
+    let signin_body = serde_json::json!({ "email": email, "password": "test_password_123" });
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/sign-in")
+                .header("content-type", "application/json")
+                .header("x-forwarded-for", unique_ip())
+                .body(Body::from(serde_json::to_vec(&signin_body).unwrap()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let bytes = axum::body::to_bytes(resp.into_body(), 64 * 1024).await.unwrap();
+    let signin: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    let enroll_session = signin["token"].as_str().unwrap().to_string();
+
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/mfa/enroll")
+                .header("content-type", "application/json")
+                .header("authorization", format!("Bearer {enroll_session}"))
+                .body(Body::from("{}"))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let bytes = axum::body::to_bytes(resp.into_body(), 64 * 1024).await.unwrap();
+    let enroll: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    let secret_b32 = enroll["secret"].as_str().expect("secret").to_string();
+    let factor_id = enroll["factor_id"].as_str().unwrap().to_string();
+
+    let code = support::mk_totp_code(&secret_b32);
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/mfa/verify")
+                .header("content-type", "application/json")
+                .header("authorization", format!("Bearer {enroll_session}"))
+                .body(Body::from(
+                    serde_json::to_vec(&serde_json::json!({
+                        "factor_id": factor_id,
+                        "code": code,
+                    }))
+                    .unwrap(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK, "enrollment verify activates the factor");
+
+    // 2. Sign in again - the ACTIVE factor now holds the session pending.
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/sign-in")
+                .header("content-type", "application/json")
+                .header("x-forwarded-for", unique_ip())
+                .body(Body::from(serde_json::to_vec(&signin_body).unwrap()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let bytes = axum::body::to_bytes(resp.into_body(), 64 * 1024).await.unwrap();
+    let held: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(held["status"], "needs_mfa", "TOTP user sign-in must be held: {held}");
+    let pending_token = held["pending_token_id"].as_str().expect("pending_token_id").to_string();
+
+    // 3. Start a device flow and try to approve with the PENDING token -
+    //    must answer 401 mfa required (the MFA bypass via the device
+    //    grant is closed).
+    let form = "client_id=sentin8-cli&scope=openid";
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/oauth/device")
+                .header("content-type", "application/x-www-form-urlencoded")
+                .body(Body::from(form.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let bytes = axum::body::to_bytes(resp.into_body(), 64 * 1024).await.unwrap();
+    let device: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    let user_code = device["user_code"].as_str().unwrap().to_string();
+
+    let approve_body = serde_json::json!({ "user_code": user_code, "action": "approve" });
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/device/verify")
+                .header("content-type", "application/json")
+                .header("authorization", format!("Bearer {pending_token}"))
+                .body(Body::from(serde_json::to_vec(&approve_body).unwrap()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        resp.status(),
+        StatusCode::UNAUTHORIZED,
+        "a pending-MFA session must not decide a device"
+    );
+    let bytes = axum::body::to_bytes(resp.into_body(), 64 * 1024).await.unwrap();
+    let text = String::from_utf8_lossy(&bytes);
+    assert!(
+        text.contains("mfa required"),
+        "expected the actionable mfa-required answer, got: {text}"
+    );
+
+    // 4. Consume the TOTP challenge with the SAME pending token - the
+    //    session activates, and the decision now succeeds.
+    let code = support::mk_totp_code(&secret_b32);
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/mfa/verify")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::to_vec(&serde_json::json!({
+                        "pending_token_id": pending_token,
+                        "code": code,
+                    }))
+                    .unwrap(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK, "TOTP consumption activates the session");
+
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/device/verify")
+                .header("content-type", "application/json")
+                .header("authorization", format!("Bearer {pending_token}"))
+                .body(Body::from(serde_json::to_vec(&approve_body).unwrap()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        resp.status(),
+        StatusCode::OK,
+        "the ACTIVATED session decides the device normally"
+    );
+    let bytes = axum::body::to_bytes(resp.into_body(), 64 * 1024).await.unwrap();
+    let decided: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(decided["status"], "approved");
 }

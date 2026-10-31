@@ -121,7 +121,7 @@ CREATE TABLE IF NOT EXISTS auth.sessions (
     env_id  UUID NOT NULL,
     token_id        TEXT NOT NULL UNIQUE,
     refresh_token   TEXT,
-    status          TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'revoked', 'expired')),
+    status          TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'pending_mfa', 'revoked', 'expired')),
     expires_at      TIMESTAMPTZ NOT NULL,
     created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at      TIMESTAMPTZ NOT NULL DEFAULT now()

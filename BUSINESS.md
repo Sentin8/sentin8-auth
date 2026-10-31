@@ -74,7 +74,7 @@ mint tokens or publish signing keys. The business value it delivers:
 | Branded login page | Tenant-branded pages; a server-rendered HTML login additionally serves automated clients (conformance browsers, CI) |
 | Sessions | Server-verified sessions with expiry; sign-out and admin termination; every revocation pushes immediate invalidation events |
 | Password reset | Self-service reset tokens with expiry and one-time use |
-| MFA (TOTP) | Enrollment, verify, disable; secrets encrypted at rest |
+| MFA (TOTP) | Enrollment, verify, disable; secrets encrypted at rest; a TOTP user's sign-in session stays "pending MFA" (usable for nothing else) until their authenticator code activates it - the second factor gates every session-authenticated action, including device approval |
 | Passkeys | WebAuthn enrollment + verification (passwordless login) |
 | App passwords | Per-app passwords for apps without OAuth support |
 | Enterprise SSO | OIDC and SAML connections to enterprise IdPs; federated credentials |
@@ -93,7 +93,7 @@ mint tokens or publish signing keys. The business value it delivers:
 | Delegated tokens | Cert-bound delegated access via the Delegation Gateway (`act` chain audits the origin user) |
 | Authorization grants | Standing consent records per (env, user, client); idempotent - widened/narrowed not duplicated; grant_id embedded in tokens; revocation cascades |
 | CIBA | Decoupled approval bound to the approving user's session; poll and ping delivery modes |
-| Device flow | CLI and device-based sign-in with verification page |
+| Device flow | CLI and device-based sign-in (RFC 8628): the device displays a short code + verification URL; the user opens the URL on a second device (typed code or complete-link), signs in there - including MFA - and approves or DENIES; only a fully-authenticated (MFA-complete) session can approve |
 | Token exchange | OAuth token exchange grant (publisher/delegation paths) |
 | Introspection | Honest introspection - `none`-auth clients hard-rejected; signed JWT responses per profile |
 | OIDC claim scopes | All four claim scopes (`email`, `profile`, `phone`, `address`) are advertised and served: the consented scope selects the claim family; every advertised scope is demonstrable end-to-end, and delivers nothing when not consented |

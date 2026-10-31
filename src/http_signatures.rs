@@ -361,6 +361,7 @@ mod tests {
             redirect_uris: vec![],
             post_logout_redirect_uris: vec![],
             scopes: vec![],
+            grant_types: vec![],
             jwks: None,
             jwks_uri: None,
             tls_client_auth_subject_dn: None,

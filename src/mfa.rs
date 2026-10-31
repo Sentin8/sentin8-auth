@@ -625,7 +625,52 @@ async fn verify_signin(
     .await
     .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
-    // Activate the pending session.
+    // Activate the pending session (DESIGN §3 "Session pending-MFA
+    // contract"): the row was created as status='pending_mfa' at
+    // sign-in; consuming the challenge is the ONLY transition to
+    // 'active' (the status predicate never revives a revoked/expired
+    // row). RLS: the session's env is only knowable after the row is
+    // found, so the activation mirrors find_by_token's two-step
+    // single-transaction resolve (SYSTEM context finds the row, then the
+    // UPDATE runs under the session's own env - set_config is
+    // transaction-local).
+    {
+        let mut tx = state
+            .pool
+            .begin()
+            .await
+            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+        let _ = sqlx::query("SELECT sentin8_set_tenant_context($1)")
+            .bind(crate::config::SYSTEM_ENV_ID)
+            .execute(&mut *tx)
+            .await;
+        let env_id: Option<uuid::Uuid> = sqlx::query_scalar(
+            r#"SELECT env_id FROM sessions WHERE token_id = $1 AND status = 'pending_mfa'"#,
+        )
+        .bind(pending_token_id)
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+        if let Some(env_id) = env_id {
+            let _ = sqlx::query("SELECT sentin8_set_tenant_context($1)")
+                .bind(env_id)
+                .execute(&mut *tx)
+                .await;
+            sqlx::query!(
+                r#"UPDATE sessions SET status = 'active', updated_at = now()
+                   WHERE token_id = $1 AND status = 'pending_mfa'"#,
+                pending_token_id,
+            )
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+        }
+        tx.commit()
+            .await
+            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    }
+
+    // Resolve the (now active) session.
     let session = Session::find_by_token(&state.pool, pending_token_id)
         .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?

@@ -146,6 +146,10 @@ pub struct AuthenticatedClient {
     /// Registered scopes (TEXT[]).
     /// The scopes.
     pub scopes: Vec<String>,
+    /// Registered grant types (TEXT[]): the grants this client may
+    /// exercise (device gate DESIGN §8 invariant 19).
+    /// The grant types.
+    pub grant_types: Vec<String>,
     /// Registered inline JWKS (JSONB) for private_key_jwt / JAR verification.
     /// The JWKS.
     pub jwks: Option<serde_json::Value>,
@@ -698,6 +702,7 @@ pub async fn authenticate_client(
 
     let row = sqlx::query(
         r#"SELECT id, env_id, client_id, client_secret_hash, redirect_uris, scopes,
+                  grant_types,
                   token_endpoint_auth_method, jwks, jwks_uri,
                   tls_client_auth_subject_dn, self_signed_tls_client_auth_thumbprint,
                   post_logout_redirect_uris, dpop_exempt, authorization_details_types,
@@ -745,6 +750,9 @@ pub async fn authenticate_client(
         .try_get::<Vec<String>, _>("redirect_uris")
         .unwrap_or_default();
     let scopes: Vec<String> = row.try_get::<Vec<String>, _>("scopes").unwrap_or_default();
+    let grant_types: Vec<String> = row
+        .try_get::<Vec<String>, _>("grant_types")
+        .unwrap_or_default();
     let jwks: Option<serde_json::Value> = row.try_get("jwks").ok().flatten();
     let jwks_uri: Option<String> = row.try_get("jwks_uri").ok().flatten();
     let post_logout: Vec<String> = row
@@ -790,6 +798,7 @@ pub async fn authenticate_client(
             redirect_uris: redirect_uris.clone(),
             post_logout_redirect_uris: post_logout.clone(),
             scopes: scopes.clone(),
+            grant_types: grant_types.clone(),
             jwks: jwks.clone(),
             jwks_uri: jwks_uri.clone(),
             tls_client_auth_subject_dn: mtls_dn.clone(),
@@ -1002,6 +1011,7 @@ pub async fn authenticate_client(
         redirect_uris,
         post_logout_redirect_uris: post_logout,
         scopes,
+        grant_types,
         jwks,
         jwks_uri,
         tls_client_auth_subject_dn: mtls_dn,
@@ -8586,7 +8596,7 @@ fn glob_match_impl(p: &[char], pi: usize, t: &[char], ti: usize) -> bool {
     ),
     responses(
         (status = 200, description = "Device code + user_code + verification_uri (RFC 8628 §3.2)", body = DeviceAuthResponse),
-        (status = 400, description = "Unknown client"),
+        (status = 400, description = "Unknown client, unauthorized_client (no device grant), or invalid_scope"),
         (status = 401, description = "Client authentication failed"),
     ),
     security(),
@@ -8596,7 +8606,7 @@ pub async fn device_authorization(
     State(state): State<AppState>,
     headers: HeaderMap,
     axum::Form(req): axum::Form<DeviceAuthRequest>,
-) -> Result<Json<DeviceAuthResponse>, (StatusCode, String)> {
+) -> Result<Response, (StatusCode, String)> {
     // client auth (public CLI client resolves by id).
     let client = authenticate_client(
         &state,
@@ -8609,9 +8619,30 @@ pub async fn device_authorization(
     )
     .await?;
 
+    // Client grant gate (RFC 8628 §3.1 + DESIGN §8 invariant 19): the
+    // client's registered grant_types must contain the device_code URN -
+    // the device grant is opt-in per client, never a grant any
+    // resolvable client_id can start. Scope validation happens at TOKEN
+    // time, where the approving user (and therefore her live role
+    // scopes) is known - the CLI's role-union contract.
+    if !client
+        .grant_types
+        .iter()
+        .any(|g| g == "urn:ietf:params:oauth:grant-type:device_code")
+    {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            "unauthorized_client: client is not registered for the device authorization grant".into(),
+        ));
+    }
+    let requested = req.scope.clone().unwrap_or_default();
+
     let device_code = Uuid::new_v4().to_string();
     let user_code = generate_user_code();
-    let issuer = state.config.issuer.clone();
+    // Tenant-aware issuer (DESIGN §2 device lifecycle): the verification
+    // URL points at the SAME host the device client called - a tenant
+    // host's device response never advertises the platform host.
+    let issuer = resolve_issuer(&state.config, &headers);
     let verification_uri = format!("{issuer}/device");
     let verification_uri_complete = format!("{verification_uri}?user_code={user_code}");
     let expires_in: u64 = 900;
@@ -8625,7 +8656,7 @@ pub async fn device_authorization(
     let key = format!("auth:device_code:{device_code}");
     let data = serde_json::json!({
         "client_id": client.client_id,
-        "scope": req.scope.unwrap_or_default(),
+        "scope": requested,
         "audience": req.audience.unwrap_or_default(),
         "user_code": user_code,
         "status": "pending",
@@ -8641,21 +8672,28 @@ pub async fn device_authorization(
         .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
-    Ok(Json(DeviceAuthResponse {
-        device_code,
-        user_code,
-        verification_uri,
-        verification_uri_complete: Some(verification_uri_complete),
-        expires_in,
-        interval,
-    }))
+    // The response body carries the device_code secret - RFC 6749 §5.1
+    // forbids caching secrets in shared caches (DESIGN §8 invariant 20).
+    Ok((
+        StatusCode::OK,
+        [("cache-control", "no-store")],
+        Json(DeviceAuthResponse {
+            device_code,
+            user_code,
+            verification_uri,
+            verification_uri_complete: Some(verification_uri_complete),
+            expires_in,
+            interval,
+        }),
+    )
+        .into_response())
 }
 
 /// `POST /oauth/token` with `grant_type=urn:ietf:params:oauth:grant-type:device_code`.
 ///
-/// Returns RFC 8628 polling errors (`authorization_pending`, `access_denied`,
-/// `expired_token`) as JSON `{"error": "..."}` per RFC 6749 so that
-/// polling clients can distinguish pending from real failures.
+/// Returns RFC 8628 polling errors (`authorization_pending`, `slow_down`,
+/// `access_denied`, `expired_token`) as JSON `{"error": "..."}` per RFC 6749
+/// so that polling clients can distinguish pending from real failures.
 async fn handle_device_code(
     state: &AppState,
     client: &AuthenticatedClient,
@@ -8687,7 +8725,30 @@ async fn handle_device_code(
     let data: serde_json::Value = serde_json::from_str(&data)
         .map_err(|e| TokenError::Internal(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
     let status = data["status"].as_str().unwrap_or("pending");
+    // RFC 8628 §3.5 - rate-limit the poll itself: a poll arriving sooner
+    // than the returned `interval` answers `slow_down` (the client MUST
+    // add +5s before the next attempt). The last-poll instant is stamped
+    // on the record (first poll has no stamp - always allowed); a
+    // decided record is answered without rate limiting so an approved or
+    // denied grant is never delayed.
     if status == "pending" {
+        let interval: i64 = 5;
+        let now_secs = chrono::Utc::now().timestamp();
+        let last_poll: Option<i64> = data["last_poll_at"].as_i64();
+        let poll_ok = last_poll.is_none_or(|t| now_secs - t >= interval);
+        if !poll_ok {
+            return Err(TokenError::OAuth(OAuthTokenError::new(
+                StatusCode::BAD_REQUEST,
+                "slow_down",
+            )));
+        }
+        // Stamp the poll instant (best-effort: a stamping failure must
+        // never break the pending answer).
+        let mut stamped = data.clone();
+        if let Some(obj) = stamped.as_object_mut() {
+            obj.insert("last_poll_at".into(), now_secs.into());
+        }
+        let _: Result<(), _> = valkey_conn.set_ex(&key, stamped.to_string(), 900).await;
         return Err(TokenError::OAuth(OAuthTokenError::new(
             StatusCode::BAD_REQUEST,
             "authorization_pending",
@@ -8752,11 +8813,21 @@ async fn handle_device_code(
     };
     let email = user_row.as_ref().map(|r| r.email.clone());
 
-    // Merge group scopes.
+    // Scope grant (DESIGN §8 invariant 19 - the CLI's role-union
+    // contract): the approving user's live role scopes ALWAYS ride the
+    // token (the JWT scope claim is Shield's RLS feed - role changes
+    // must take effect without re-enrollment), plus the requested
+    // scopes the client is REGISTERED to carry (the client-side gate -
+    // a scope outside the client's registration and the role union is
+    // never minted).
     let role_scopes = crate::handlers::fetch_role_scopes(&state.pool, user_id)
         .await
         .map_err(|e| TokenError::Internal(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
-    let merged_scope = crate::handlers::merge_scopes(scope, &role_scopes);
+    let client_admitted: Vec<&str> = scope
+        .split_whitespace()
+        .filter(|s| client.scopes.iter().any(|c| c == s))
+        .collect();
+    let merged_scope = crate::handlers::merge_scopes(&client_admitted.join(" "), &role_scopes);
 
     // Per-tenant signing family (DESIGN §9a.9) - tenant context rides
     // the device-flow record (the polling client may run on any host).
@@ -9154,22 +9225,24 @@ async fn handle_ciba_token(
 }
 
 /// `POST /device/verify` - the signed-in user submits the user_code to
-/// approve a device sign-in (RFC 8628 ).
+/// approve or DENY a device sign-in (RFC 8628 §3.3).
 ///
-/// this endpoint **requires a valid session** (cookie or
+/// this endpoint **requires a valid ACTIVE session** (cookie or
 /// Bearer). The approving user is the session's user - `user_id`, `org_id`,
 /// and `env_id` are taken from the session, NEVER from the request body,
 /// so knowledge of a user_code alone can no longer mint tokens for an
-/// arbitrary user.
+/// arbitrary user. A `pending_mfa` session is rejected with a distinct
+/// 401 (`mfa required`) - the second factor must complete before any
+/// device decision (MFA-SYNC, DESIGN §3).
 /// Handle device verify.
 #[utoipa::path(
     post,
     path = "/device/verify",
     request_body = DeviceVerifyRequest,
     responses(
-        (status = 200, description = "Device sign-in approved (polling grant armed for this user)", body = crate::dtos::DeviceVerifyResponse),
+        (status = 200, description = "Device decision recorded (approve or deny - the polling grant reads it on next poll)", body = crate::dtos::DeviceVerifyResponse),
         (status = 400, description = "Unknown user_code"),
-        (status = 401, description = "No session - approval requires an authenticated user"),
+        (status = 401, description = "No session, invalid/expired session, or pending_mfa session (mfa required)"),
         (status = 410, description = "user_code expired"),
     ),
     security(),
@@ -9196,6 +9269,21 @@ pub async fn device_verify(
     if !session.is_valid() {
         return Err((StatusCode::UNAUTHORIZED, "session expired".into()));
     }
+    // MFA gate (MFA-SYNC, DESIGN §3): find_by_token resolves only ACTIVE
+    // rows - a still-pending MFA session must not silently pass. Probe
+    // the raw row so the user gets the actionable "mfa required" answer
+    // (complete TOTP) rather than a misleading "invalid session".
+    {
+        let pending: Option<String> =
+            sqlx::query_scalar("SELECT status FROM sessions WHERE token_id = $1")
+                .bind(&session_token)
+                .fetch_optional(&state.pool)
+                .await
+                .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+        if pending.as_deref() == Some("pending_mfa") {
+            return Err((StatusCode::UNAUTHORIZED, "mfa required".into()));
+        }
+    }
 
     let valkey_url = &state.config.valkey_url;
     let valkey_conn = sentin8::middleware::valkey_client(valkey_url, "sentin8:auth")
@@ -9215,10 +9303,17 @@ pub async fn device_verify(
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
     let mut data: serde_json::Value = serde_json::from_str(&data.unwrap_or_default())
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
-    // Set status to approved with the SESSION user's id + env. org_id is
-    // resolved from env_id by the token grant (org is not a JWT claim).
+    // Stamp the decision with the SESSION user's id + env. The action is
+    // approve or deny (RFC 8628 §3.4); deny arms the polling grant's
+    // `access_denied` answer. org_id is resolved from env_id by the
+    // token grant (org is not a JWT claim).
+    let decided = if req.action.as_deref() == Some("deny") {
+        "denied"
+    } else {
+        "approved"
+    };
     if let Some(obj) = data.as_object_mut() {
-        obj.insert("status".into(), "approved".into());
+        obj.insert("status".into(), decided.into());
         obj.insert(
             "user_id".into(),
             serde_json::json!(session.user_id.to_string()),
@@ -9233,7 +9328,7 @@ pub async fn device_verify(
         .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
     Ok(Json(DeviceVerifyResponse {
-        status: "approved".to_string(),
+        status: decided.to_string(),
     }))
 }
 
@@ -9276,6 +9371,11 @@ pub struct DeviceVerifyRequest {
     /// comes from the session - never the body.
     /// The user code.
     pub user_code: String,
+    /// RFC 8628 §3.4 decision: `approve` (default when absent) or `deny`.
+    /// Deny arms the polling grant's `access_denied` answer.
+    #[serde(default)]
+    /// The action.
+    pub action: Option<String>,
 }
 
 /// Generate a random user code in the format `XXXX-XXXX` (8 chars).

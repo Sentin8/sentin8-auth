@@ -187,7 +187,8 @@ pub struct OidcClaims {
 /// `POST /device/verify` ack.
 #[derive(Debug, Clone, Serialize, Deserialize, utoipa::ToSchema)]
 pub struct DeviceVerifyResponse {
-    /// Always `approved` on success.
+    /// The recorded decision: `approved` or `denied` (RFC 8628 §3.4 -
+    /// the polling grant answers tokens or `access_denied`).
     pub status: String,
 }
 

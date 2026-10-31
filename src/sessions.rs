@@ -46,7 +46,50 @@ impl Session {
     ///
     /// Accepts any executor (pool or transaction connection) so callers can
     /// set the tenant context on the same connection first.
+    ///
+    /// The `status` parameter is the INITIAL state: `"active"` for a
+    /// fully-authenticated sign-in, `"pending_mfa"` for a TOTP-enrolled
+    /// user whose session exists only to complete the MFA challenge
+    /// (DESIGN §3 "Session pending-MFA contract" - a pending row is a
+    /// capability to finish MFA, never a valid session; `/v1/mfa/verify`
+    /// is the only transition to `active`).
     /// Create it.
+    pub async fn create_with_status<'e, E>(
+        executor: E,
+        user_id: Uuid,
+        env_id: Uuid,
+        token_id: &str,
+        refresh_token: Option<&str>,
+        ttl: Duration,
+        status: &str,
+    ) -> Result<Self, sqlx::Error>
+    where
+        E: sqlx::Executor<'e, Database = sqlx::Postgres>,
+    {
+        let expires_at = Utc::now() + ttl;
+        let row = sqlx::query_as!(
+            Session,
+            r#"INSERT INTO sessions
+                 (user_id, env_id, token_id, refresh_token, status, expires_at)
+               VALUES ($1, $2, $3, $4, $5, $6)
+               RETURNING
+                 id, user_id, env_id, token_id,
+                 refresh_token, status, expires_at, created_at, updated_at"#,
+            user_id,
+            env_id,
+            token_id,
+            refresh_token,
+            status,
+            expires_at,
+        )
+        .fetch_one(executor)
+        .await?;
+
+        Ok(row)
+    }
+
+    /// Insert a new ACTIVE session (the no-MFA sign-in path).
+    /// Create it active.
     pub async fn create<'e, E>(
         executor: E,
         user_id: Uuid,
@@ -58,25 +101,27 @@ impl Session {
     where
         E: sqlx::Executor<'e, Database = sqlx::Postgres>,
     {
-        let expires_at = Utc::now() + ttl;
-        let row = sqlx::query_as!(
-            Session,
-            r#"INSERT INTO sessions
-                 (user_id, env_id, token_id, refresh_token, status, expires_at)
-               VALUES ($1, $2, $3, $4, 'active', $5)
-               RETURNING
-                 id, user_id, env_id, token_id,
-                 refresh_token, status, expires_at, created_at, updated_at"#,
-            user_id,
-            env_id,
-            token_id,
-            refresh_token,
-            expires_at,
-        )
-        .fetch_one(executor)
-        .await?;
+        Self::create_with_status(executor, user_id, env_id, token_id, refresh_token, ttl, "active")
+            .await
+    }
 
-        Ok(row)
+    /// Activate a `pending_mfa` session (the `/v1/mfa/verify` challenge
+    /// consumption path, DESIGN §3). A no-op for already-active rows;
+    /// never revives a revoked/expired one.
+    /// Activate it.
+    pub async fn activate<'e, E>(executor: E, token_id: &str) -> Result<(), sqlx::Error>
+    where
+        E: sqlx::Executor<'e, Database = sqlx::Postgres>,
+    {
+        sqlx::query!(
+            r#"UPDATE sessions
+                 SET status = 'active', updated_at = now()
+               WHERE token_id = $1 AND status = 'pending_mfa'"#,
+            token_id,
+        )
+        .execute(executor)
+        .await?;
+        Ok(())
     }
 
     /// Look up a session by token_id (the cookie value).
