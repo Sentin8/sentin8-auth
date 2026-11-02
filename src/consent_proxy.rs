@@ -103,8 +103,8 @@ async fn resolve_vertical_service_url(pool: &sqlx::PgPool, service_type: &str) -
 
     let _service_type: String = row.get("service_type");
     // Derive the URL from the service type via sentin8::config.
-    // The platform domain for a service like "bank8-fdx" is
-    // "https://bank8-fdx.ops.sys.{domain}".
+    // The platform domain for a service like "openfin8-ca" is
+    // "https://openfin8-ca.ops.sys.{domain}".
     let domain = std::env::var("SENTIN8_DOMAIN").unwrap_or_else(|_| "local.sentin8.dev".into());
     Some(format!(
         "https://{}:{}.ops.sys.{}",

@@ -5639,7 +5639,7 @@ async fn handle_code_exchange(
     // - Grant lifecycle event (auth DESIGN §4): code issuance is the
     // moment a customer's authorization becomes real for downstream
     // consent authorities. Payload-complete envelope so a data-holder
-    // (e.g. Bank8:FDX's provider plane) can seed its grant ledger from
+    // (e.g. the OpenFin8 provider plane) can seed its grant ledger from
     // the event alone: `state` is the client's opaque OAuth state (the
     // consent handle a vertical's flow packed into PAR) and
     // `selected_account_ids` the accounts the customer selected on the
@@ -8548,7 +8548,8 @@ fn urlencode(s: &str) -> String {
 
 /// Simple glob pattern matcher for consent flow trigger patterns.
 /// Supports `*` (matches any sequence of characters within a segment)
-/// and literal text. E.g. `bank8:fdx:*` matches `bank8:fdx:recipient:read`.
+/// and literal text. E.g. `openfin8:ca:*` matches
+/// `openfin8:ca:recipient:read`.
 fn glob_match(pattern: &str, text: &str) -> bool {
     let p: Vec<char> = pattern.chars().collect();
     let t: Vec<char> = text.chars().collect();
