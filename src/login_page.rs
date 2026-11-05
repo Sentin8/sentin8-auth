@@ -111,6 +111,13 @@ fn context_key() -> Vec<u8> {
     b"sentin8-auth-dev-context-key".to_vec()
 }
 
+/// The HMAC key material shared by every auth-signed blob (the `/oauth/login`
+/// context blobs and the IDFIRST-1 continuation tokens). One rotation
+/// surface - `SENTIN8_AUTH_MASTER_KEY` re-signs both.
+pub fn context_key_public() -> Vec<u8> {
+    context_key()
+}
+
 /// Build the signed context blob: `payload|exp|hex(hmac)`.
 fn sign_context(query: &LoginContextQuery) -> String {
     let exp = (Utc::now() + Duration::seconds(CONTEXT_TTL_SECS)).timestamp();

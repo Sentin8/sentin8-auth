@@ -71,11 +71,12 @@ mint tokens or publish signing keys. The business value it delivers:
 |---|---|
 | Sign-up | Self-service registration with email verification; per-environment user uniqueness (email unique per env) |
 | Sign-in | Password sign-in with anti-enumeration protection (uniform login failure; dummy bcrypt compare on unknown accounts) |
+| Identifier-first sign-in | The hosted sign-in asks for the email first, then shows the right credential step for that account: password, passkey, or MFA expectation. Unknown emails get the same experience shape so the flow never tells probers more than sign-up already does, and the same abuse limits throttle it |
 | Branded login page | Tenant-branded pages; a server-rendered HTML login additionally serves automated clients (conformance browsers, CI) |
 | Sessions | Server-verified sessions with expiry; sign-out and admin termination; every revocation pushes immediate invalidation events |
 | Password reset | Self-service reset tokens with expiry and one-time use |
 | MFA (TOTP) | Enrollment, verify, disable; secrets encrypted at rest; a TOTP user's sign-in session stays "pending MFA" (usable for nothing else) until their authenticator code activates it - the second factor gates every session-authenticated action, including device approval |
-| Passkeys | WebAuthn enrollment + verification (passwordless login) |
+| Passkeys | WebAuthn enrollment + verification (passwordless login). A user with an active passkey can sign in with the passkey alone - the account's credential step offers it directly |
 | App passwords | Per-app passwords for apps without OAuth support |
 | Enterprise SSO | OIDC and SAML connections to enterprise IdPs; federated credentials |
 | Bot protection | IP 10/min + email 5/min rate limits; 5 failures → durable account lockout |

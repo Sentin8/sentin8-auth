@@ -108,6 +108,8 @@ pub mod wallet;
 pub mod oid4vci;
 /// Server-rendered HTML login page for automated clients (DESIGN §9a.8).
 pub mod login_page;
+/// Identifier-first sign-in - the email-only step (IDFIRST-1).
+pub mod identify;
 /// OIDC WebFinger (RFC 7033) - Dynamic OP discovery.
 pub mod webfinger;
 /// Webhook registration and delivery.

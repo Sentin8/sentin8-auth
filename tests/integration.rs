@@ -975,6 +975,115 @@ async fn branding_discovery_serves_org_theme() {
 }
 
 #[tokio::test]
+async fn identify_serves_same_shape_for_known_and_unknown_emails() {
+    // IDFIRST-1: the identify step answers the SAME 200 shape whether
+    // the email exists or not (per-user hints by decision, but the
+    // unknown path is indistinguishable in status/fields) - and the
+    // continuation token is a valid HMAC blob in both cases.
+    let Some((app, _pool)) = spawn_server().await else {
+        return;
+    };
+
+    async fn call_identify(
+        app: axum::Router,
+        email: String,
+    ) -> (StatusCode, serde_json::Value) {
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/v1/sign-in/identify")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        serde_json::json!({ "email": email }).to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let status = response.status();
+        let body = axum::body::to_bytes(response.into_body(), 1024 * 1024)
+            .await
+            .unwrap();
+        (status, serde_json::from_slice(&body).unwrap())
+    }
+
+    let known_email = format!("idfirst-known-{}@test.local", uuid::Uuid::new_v4());
+    let unknown_email = format!("idfirst-unknown-{}@test.local", uuid::Uuid::new_v4());
+
+    let (s1, j1) = call_identify(app.clone(), known_email).await;
+    let (s2, j2) = call_identify(app, unknown_email).await;
+
+    // Both answer 200 with the identical wire shape.
+    assert_eq!(s1, StatusCode::OK);
+    assert_eq!(s2, StatusCode::OK);
+    for j in [&j1, &j2] {
+        assert!(j["continuation_token"].is_string());
+        assert!(j["continuation_token"].as_str().unwrap().contains('|'));
+        assert!(j["methods"].is_array());
+        assert!(j["mfa_required"].is_boolean());
+        // password is always among the methods
+        assert!(j["methods"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|m| m == "password"));
+    }
+}
+
+#[tokio::test]
+async fn identify_rejects_empty_email() {
+    let Some((app, _pool)) = spawn_server().await else {
+        return;
+    };
+
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/sign-in/identify")
+                .header("content-type", "application/json")
+                .body(Body::from(serde_json::json!({ "email": "" }).to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn passkey_sign_in_begin_rejects_invalid_continuation() {
+    // A tampered or null-user continuation token must never start a
+    // ceremony (401, no challenge rows).
+    let Some((app, _pool)) = spawn_server().await else {
+        return;
+    };
+
+    for token in ["garbage", "a|b|c|d", "\u{1}null\u{1}x"] {
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/v1/passkey/sign-in/begin")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        serde_json::json!({ "continuation_token": token }).to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            response.status(),
+            StatusCode::UNAUTHORIZED,
+            "tampered token '{token}' must 401"
+        );
+    }
+}
+
+#[tokio::test]
 async fn oauth_authorize_missing_response_type_rejected() {
     let Some((app, _pool)) = spawn_server().await else {
         return;

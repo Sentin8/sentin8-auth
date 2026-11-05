@@ -127,6 +127,18 @@ pub fn build_router(state: AppState) -> Router {
         .route("/v1/branding", get(handlers::branding))
         .route("/v1/session", get(handlers::get_session))
         .route("/v1/sign-in", post(handlers::sign_in))
+        .route("/v1/sign-in/identify", post(crate::identify::identify))
+        // Passkey-first factor (IDFIRST-1): discoverable-ceremony sign-in
+        // that creates the session active (the existing /verify pair is
+        // the second factor after a password-verified pending session).
+        .route(
+            "/v1/passkey/sign-in/begin",
+            post(passkey::signin_begin),
+        )
+        .route(
+            "/v1/passkey/sign-in/finish",
+            post(passkey::signin_finish),
+        )
         .route("/v1/sign-up", post(handlers::sign_up))
         .route("/v1/sign-out", post(handlers::sign_out))
         .route("/v1/health", get(handlers::health))

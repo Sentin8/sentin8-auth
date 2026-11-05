@@ -17,8 +17,7 @@ paths(
  // ── Frontend / session ─────────────────────────────────────────
         crate::handlers::branding,
         crate::handlers::get_session,
-        crate::handlers::sign_in,
-        crate::handlers::sign_up,
+        crate::handlers::sign_in,        crate::identify::identify,        crate::handlers::sign_up,
         crate::handlers::sign_out,
         crate::handlers::health,
         crate::handlers::consent_accounts,
@@ -39,8 +38,8 @@ paths(
         crate::passkey::enroll_begin,
         crate::passkey::enroll_finish,
         crate::passkey::verify_begin,
-        crate::passkey::verify_finish,
- // ── Password / email flows ─────────────────────────────────────
+        crate::passkey::verify_finish,        crate::passkey::signin_begin,
+        crate::passkey::signin_finish, // ── Password / email flows ─────────────────────────────────────
         crate::tokens::password_reset_request,
         crate::tokens::password_reset_confirm,
         crate::tokens::email_verify_request,
@@ -228,6 +227,8 @@ paths(
 
         crate::handlers::SignInRequest,
         crate::handlers::SignInResponse,
+        crate::identify::IdentifyRequest,
+        crate::identify::IdentifyResponse,
         crate::handlers::SignUpRequest,
         crate::handlers::SessionInfo,
         crate::app_passwords::CreateAppPasswordRequest,
@@ -245,6 +246,8 @@ paths(
         crate::passkey::VerifyBeginResponse,
         crate::passkey::VerifyFinishRequest,
         crate::passkey::VerifyFinishResponse,
+        crate::passkey::SignInBeginRequest,
+        crate::passkey::SignInBeginResponse,
         crate::tokens::PasswordResetRequest,
         crate::tokens::PasswordResetResponse,
         crate::tokens::PasswordResetConfirmRequest,

@@ -7903,6 +7903,93 @@
         "security": []
       }
     },
+    "/v1/passkey/sign-in/begin": {
+      "post": {
+        "tags": [
+          "passkey"
+        ],
+        "summary": "`POST /v1/passkey/sign-in/begin` - start a passkey-FIRST sign-in.",
+        "description": "Unlike `/v1/passkey/verify/begin` (the second factor after a\npassword-verified `pending_mfa` session), this begins the ceremony\nfrom the identify step's continuation token: no session exists yet,\nso the challenge rows land with `pending_token_id = NULL` and the\nbrowser gets `allowCredentials` populated from the user's stored\ncredential ids (a targeted ceremony - no resident-key discovery\nneeded). The finish creates the session `active` directly.",
+        "operationId": "signin_begin",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SignInBeginRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "WebAuthn assertion options for the passkey-first ceremony",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SignInBeginResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Continuation token invalid or expired"
+          },
+          "404": {
+            "description": "No active passkey factor for the account"
+          }
+        },
+        "security": []
+      }
+    },
+    "/v1/passkey/sign-in/finish": {
+      "post": {
+        "tags": [
+          "passkey"
+        ],
+        "summary": "`POST /v1/passkey/sign-in/finish` - validate the passkey-first\nassertion and create the session `active`.",
+        "description": "The ceremony checks are the second-factor finish's exactly\n(challenge freshness, origin allow-list, rpIdHash, ECDSA signature,\nstrictly-increasing sign counter) - the difference is session\ncreation: the passkey IS the authentication (WebAuthn\n`userVerification=required` provides the user-presence proof), so\nthe session lands `active` with no `pending_mfa` detour.",
+        "operationId": "signin_finish",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/VerifyFinishRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Assertion verified: an active session is created and its cookie returned",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/VerifyFinishResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid assertion or client data"
+          },
+          "401": {
+            "description": "Signature verification failed, or the presented credential is not the account's"
+          },
+          "404": {
+            "description": "Challenge not found"
+          },
+          "409": {
+            "description": "Challenge already consumed"
+          },
+          "410": {
+            "description": "Challenge expired"
+          }
+        },
+        "security": []
+      }
+    },
     "/v1/passkey/verify/begin": {
       "post": {
         "tags": [
@@ -8273,6 +8360,45 @@
           },
           "429": {
             "description": "Sign-in rate limit (bot protection) exceeded"
+          }
+        },
+        "security": []
+      }
+    },
+    "/v1/sign-in/identify": {
+      "post": {
+        "tags": [
+          "auth"
+        ],
+        "summary": "`POST /v1/sign-in/identify` - the identifier-first step.",
+        "description": "Email-only: answers the auth-method hints for the account and a\ncontinuation token. Bot-gated with the same windows as sign-in; never\nlocks or records failures (credential steps own those).",
+        "operationId": "identify",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/IdentifyRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Identify answer: continuation token + auth-method hints (same shape for unknown emails)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IdentifyResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Email is required"
+          },
+          "429": {
+            "description": "Identify rate limit (the same bot-protection windows as sign-in) exceeded"
           }
         },
         "security": []
@@ -12117,6 +12243,45 @@
           }
         }
       },
+      "IdentifyRequest": {
+        "type": "object",
+        "description": "Request body for sign-in identify.",
+        "required": [
+          "email"
+        ],
+        "properties": {
+          "email": {
+            "type": "string",
+            "description": "The email address the user wants to sign in with."
+          }
+        }
+      },
+      "IdentifyResponse": {
+        "type": "object",
+        "description": "Response payload for sign-in identify.",
+        "required": [
+          "continuation_token",
+          "methods",
+          "mfa_required"
+        ],
+        "properties": {
+          "continuation_token": {
+            "type": "string",
+            "description": "HMAC-signed continuation token (email|env_id|user_id|exp). Opaque\nto the client; consumed by the passkey-first begin endpoint."
+          },
+          "methods": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Auth methods the account can use, in preference order.\n`password` is always present (bcrypt accounts always have one);\n`passkey` appears when an active WebAuthn factor exists."
+          },
+          "mfa_required": {
+            "type": "boolean",
+            "description": "True when the account has an active TOTP factor - the credential\nstep can label the MFA expectation before the password is typed."
+          }
+        }
+      },
       "IntrospectRequest": {
         "type": "object",
         "description": "Request body for introspect.",
@@ -15666,6 +15831,63 @@
             ],
             "format": "uuid",
             "description": "user identifier."
+          }
+        }
+      },
+      "SignInBeginRequest": {
+        "type": "object",
+        "description": "Request body for passkey signin begin.",
+        "required": [
+          "continuation_token"
+        ],
+        "properties": {
+          "continuation_token": {
+            "type": "string",
+            "description": "The HMAC continuation token from `POST /v1/sign-in/identify`."
+          }
+        }
+      },
+      "SignInBeginResponse": {
+        "type": "object",
+        "description": "Response payload for passkey signin begin.",
+        "required": [
+          "challenge",
+          "rp_id",
+          "challenge_id",
+          "timeout",
+          "user_verification",
+          "allow_credentials"
+        ],
+        "properties": {
+          "allow_credentials": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "The user's credential ids (base64url) - the browser's\nallowCredentials for a targeted ceremony."
+          },
+          "challenge": {
+            "type": "string",
+            "description": "The challenge."
+          },
+          "challenge_id": {
+            "type": "string",
+            "format": "uuid",
+            "description": "challenge identifier."
+          },
+          "rp_id": {
+            "type": "string",
+            "description": "rp identifier."
+          },
+          "timeout": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The timeout.",
+            "minimum": 0
+          },
+          "user_verification": {
+            "type": "string",
+            "description": "The user verification."
           }
         }
       },

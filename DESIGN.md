@@ -188,6 +188,44 @@ sequenceDiagram
     Note over B,DB: A pending_mfa row never authenticates: find_by_token<br/>and is_valid reject it; /device/verify<br/>answers 401 mfa-required until active.
 ```
 
+**Identifier-first sign-in (IDFIRST-1) - the two-step split with
+passkey-first factor (the hosted UI's step 2 routes on the identify
+answer; `POST /v1/sign-in` itself stays single-shot and unchanged -
+the same certified path serves the HTML `/oauth/login` surface, the
+test bridge, and the device/assisted operator forms):**
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant B as browser (UI)
+    participant I as POST /v1/sign-in/identify
+    participant S as POST /v1/sign-in
+    participant P as POST /v1/passkey/sign-in/begin+finish
+    participant DB as auth schema
+
+    B->>I: {email}
+    I->>I: bot gates (same IP+email windows as sign-in)
+    I->>DB: env-scoped user lookup (no lockout check, no failed-attempt recording)
+    alt known user
+        I-->>B: 200 {continuation_token, methods:[password|passkey], mfa_required}
+    else unknown user
+        I-->>B: 200 same shape + synthetic token (methods=[password])
+    end
+    Note over I: per-user hints by decision (industry pattern): the leak<br/>equals the sign-up 409 existence oracle, throttled by the same windows
+    B->>S: {email, password} (unchanged certified path; needs_mfa detour unchanged)
+    B->>P: {continuation_token} → assertion (userVerification=required)
+    P->>P: challenge + origin + rpIdHash + signature + counter checks
+    P->>DB: INSERT session (status=active) - the passkey IS the auth
+    P-->>B: 200 {status:"active", session_cookie}
+    Note over P,B: allowCredentials = the user's stored credential ids<br/>(targeted ceremony); pending_token_id stays NULL until the session exists
+```
+
+The continuation token is the `login_page.rs` HMAC-SHA256 blob pattern
+(`email|env_id|user_id-or-null|exp`, 10-min TTL, `context_key()`):
+stateless, no new secrets, no server-side storage. The identify step
+never locks an account and never records a failed attempt - those
+belong to the credential step.
+
 **Device Authorization Grant lifecycle (RFC 8628 §3.1-§3.5, per-request
 families):**
 
@@ -391,6 +429,7 @@ In brief:
 | Audience | Group | Gate |
 |----------|-------|------|
 | public | `/.well-known/*`, `/oauth/*` protocol endpoints, `/v1/sign-in\|up\|out`, `/v1/health` | session/cookie or client auth per flow; bot protection + lockout on sign-in (RFC 6749 §10.4) |
+| identifier-first | `POST /v1/sign-in/identify`, `POST /v1/passkey/sign-in/{begin,finish}` | bot gates on identify (same windows as sign-in; no lockout/failure recording - credential steps own those); passkey begin gated by the HMAC continuation token; passkey finish = WebAuthn ceremony checks (§2 IDFIRST-1 diagram) |
 | device | `POST /oauth/device` (RFC 8628 §3.1), `POST /device/verify` (§3.3) | device: client auth (public allowed) + per-client `grant_types`/`scopes` gate; verify: `active` session only (401 for `pending_mfa`) + CSRF |
 | mTLS | `/mtls/oauth/token`, `/mtls/oauth/revoke` | cert-presence guard (RFC 8705 §5) |
 | workload | `POST /oauth/register` (DCR, RFC 7591) | interactive clients open; client_credentials-only requires mTLS cert scope-proof (§8) |
@@ -481,8 +520,19 @@ graph LR
   specs are implemented END-TO-END - nothing half-way.
 - **Rate limiting / bot protection**: IP 10/min, email 5/min sliding
   windows; 5 failures → durable `locked` status (config TTL); dummy
-  bcrypt compare on unknown accounts (no email enumeration, RFC 6749
-  §10.4 / RFC 6819 §4.5.2).
+  bcrypt compare on unknown accounts (no email enumeration on the
+  credential step, RFC 6749 §10.4 / RFC 6819 §4.5.2).
+- **Identifier-first disclosure posture (IDFIRST-1)**: the identify step
+  returns per-user auth-method hints for known accounts (the industry
+  pattern - step 2 must route to the right credential UI). This is a
+  deliberate, scoped existence disclosure: its leak equals the sign-up
+  409 "email already exists" oracle, it is throttled by the SAME
+  IP/email Valkey windows, and unknown emails answer the identical 200
+  shape (synthetic continuation token, default methods) so bulk
+  probing stays rate-limited rather than status-differentiated. The
+  credential steps keep the strict posture: password failures stay
+  uniform 401s, passkey finish never confirms or denies a specific
+  credential id.
 - **FAPI 2.0 posture**: platform profile enforces PAR (RFC 9126) + JARM
   + DPoP (RFC 9449) + issuer parameter (RFC 9207) + 900s max token
   lifetime + refresh rotation; env/org profiles override

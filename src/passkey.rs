@@ -40,6 +40,7 @@ use p256::ecdsa::signature::Verifier;
 use p256::ecdsa::Signature;
 use p256::ecdsa::VerifyingKey;
 use serde::{Deserialize, Serialize};
+use sqlx::Row;
 use uuid::Uuid;
 
 use crate::handlers::AppState;
@@ -701,6 +702,413 @@ pub async fn verify_finish(
         .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
         .ok_or_else(|| (StatusCode::NOT_FOUND, "pending session not found".into()))?;
+
+    Ok(Json(VerifyFinishResponse {
+        status: "active".into(),
+        session_cookie: Some(session.cookie(&crate::sessions::cookie_domain_from_headers(
+            &headers,
+            &state.config.sentin8_domain,
+        ))),
+    })
+    .into_response())
+}
+
+// ── Passkey-first factor (IDFIRST-1) ─────────────────────────────────────
+
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
+/// Request body for passkey signin begin.
+pub struct SignInBeginRequest {
+    /// The HMAC continuation token from `POST /v1/sign-in/identify`.
+    pub continuation_token: String,
+}
+
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+/// Response payload for passkey signin begin.
+pub struct SignInBeginResponse {
+    /// The challenge.
+    pub challenge: String,
+    /// rp identifier.
+    pub rp_id: String,
+    /// challenge identifier.
+    pub challenge_id: Uuid,
+    /// The timeout.
+    pub timeout: u64,
+    /// The user verification.
+    pub user_verification: String,
+    /// The user's credential ids (base64url) - the browser's
+    /// allowCredentials for a targeted ceremony.
+    pub allow_credentials: Vec<String>,
+}
+
+/// `POST /v1/passkey/sign-in/begin` - start a passkey-FIRST sign-in.
+///
+/// Unlike `/v1/passkey/verify/begin` (the second factor after a
+/// password-verified `pending_mfa` session), this begins the ceremony
+/// from the identify step's continuation token: no session exists yet,
+/// so the challenge rows land with `pending_token_id = NULL` and the
+/// browser gets `allowCredentials` populated from the user's stored
+/// credential ids (a targeted ceremony - no resident-key discovery
+/// needed). The finish creates the session `active` directly.
+#[utoipa::path(
+    post,
+    path = "/v1/passkey/sign-in/begin",
+    request_body = SignInBeginRequest,
+    responses(
+        (status = 200, description = "WebAuthn assertion options for the passkey-first ceremony", body = SignInBeginResponse),
+        (status = 401, description = "Continuation token invalid or expired"),
+        (status = 404, description = "No active passkey factor for the account"),
+    ),
+    security(),
+    tag = "passkey",
+)]
+pub async fn signin_begin(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(req): Json<SignInBeginRequest>,
+) -> Result<Response, (StatusCode, String)> {
+    // The continuation token IS the identifier-step proof (HMAC over
+    // email|env_id|user_id). A null-user token (unknown email) or any
+    // tamper/expiry fails here - the ceremony never starts.
+    let continuation = crate::identify::verify_continuation(&req.continuation_token)
+        .ok_or_else(|| (StatusCode::UNAUTHORIZED, "invalid or expired continuation".into()))?;
+    let user_id = continuation
+        .user_id
+        .ok_or_else(|| (StatusCode::UNAUTHORIZED, "unknown account".into()))?;
+
+    // The user's active passkey credentials - the allowCredentials list
+    // AND the challenge's verification targets. credential_id is stored
+    // as raw bytes (BYTEA); the wire allowCredentials re-encode base64url.
+    let cred_rows: Vec<(Uuid, Option<Vec<u8>>)> = sqlx::query_as(
+        r#"SELECT id, credential_id FROM mfa_factors
+           WHERE user_id = $1 AND factor_kind = 'webauthn' AND status = 'active'"#,
+    )
+    .bind(user_id)
+    .fetch_all(&state.pool)
+    .await
+    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    if cred_rows.is_empty() {
+        return Err((
+            StatusCode::NOT_FOUND,
+            "no active passkey factor".into(),
+        ));
+    }
+    use base64::Engine;
+    let allow_credentials: Vec<String> = cred_rows
+        .iter()
+        .filter_map(|(_, cid)| cid.as_ref())
+        .map(|raw| base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(raw))
+        .collect();
+    let factor_ids: Vec<Uuid> = cred_rows.iter().map(|(f, _)| *f).collect();
+
+    // Bot protection: the passkey path shares the sign-in windows (the
+    // ceremony is a credential attempt against the identified email).
+    let ip = crate::bot_protection::extract_client_ip(&headers);
+    crate::bot_protection::check_signin_rate(&state, &ip, &continuation.email).await?;
+    // Locked accounts are rejected here (the identify step never checks
+    // lockout - DESIGN §2 - but the credential step must).
+    crate::bot_protection::check_account_lockout(&state, user_id).await?;
+
+    // Challenge rows: same shape as the second-factor path but
+    // pending_token_id = NULL (no session exists yet). factor_id points
+    // at the user's first active credential; the finish matches the
+    // presented credential against the user's full factor set (a user
+    // may have several passkeys - any of them authenticates).
+    let challenge = random_bytes_32();
+    let challenge_b64 = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(&challenge);
+    let challenge_id = Uuid::new_v4();
+
+    let mut tx = state
+        .pool
+        .begin()
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    let _ = sqlx::query("SELECT sentin8_set_tenant_context($1)")
+        .bind(continuation.env_id)
+        .execute(&mut *tx)
+        .await;
+    sqlx::query(
+        r#"INSERT INTO mfa_challenges
+             (id, user_id, factor_id, challenge_kind, pending_token_id, expires_at)
+           VALUES ($1, $2, $3, 'verify', NULL, now() + ($4 || ' seconds')::interval)"#,
+    )
+    .bind(challenge_id)
+    .bind(user_id)
+    .bind(factor_ids[0])
+    .bind(WEBAUTHN_CHALLENGE_TTL_SECS.to_string())
+    .execute(&mut *tx)
+    .await
+    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    sqlx::query(
+        r#"INSERT INTO webauthn_challenges (id, challenge, user_id)
+           VALUES ($1, $2, $3)"#,
+    )
+    .bind(challenge_id)
+    .bind(&challenge)
+    .bind(user_id)
+    .execute(&mut *tx)
+    .await
+    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    let _ = tx.commit().await;
+
+    Ok(Json(SignInBeginResponse {
+        challenge: challenge_b64,
+        rp_id: derive_rp_id(&state, &headers),
+        challenge_id,
+        timeout: WEBAUTHN_CHALLENGE_TTL_SECS as u64 * 1000,
+        user_verification: "required".into(),
+        allow_credentials,
+    })
+    .into_response())
+}
+
+/// `POST /v1/passkey/sign-in/finish` - validate the passkey-first
+/// assertion and create the session `active`.
+///
+/// The ceremony checks are the second-factor finish's exactly
+/// (challenge freshness, origin allow-list, rpIdHash, ECDSA signature,
+/// strictly-increasing sign counter) - the difference is session
+/// creation: the passkey IS the authentication (WebAuthn
+/// `userVerification=required` provides the user-presence proof), so
+/// the session lands `active` with no `pending_mfa` detour.
+#[utoipa::path(
+    post,
+    path = "/v1/passkey/sign-in/finish",
+    request_body = VerifyFinishRequest,
+    responses(
+        (status = 200, description = "Assertion verified: an active session is created and its cookie returned", body = VerifyFinishResponse),
+        (status = 400, description = "Invalid assertion or client data"),
+        (status = 401, description = "Signature verification failed, or the presented credential is not the account's"),
+        (status = 404, description = "Challenge not found"),
+        (status = 409, description = "Challenge already consumed"),
+        (status = 410, description = "Challenge expired"),
+    ),
+    security(),
+    tag = "passkey",
+)]
+pub async fn signin_finish(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(req): Json<VerifyFinishRequest>,
+) -> Result<Response, (StatusCode, String)> {
+    // Challenge freshness (single-use, TTL).
+    let wa_row = sqlx::query(
+        r#"SELECT challenge, user_id, expires_at, consumed_at
+           FROM webauthn_challenges WHERE id = $1"#,
+    )
+    .bind(req.challenge_id)
+    .fetch_optional(&state.pool)
+    .await
+    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+    .ok_or_else(|| (StatusCode::NOT_FOUND, "challenge not found".into()))?;
+    let wa_challenge: Vec<u8> = wa_row.get("challenge");
+    let wa_expires_at: chrono::DateTime<chrono::Utc> = wa_row.get("expires_at");
+    let wa_consumed_at: Option<chrono::DateTime<chrono::Utc>> = wa_row.get("consumed_at");
+
+    if wa_consumed_at.is_some() {
+        return Err((StatusCode::CONFLICT, "challenge already consumed".into()));
+    }
+    if wa_expires_at < chrono::Utc::now() {
+        return Err((StatusCode::GONE, "challenge expired".into()));
+    }
+
+    // The MFA challenge row identifies the user (the first-factor path
+    // stores no pending_token_id - the session does not exist yet).
+    let mfa_row = sqlx::query(
+        r#"SELECT user_id FROM mfa_challenges WHERE id = $1"#,
+    )
+    .bind(req.challenge_id)
+    .fetch_optional(&state.pool)
+    .await
+    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+    .ok_or_else(|| (StatusCode::NOT_FOUND, "mfa challenge not found".into()))?;
+    let user_id: Uuid = mfa_row.get("user_id");
+
+    // The presented credential must be one of the account's active
+    // passkeys (the begin offered allowCredentials; a foreign credential
+    // id is rejected without revealing anything about the factor set).
+    // credential_id is stored BYTEA (the raw bytes enroll decoded from
+    // the wire's base64url) - compare against the decoded presentation.
+    use base64::Engine;
+    let presented_bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .decode(&req.credential_id)
+        .map_err(|e| (StatusCode::BAD_REQUEST, format!("invalid credentialId: {e}")))?;
+    let factor_row = sqlx::query_as::<_, (Uuid, Option<Vec<u8>>)>(
+        r#"SELECT id, public_key FROM mfa_factors
+           WHERE user_id = $1 AND factor_kind = 'webauthn'
+             AND status = 'active' AND credential_id = $2"#,
+    )
+    .bind(user_id)
+    .bind(&presented_bytes)
+    .fetch_optional(&state.pool)
+    .await
+    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    let row = match factor_row {
+        Some(row) => row,
+        None => {
+            return Err((
+                StatusCode::UNAUTHORIZED,
+                "credential is not registered to this account".into(),
+            ))
+        }
+    };
+    let factor_id: Uuid = row.0;
+    let public_key_sec1: Option<Vec<u8>> = row.1;
+    let public_key_sec1 = public_key_sec1
+        .filter(|pk| !pk.is_empty())
+        .ok_or_else(|| (StatusCode::INTERNAL_SERVER_ERROR, "missing public key".into()))?;
+    let verifying_key = VerifyingKey::from_sec1_bytes(&public_key_sec1).map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("invalid stored public key: {e}"),
+        )
+    })?;
+
+    // Client data: type + challenge + verified origin.
+    let client_data = decode_client_data(&req.client_data_json)?;
+    if client_data.r#type != "webauthn.get" {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            "clientDataJSON type must be webauthn.get".into(),
+        ));
+    }
+    if client_data.challenge.as_bytes() != wa_challenge.as_slice() {
+        return Err((StatusCode::UNAUTHORIZED, "challenge mismatch".into()));
+    }
+    verify_origin(&state, &headers, &client_data.origin)?;
+    let rp_id = derive_rp_id(&state, &headers);
+
+    // Authenticator data + signature.
+    let auth_data = base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .decode(&req.authenticator_data)
+        .map_err(|e| {
+            (
+                StatusCode::BAD_REQUEST,
+                format!("invalid authenticatorData: {e}"),
+            )
+        })?;
+    if auth_data.len() < 37 {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            "authenticatorData too short".into(),
+        ));
+    }
+    verify_rp_id_hash(&auth_data, &rp_id)?;
+
+    let signature_bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .decode(&req.signature)
+        .map_err(|e| (StatusCode::BAD_REQUEST, format!("invalid signature: {e}")))?;
+    let signature = Signature::from_der(&signature_bytes).map_err(|e| {
+        (
+            StatusCode::BAD_REQUEST,
+            format!("invalid DER signature: {e}"),
+        )
+    })?;
+    let mut message = auth_data.clone();
+    let client_data_hash = sha256(&client_data.raw_bytes);
+    message.extend_from_slice(&client_data_hash);
+    verifying_key.verify(&message, &signature).map_err(|_| {
+        (
+            StatusCode::UNAUTHORIZED,
+            "signature verification failed".into(),
+        )
+    })?;
+
+    // Sign-counter clone detection (same rule as the second-factor path).
+    let new_count = extract_sign_count(&auth_data)?;
+    if new_count > 0 {
+        let updated = sqlx::query(
+            r#"UPDATE mfa_factors SET counter = $1
+               WHERE id = $2 AND (counter IS NULL OR counter < $1)"#,
+        )
+        .bind(new_count as i64)
+        .bind(factor_id)
+        .execute(&state.pool)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+        if updated.rows_affected() == 0 {
+            tracing::warn!(
+                factor_id = %factor_id,
+                counter = new_count,
+                "webauthn sign counter did not increase - possible cloned credential"
+            );
+            return Err((
+                StatusCode::UNAUTHORIZED,
+                "sign counter did not increase - credential may be cloned".into(),
+            ));
+        }
+    }
+
+    // Consume the challenges (single use).
+    let _ = sqlx::query("DELETE FROM webauthn_challenges WHERE id = $1")
+        .bind(req.challenge_id)
+        .execute(&state.pool)
+        .await
+        .is_ok();
+    let _ = sqlx::query("UPDATE mfa_challenges SET consumed_at = now() WHERE id = $1")
+        .bind(req.challenge_id)
+        .execute(&state.pool)
+        .await
+        .is_ok();
+
+    // The account's durable status is re-checked at the moment of
+    // session creation (the begin checked it, but the ceremony takes
+    // seconds - a lock or suspension landing mid-ceremony must not
+    // mint a session).
+    let user_row: Option<(Option<String>, Option<Uuid>)> = sqlx::query_as(
+        r#"SELECT status, env_id FROM users WHERE id = $1"#,
+    )
+    .bind(user_id)
+    .fetch_optional(&state.pool)
+    .await
+    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    let (status, user_env_id) = user_row
+        .ok_or_else(|| (StatusCode::NOT_FOUND, "user not found".into()))?;
+    if status.as_deref() != Some("active") {
+        return Err((StatusCode::FORBIDDEN, "account is not active".into()));
+    }
+    let user_env_id = user_env_id
+        .ok_or_else(|| (StatusCode::INTERNAL_SERVER_ERROR, "missing env id".into()))?;
+
+    let token_id = Uuid::new_v4().to_string();
+    let mut session_tx = state
+        .pool
+        .begin()
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    let _ = sqlx::query("SELECT sentin8_set_tenant_context($1)")
+        .bind(user_env_id)
+        .execute(&mut *session_tx)
+        .await;
+    let session = Session::create_with_status(
+        &mut *session_tx,
+        user_id,
+        user_env_id,
+        &token_id,
+        None,
+        chrono::Duration::seconds(state.config.session_ttl_secs as i64),
+        "active",
+    )
+    .await
+    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    let _ = session_tx.commit().await;
+
+    // A successful authentication clears the failed-attempt counter
+    // (same as the password path's reset_failed_signins).
+    let _ = crate::bot_protection::reset_failed_signins(&state, user_id).await;
+
+    // Event: passkey sign-in (the session lifecycle visibility).
+    // emit_event_tx sets the tenant context on the connection itself.
+    if let Ok(mut evt_tx) = state.pool.begin().await {
+        crate::events::emit_event_tx(
+            &mut evt_tx,
+            user_env_id,
+            "sentin8:auth:passkey:signed-in",
+            serde_json::json!({ "user_id": user_id, "session_id": session.id }),
+        )
+        .await
+        .ok();
+        let _ = evt_tx.commit().await;
+    }
 
     Ok(Json(VerifyFinishResponse {
         status: "active".into(),
