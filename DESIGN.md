@@ -1121,7 +1121,13 @@ RFC 8705 self-signed client-cert surface) WITHOUT mutating `../.env`.
    `make conformance-up`.
 2. `make conformance-seed` - provisions the certification tenant (org
    `conformance-local`, env `cert`, test user, suite clients via DCR
-   with the suite callback) through the platform API only.
+   with the suite callback) through the platform API only. The
+   profile-per-env battery uses `make conformance-seed-all` (one env per
+   family, DESIGN §9a.2 item 2). The seed's HAIP issuance pass builds
+   the anchor/leaf chain from the tenant's live ES256 key: when the
+   JWKS carries no ES256 key yet (the pass-1 profile PUT has not made
+   the tenant family resolve), the seed reports the state and exits
+   non-zero - never a silently-empty anchor row.
 3. Create the test plan in the suite: OIDC Basic → Config → Dynamic;
    Logout RP-Initiated + Back-Channel; FAPI 2: Security Profile →
    Message Signing; FAPI 1: Advanced; CIBA: Poll → Ping; OID4VCI
