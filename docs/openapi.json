@@ -214,8 +214,8 @@
         "tags": [
           "oauth"
         ],
-        "summary": "`POST /device/verify` - the signed-in user submits the user_code to\napprove a device sign-in (RFC 8628 ).",
-        "description": "this endpoint **requires a valid session** (cookie or\nBearer). The approving user is the session's user - `user_id`, `org_id`,\nand `env_id` are taken from the session, NEVER from the request body,\nso knowledge of a user_code alone can no longer mint tokens for an\narbitrary user.\nHandle device verify.",
+        "summary": "`POST /device/verify` - the signed-in user submits the user_code to\napprove or DENY a device sign-in (RFC 8628 §3.3).",
+        "description": "this endpoint **requires a valid ACTIVE session** (cookie or\nBearer). The approving user is the session's user - `user_id`, `org_id`,\nand `env_id` are taken from the session, NEVER from the request body,\nso knowledge of a user_code alone can no longer mint tokens for an\narbitrary user. A `pending_mfa` session is rejected with a distinct\n401 (`mfa required`) - the second factor must complete before any\ndevice decision (MFA-SYNC, DESIGN §3).\nHandle device verify.",
         "operationId": "device_verify",
         "requestBody": {
           "content": {
@@ -229,7 +229,7 @@
         },
         "responses": {
           "200": {
-            "description": "Device sign-in approved (polling grant armed for this user)",
+            "description": "Device decision recorded (approve or deny - the polling grant reads it on next poll)",
             "content": {
               "application/json": {
                 "schema": {
@@ -242,7 +242,7 @@
             "description": "Unknown user_code"
           },
           "401": {
-            "description": "No session - approval requires an authenticated user"
+            "description": "No session, invalid/expired session, or pending_mfa session (mfa required)"
           },
           "410": {
             "description": "user_code expired"
@@ -983,7 +983,7 @@
             }
           },
           "400": {
-            "description": "Unknown client"
+            "description": "Unknown client, unauthorized_client (no device grant), or invalid_scope"
           },
           "401": {
             "description": "Client authentication failed"
@@ -9459,12 +9459,26 @@
             ],
             "description": "Primary accent color."
           },
+          "privacy_url": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Tenant privacy-policy link (hosted-UI footer)."
+          },
           "sign_in_text": {
             "type": [
               "string",
               "null"
             ],
             "description": "Sign-in page tagline override."
+          },
+          "terms_url": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Tenant terms-of-service link (hosted-UI footer)."
           },
           "theme_mode": {
             "type": [
@@ -11091,6 +11105,13 @@
           "user_code"
         ],
         "properties": {
+          "action": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "RFC 8628 §3.4 decision: `approve` (default when absent) or `deny`.\nDeny arms the polling grant's `access_denied` answer.\nThe action."
+          },
           "user_code": {
             "type": "string",
             "description": "The device user_code being approved. The approving user identity\ncomes from the session - never the body.\nThe user code."
@@ -11106,7 +11127,7 @@
         "properties": {
           "status": {
             "type": "string",
-            "description": "Always `approved` on success."
+            "description": "The recorded decision: `approved` or `denied` (RFC 8628 §3.4 -\nthe polling grant answers tokens or `access_denied`)."
           }
         }
       },
@@ -12838,7 +12859,7 @@
               "boolean",
               "null"
             ],
-            "description": "The email's verified flag (the `email` scope's second member,\nOIDCC-5.4 - served with the email claim family)."
+            "description": " The email's verified flag (the `email` scope's second member,\n.4 - served with the email claim family)."
           },
           "family_name": {
             "type": [

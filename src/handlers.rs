@@ -964,6 +964,8 @@ pub async fn branding(
         font_family: b.font_family,
         custom_css: b.custom_css,
         sign_in_text: b.sign_in_text,
+        privacy_url: b.privacy_url,
+        terms_url: b.terms_url,
     })
 }
 
@@ -980,6 +982,8 @@ struct MergedBranding {
     theme_mode: Option<String>,
     custom_css: Option<String>,
     sign_in_text: Option<String>,
+    privacy_url: Option<String>,
+    terms_url: Option<String>,
 }
 
 /// Fetch merged org→env branding from `sentin8_sys_branding`. Returns `Ok(default)`
@@ -992,7 +996,7 @@ async fn fetch_merged_branding(
 ) -> Result<MergedBranding, sqlx::Error> {
     // Org-level branding (scope='org', env_id IS NULL).
     let org_row = sqlx::query(
-        r#"SELECT logo_url, logo_icon_url, primary_color, accent_color, font_family, theme_mode, custom_css, sign_in_text
+        r#"SELECT logo_url, logo_icon_url, primary_color, accent_color, font_family, theme_mode, custom_css, sign_in_text, privacy_url, terms_url
              FROM branding
             WHERE org_id = $1 AND scope = 'org' AND env_id IS NULL"#,
     )
@@ -1001,7 +1005,7 @@ async fn fetch_merged_branding(
     .await?;
     // Env-level branding (scope='env', env_id = $2).
     let env_row = sqlx::query(
-        r#"SELECT logo_url, logo_icon_url, primary_color, accent_color, font_family, theme_mode, custom_css, sign_in_text
+        r#"SELECT logo_url, logo_icon_url, primary_color, accent_color, font_family, theme_mode, custom_css, sign_in_text, privacy_url, terms_url
              FROM branding
             WHERE org_id = $1 AND env_id = $2 AND scope = 'env'"#,
     )
@@ -1031,6 +1035,8 @@ async fn fetch_merged_branding(
         theme_mode: pick(&org_row, &env_row, "theme_mode"),
         custom_css: pick(&org_row, &env_row, "custom_css"),
         sign_in_text: pick(&org_row, &env_row, "sign_in_text"),
+        privacy_url: pick(&org_row, &env_row, "privacy_url"),
+        terms_url: pick(&org_row, &env_row, "terms_url"),
     })
 }
 

@@ -38,6 +38,12 @@ pub struct BrandingResponse {
     /// Sign-in page tagline override.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sign_in_text: Option<String>,
+    /// Tenant privacy-policy link (hosted-UI footer).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub privacy_url: Option<String>,
+    /// Tenant terms-of-service link (hosted-UI footer).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub terms_url: Option<String>,
 }
 
 /// A created app password (`POST /v1/me/app-passwords`); the raw
