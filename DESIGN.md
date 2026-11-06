@@ -53,17 +53,17 @@ graph TD
         WALLET["Wallet surface<br/>OID4VCI issuer · OID4VP verifier · SD-JWT"]
     end
 
-    SYS - "provision verbs" -> AUTH
-    SVC - "verify bearer (SDK, JWKS)" -> AUTH
-    SVC - "DCR / client-cert mints" -> DCR
-    BFF -> OAUTH
-    CLI -> OAUTH
-    WAL - "OID4VCI / SD-JWT VP" -> AUTH
-    SU - "drive full protocol flows" -> AUTH
-    AUTH - "webhooks (HMAC)" -> HOOKS
-    AUTH - "post_outbox → POST /v1/send" -> POST["sentin8:post"]
-    AUTH - "audit spill → POST /v1/audit" -> SYS
-    AUTH - "auth.outbox → produce" -> BUS["sentin8:bus"]
+    SYS -- "provision verbs" --> AUTH
+    SVC -- "verify bearer (SDK, JWKS)" --> AUTH
+    SVC -- "DCR / client-cert mints" --> DCR
+    BFF --> OAUTH
+    CLI --> OAUTH
+    WAL -- "OID4VCI / SD-JWT VP" --> AUTH
+    SU -- "drive full protocol flows" --> AUTH
+    AUTH -- "webhooks (HMAC)" --> HOOKS
+    AUTH -- "post_outbox → POST /v1/send" --> POST["sentin8:post"]
+    AUTH -- "audit spill → POST /v1/audit" --> SYS
+    AUTH -- "auth.outbox → produce" --> BUS["sentin8:bus"]
 ```
 
 **Trust boundary note.** Every caller sits behind Sentin8:Proxy TLS
@@ -103,14 +103,14 @@ graph TD
         KEYS[("auth.signing_keys")]
     end
 
-    EDGE -> OAUTH & DCR & IDP & ADM & SCIMR & WALLET & SSO & HOOKS
-    OAUTH -> JARS
-    IDP -> ID["identity handlers"]
-    ADM -> POOL
-    OAUTH -> VK
-    OAUTH -> KEYS
-    PUSH -> POST2["post"]
-    HOOKS -> POOL
+    EDGE --> OAUTH & DCR & IDP & ADM & SCIMR & WALLET & SSO & HOOKS
+    OAUTH --> JARS
+    IDP --> ID["identity handlers"]
+    ADM --> POOL
+    OAUTH --> VK
+    OAUTH --> KEYS
+    PUSH --> POST2["post"]
+    HOOKS --> POOL
 ```
 
 **Request lifecycle - authorization-code token issuance (FAPI 2.0
@@ -185,7 +185,7 @@ sequenceDiagram
         S->>DB: INSERT session (status=active)
         S-->>B: 200 + set-cookie (active session)
     end
-    Note over B,DB: A pending_mfa row never authenticates: find_by_token<br/>and is_valid reject it; /device/verify<br/>answers 401 mfa-required until active.
+    Note over B,DB: A pending_mfa row never authenticates: find_by_token<br/>and is_valid reject it - /device/verify<br/>answers 401 mfa-required until active.
 ```
 
 **Identifier-first sign-in (IDFIRST-1) - the two-step split with
@@ -212,12 +212,12 @@ sequenceDiagram
         I-->>B: 200 same shape + synthetic token (methods=[password])
     end
     Note over I: per-user hints by decision (industry pattern): the leak<br/>equals the sign-up 409 existence oracle, throttled by the same windows
-    B->>S: {email, password} (unchanged certified path; needs_mfa detour unchanged)
+    B->>S: {email, password} (unchanged certified path - needs_mfa detour unchanged)
     B->>P: {continuation_token} → assertion (userVerification=required)
     P->>P: challenge + origin + rpIdHash + signature + counter checks
     P->>DB: INSERT session (status=active) - the passkey IS the auth
     P-->>B: 200 {status:"active", session_cookie}
-    Note over P,B: allowCredentials = the user's stored credential ids<br/>(targeted ceremony); pending_token_id stays NULL until the session exists
+    Note over P,B: allowCredentials = the user's stored credential ids<br/>(targeted ceremony) - pending_token_id stays NULL until the session exists
 ```
 
 The continuation token is the `login_page.rs` HMAC-SHA256 blob pattern
@@ -346,34 +346,34 @@ erDiagram
 stateDiagram-v2
     direction LR
     state session {
-        [*] -> active: sign-in (no MFA enrolled)
-        [*] -> pending_mfa: sign-in (TOTP enrolled)
-        pending_mfa -> active: /v1/mfa/verify (challenge consumed)
-        pending_mfa -> revoked: expiry / sign-out sweep
-        active -> revoked : sign-out / admin
-        active -> expired : expiry
+        [*] --> active: sign-in (no MFA enrolled)
+        [*] --> pending_mfa: sign-in (TOTP enrolled)
+        pending_mfa --> active: /v1/mfa/verify (challenge consumed)
+        pending_mfa --> revoked: expiry / sign-out sweep
+        active --> revoked : sign-out / admin
+        active --> expired : expiry
     }
     state factor {
-        [*] -> pending: enroll begin
-        pending -> active: verify
-        active -> disabled
+        [*] --> pending: enroll begin
+        pending --> active: verify
+        active --> disabled
     }
     state device_code {
-        [*] -> pending: POST /oauth/device
-        pending -> approved: /device/verify (session-bound user)
-        pending -> denied: /device/verify (deny)
-        pending -> expired: TTL (900s)
-        approved -> [*]: token poll (code consumed)
-        denied -> [*]: token poll answers access_denied
-        expired -> [*]: token poll answers expired_token
+        [*] --> pending: POST /oauth/device
+        pending --> approved: /device/verify (session-bound user)
+        pending --> denied: /device/verify (deny)
+        pending --> expired: TTL (900s)
+        approved --> [*]: token poll (code consumed)
+        denied --> [*]: token poll answers access_denied
+        expired --> [*]: token poll answers expired_token
     }
     state grant {
-        [*] -> active: record_grant
-        active -> revoked: delete (cascade jti)
+        [*] --> active: record_grant
+        active --> revoked: delete (cascade jti)
     }
     state credential {
-        [*] -> active: issuance
-        active -> revoked: revoke (status list bit)
+        [*] --> active: issuance
+        active --> revoked: revoke (status list bit)
     }
 ```
 
@@ -502,12 +502,12 @@ open-banking grant truth; revocation emits
 
 ```mermaid
 graph LR
-    REQ["request"] -> V["verify bearer<br/>(RFC 6750 §2.2 - issuer·sig·exp·aud·token_tp)"]
-    V -> T["resolve tenant (env_id)"]
-    T -> P["Shield require_policy<br/>(live roles+scopes)"]
-    P -> RLS["set_tenant_context (tx-local)"]
-    RLS -> EXEC["handler executes"]
-    EXEC -> AUD["audit + outbox + journal"]
+    REQ["request"] --> V["verify bearer<br/>(RFC 6750 §2.2 - issuer·sig·exp·aud·token_tp)"]
+    V --> T["resolve tenant (env_id)"]
+    T --> P["Shield require_policy<br/>(live roles+scopes)"]
+    P --> RLS["set_tenant_context (tx-local)"]
+    RLS --> EXEC["handler executes"]
+    EXEC --> AUD["audit + outbox + journal"]
 ```
 
 - **Token verification** is SDK-reused by every service
@@ -663,17 +663,17 @@ delegated JWT (RFC 8693); only the *workload's own* M2M JWT disappears.
 
 ```mermaid
 flowchart TD
-    A[refresh replay] -> B{denylist hit?}
-    B - yes -> C[invalid_grant - replay detected]
-    B - no -> D[rotate + denylist old jti]
-    E[Valkey down] -> F[denylist fail-open = false<br/>rate-limit checks skip]
-    F -> G[DB predicates backstop expiry]
-    H[webhook delivery fail] -> I[retry 30s·2^n ×5]
-    I -> J[failed_at marked]
-    K[master key wrong] -> L[boot failure - refuse to start]
-    M[Bus down] -> N[outbox rows persist<br/>5s safety poll]
-    O[Post down] -> P[post_outbox unpushed rows retried]
-    Q[signing key rotated] -> R[JWKS overlap: all keys published<br/>old tokens verify until expiry]
+    A[refresh replay] --> B{denylist hit?}
+    B -- yes --> C[invalid_grant - replay detected]
+    B -- no --> D[rotate + denylist old jti]
+    E[Valkey down] --> F["denylist fail-open = false<br/>rate-limit checks skip"]
+    F --> G[DB predicates backstop expiry]
+    H[webhook delivery fail] --> I["retry 30s·2^n ×5"]
+    I --> J[failed_at marked]
+    K[master key wrong] --> L[boot failure - refuse to start]
+    M[Bus down] --> N[outbox rows persist<br/>5s safety poll]
+    O[Post down] --> P[post_outbox unpushed rows retried]
+    Q[signing key rotated] --> R["JWKS overlap: all keys published<br/>old tokens verify until expiry"]
 ```
 
 - **JWKS rotation**: insert-new-key overlap (all persisted keys published
@@ -697,14 +697,14 @@ flowchart TD
 
 ```mermaid
 graph LR
-    REQ["request tasks (axum)"] -> POOL[("capped pool (default 3)")]
-    VAL[("Valkey")] - "codes, PAR, CIBA, denylists, rate" -> REQ
-    PP["post pusher task (10s)"] -> POST["POST /v1/send<br/>(transaction|security|marketing|system)"]
-    PO2[("auth.post_outbox")] -> PP
-    WR["webhook relay task (1s, batch 25)"] -> WO[("auth.webhook_outbox")]
-    WR -> EP["webhook endpoints"]
-    RELAY["outbox relay (shell)"] -> O[("auth.outbox")]
-    O -> RELAY
+    REQ["request tasks (axum)"] --> POOL[("capped pool (default 3)")]
+    VAL[("Valkey")] -- "codes, PAR, CIBA, denylists, rate" --> REQ
+    PP["post pusher task (10s)"] --> POST["POST /v1/send<br/>(transaction|security|marketing|system)"]
+    PO2[("auth.post_outbox")] --> PP
+    WR["webhook relay task (1s, batch 25)"] --> WO[("auth.webhook_outbox")]
+    WR --> EP["webhook endpoints"]
+    RELAY["outbox relay (shell)"] --> O[("auth.outbox")]
+    O --> RELAY
 ```
 
 - Sign-in hot path: 2 PG round-trips + 3 Valkey ops (rate, lockout,
@@ -815,13 +815,13 @@ graph TD
     W["oidf_flows.rs + oidf_fapi.rs + oidf_vci.rs<br/>+ oidf_vci_haip.rs + oidf_logout.rs<br/>(wire-level mirrors of the §9a.2 profile plans<br/>- every §9a.4/§9a.14/§9a.16/§9a.19/§9a.20/<br/>§9a.22/§9a.23 surface, in-process)"]
     C["OIDF conformance rig (§9a)<br/>Basic+Config+Dynamic+Logout OP ·<br/>FAPI2+FAPI1+CIBA · OID4VCI/VP · IDA<br/>(local OIDF suite, classical mode)"]
     E["E2E - browser auth flows via BFF"]
-    U -> I1 & I2 & I3
-    OG -.fails CI on any unannotated route.-> I1
-    I1 -> E
-    W -> C
-    I1 & I2 & I3 -> E
-    E -> C
-    C -.gate before any certification submission.-> SUB["OIDF submission<br/>(open-source fee waiver)"]
+    U --> I1 & I2 & I3
+    OG -. fails CI on any unannotated route .-> I1
+    I1 --> E
+    W --> C
+    I1 & I2 & I3 --> E
+    E --> C
+    C -. gate before any certification submission .-> SUB["OIDF submission<br/>(open-source fee waiver)"]
 ```
 
 - OpenID certification live flows run against a dedicated local
@@ -1032,9 +1032,9 @@ graph TD
         P["Sentin8:Proxy ingress<br/>*.local.sentin8.dev:443"]
         AUTH["sentin8:auth"]
     end
-    N - "redirect_uri + bc<br/>https://localhost.emobix.co.uk:8443/test/a/{alias}/callback" -> AUTH
-    S - "PAR / token / introspect /<br/>JWKS / DCR / bc-authorize" -> P
-    A - "sign-in + consent via UI" -> P
+    N -- "redirect_uri + bc<br/>https://localhost.emobix.co.uk:8443/test/a/{alias}/callback" --> AUTH
+    S -- "PAR / token / introspect /<br/>JWKS / DCR / bc-authorize" --> P
+    A -- "sign-in + consent via UI" --> P
     M --- S
 ```
 
