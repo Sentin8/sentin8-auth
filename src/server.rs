@@ -330,6 +330,14 @@ pub fn build_router(state: AppState) -> Router {
             "/v1/auth/wallet/metadata",
             get(crate::wallet::wallet_metadata),
         )
+        // DCR client display metadata (RFC 7591 2.1 - the sign-in UI
+        // renders logo_uri/policy_uri/tos_uri for the REQUESTING
+        // client; the suite's oidcc-registration-logo/policy/tos-uri
+        // modules; CONFFIX-1).
+        .route(
+            "/v1/auth/client/display",
+            get(crate::handlers::client_display),
+        )
         // OID4VCI credential issuance.
         // OID4VCI credential-offer BROWSER landing page (DESIGN §9a.20):
         // the wallet plan's first hop - the suite opens this URL with the

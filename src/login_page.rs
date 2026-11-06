@@ -275,6 +275,76 @@ a {{ color: #D4AF37; }}
     )
 }
 
+/// A server-rendered TERMINAL confirmation page for a session-scoped
+/// logout with NO landing target (DESIGN §9a.23): the suite's
+/// `ExpectSuccessfulLogoutPage` modules demand a visible "logged out"
+/// landing - a 302 to `/sign-in` shows the LOGIN page, not a logout
+/// confirmation. Same JS-free panel family as the error page.
+pub fn logout_confirmation_page() -> String {
+    r#"<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Signed out - Sentin8</title>
+<style>
+body { font-family: Inter, system-ui, sans-serif; background: #0f1117; color: #e6e8ee;
+       display: flex; align-items: center; justify-content: center; min-height: 100vh; margin: 0; }
+.panel { background: #171a23; border: 1px solid #262b38; border-radius: 12px;
+        padding: 2rem; width: 100%; max-width: 420px; box-sizing: border-box; }
+h1 { font-size: 1.25rem; margin: 0 0 1rem; }
+p { font-size: 0.95rem; margin: 0.5rem 0; }
+a { color: #D4AF37; }
+</style>
+</head>
+<body>
+<div class="panel">
+<h1>You have been signed out.</h1>
+<p id="confirmation_message">Your session has ended.</p>
+<p><a href="/sign-in">Sign in again</a></p>
+</div>
+</body>
+</html>"#
+        .to_string()
+}
+
+/// A server-rendered TERMINAL error page for an authorization request
+/// that CANNOT be redirected (RFC 6749 §4.1.2.1 - unknown client_id or a
+/// missing/unregistered redirect_uri: the server MUST NOT redirect and
+/// SHOULD inform the resource owner). Same JS-free panel family
+/// (§9a.8); the `invalid_request` JSON body stays on the NON-BROWSER
+/// surfaces (PAR API, the SPA-internal continue).
+pub fn authorize_error_page(msg: &str) -> String {
+    format!(
+        r#"<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Invalid request - Sentin8</title>
+<style>
+body {{ font-family: Inter, system-ui, sans-serif; background: #0f1117; color: #e6e8ee;
+       display: flex; align-items: center; justify-content: center; min-height: 100vh; margin: 0; }}
+.panel {{ background: #171a23; border: 1px solid #262b38; border-radius: 12px;
+        padding: 2rem; width: 100%; max-width: 420px; box-sizing: border-box; }}
+h1 {{ font-size: 1.25rem; margin: 0 0 1rem; }}
+p {{ font-size: 0.95rem; margin: 0.5rem 0; }}
+.error {{ color: #ff8080; }}
+a {{ color: #D4AF37; }}
+</style>
+</head>
+<body>
+<div class="panel">
+<h1>Invalid request</h1>
+<p id="error_message" class="error">{msg}</p>
+<p><a href="/sign-in">Return to sign in</a></p>
+</div>
+</body>
+</html>"#,
+        msg = esc(msg),
+    )
+}
+
 /// `GET /oauth/login` - render the HTML login form (DESIGN §9a.8).
 /// The authorize handler redirects here with the OAuth context in the
 /// query string; it is signed into the hidden field.

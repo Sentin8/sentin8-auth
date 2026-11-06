@@ -1185,3 +1185,112 @@ async fn oidf_pairwise_client_mints_client_specific_sub() {
         "the derivation hashes to 16 bytes (§8 salted form)"
     );
 }
+
+/// §9a.22 (RFC 6749 §4.1.2.1 - the browser-visible authorize rejects):
+/// an authorization request with NO safe redirect target - an unknown
+/// client_id, or a missing/unregistered redirect_uri - MUST NOT
+/// auto-redirect and SHOULD inform the resource owner: GET /oauth/
+/// authorize serves the human-visible error page naming the reason (the
+/// suite's ExpectRedirectUriMissingErrorPage / ExpectRedirectUriErrorPage
+/// / ExpectInvalidRequestOrInvalidClientErrorPage modules). The JSON
+/// `invalid_request` body stays on the NON-BROWSER surfaces (the PAR
+/// API and the SPA-internal continue POST).
+#[tokio::test]
+async fn oidf_authorize_rejects_serve_browser_error_pages() {
+    let Some((app, pool)) = oidf::spawn_server().await else {
+        return;
+    };
+    let _guard = DB_MUTEX.lock().await;
+    seed_profile(&pool, &Posture::Standard, None).await;
+    let client = register_client(&pool, &ClientSpec::secret_post()).await;
+
+    let get_page = |query: String| {
+        let app = app.clone();
+        async move {
+            let resp = app
+                .oneshot(
+                    Request::builder()
+                        .uri(format!("/oauth/authorize{query}").as_str())
+                        .header("x-sentin8-env-id", SYS_ENV.to_string())
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            let status = resp.status();
+            let ctype = resp
+                .headers()
+                .get("content-type")
+                .and_then(|v| v.to_str().ok().map(str::to_string))
+                .unwrap_or_default();
+            let bytes = axum::body::to_bytes(resp.into_body(), 1024 * 1024)
+                .await
+                .unwrap();
+            (
+                status,
+                ctype,
+                String::from_utf8_lossy(&bytes).to_string(),
+            )
+        }
+    };
+
+    // (1) UNKNOWN client_id: the human-visible page (not a redirect, not
+    //     a raw JSON body).
+    let (st1, ct1, body1) = get_page(format!(
+        "?response_type=code&client_id=does-not-exist&redirect_uri={}&scope=openid&state=x",
+        urlencode(REDIRECT_URI)
+    ))
+    .await;
+    assert_eq!(st1, StatusCode::BAD_REQUEST, "unknown client: {st1}");
+    assert!(
+        ct1.starts_with("text/html"),
+        "the browser surface is a PAGE (RFC 6749 SHOULD inform the RO): {ct1}"
+    );
+    assert!(
+        body1.contains("client_id") && body1.to_ascii_lowercase().contains("invalid request"),
+        "the page names the unknown client as the reason: {}",
+        &body1.chars().take(200).collect::<String>()
+    );
+    assert!(
+        !body1.to_ascii_lowercase().contains("<script"),
+        "the page is the JS-free posture (§9a.8 family)"
+    );
+
+    // (2) MISSING redirect_uri against a client with MULTIPLE
+    //     registrations (no adoption - zero safe target): the
+    //     "redirect uri is missing" page.
+    let multi = ClientSpec {
+        redirect_uris: Some(vec![
+            REDIRECT_URI.to_string(),
+            "https://rp2.example.org/cb".to_string(),
+        ]),
+        ..ClientSpec::secret_post()
+    };
+    let client2 = register_client(&pool, &multi).await;
+    let (st2, _ct2, body2) = get_page(format!(
+        "?response_type=code&client_id={}&scope=openid&state=x",
+        client2.client_id
+    ))
+    .await;
+    assert_eq!(st2, StatusCode::BAD_REQUEST, "missing redirect_uri: {st2}");
+    assert!(
+        body2.contains("redirect uri is missing"),
+        "the page SAYS the redirect uri is missing (ExpectRedirectUriMissingErrorPage): {}",
+        &body2.chars().take(200).collect::<String>()
+    );
+
+    // (3) UNREGISTERED (query-extended) redirect_uri: the "not
+    //     registered" page (RFC 6749 §3.1.2.3 exact-string match).
+    let (st3, _ct3, body3) = get_page(format!(
+        "?response_type=code&client_id={}&redirect_uri={}&scope=openid&state=x",
+        client.client_id,
+        urlencode(&format!("{REDIRECT_URI}?foo=bar"))
+    ))
+    .await;
+    assert_eq!(st3, StatusCode::BAD_REQUEST, "unregistered redirect: {st3}");
+    assert!(
+        body3.contains("not registered"),
+        "the page SAYS the redirect uri is not registered (ExpectRedirectUriErrorPage): {}",
+        &body3.chars().take(200).collect::<String>()
+    );
+}

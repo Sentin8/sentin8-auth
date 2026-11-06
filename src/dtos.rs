@@ -46,6 +46,32 @@ pub struct BrandingResponse {
     pub terms_url: Option<String>,
 }
 
+/// The DCR client display metadata (`GET /v1/auth/client/display`) -
+/// the OIDC Dynamic Client Registration display fields (RFC 7591
+/// §2.1: `logo_uri`/`policy_uri`/`tos_uri` are "SHOULD be displayed to
+/// the End-User" by the OP) the hosted sign-in UI renders so the
+/// end-user sees the REQUESTING client's identity (the suite's
+/// oidcc-registration-logo-uri / -policy-uri / -tos-uri modules).
+#[derive(Debug, Clone, Serialize, Deserialize, utoipa::ToSchema)]
+pub struct ClientDisplayResponse {
+    /// The client's registered display name.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub client_name: Option<String>,
+    /// URL of the client's logo image (RFC 7591 §2.1 `logo_uri`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub logo_uri: Option<String>,
+    /// URL of the client's home page (`client_uri`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub client_uri: Option<String>,
+    /// URL of the client's policy document (RFC 7591 §2.1 `policy_uri`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub policy_uri: Option<String>,
+    /// URL of the client's terms-of-service document (RFC 7591 §2.1
+    /// `tos_uri`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tos_uri: Option<String>,
+}
+
 /// A created app password (`POST /v1/me/app-passwords`); the raw
 /// secret is shown once.
 #[derive(Debug, Clone, Serialize, Deserialize, utoipa::ToSchema)]
@@ -59,6 +85,7 @@ pub struct AppPasswordCreated {
     /// The raw secret (shown once; only a hash is stored).
     pub secret: String,
 }
+
 
 /// One stored app password (no hash, no secret).
 #[derive(Debug, Clone, Serialize, Deserialize, utoipa::ToSchema)]

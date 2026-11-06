@@ -1983,6 +1983,23 @@ inline JSON body:
   token (the replay's sibling) stops authorizing resources (the suite
   reuses the code 1s later, then calls the resource with the FIRST
   token and expects 4xx).
+- **The browser-visible authorize rejects (RFC 6749 §4.1.2.1).** When
+  the authorization request CANNOT be redirected - an unknown
+  `client_id`, or a missing/unregistered `redirect_uri` - the server
+  MUST NOT auto-redirect and SHOULD inform the resource owner: the
+  GET `/oauth/authorize` surface serves the SAME JS-free error-page
+  family as §9a.23 with the reason in the text (the suite's
+  `ExpectRedirectUriMissingErrorPage`/`ExpectRedirectUriErrorPage`
+  modules demand a page saying the redirect uri is missing from the
+  request / the redirect uri is not registered). The JSON `invalid_request`
+  body stays on the NON-BROWSER surfaces: the PAR endpoint (the
+  client-facing API - the suite's PAR checks read the error body) and
+  `/oauth/authorize/continue` (an SPA-internal POST). The
+  missing-redirect_uri ADOPTION rule above is unchanged: a request
+  with exactly one registered URI still adopts it (and downstream
+  errors redirect there); the page fires only when no safe redirect
+  target exists (zero/multiple registrations with none presented, or
+  an unregistered presented value, or an unknown client).
 
 ```mermaid
 sequenceDiagram
@@ -2014,37 +2031,41 @@ sequenceDiagram
 ```
 
 
-### 9a.23 Logout error surface - the unregistered post_logout_redirect_uri page (OIDC RP-Initiated Logout)
+### 9a.23 Logout error surface - the terminal logout pages (OIDC RP-Initiated Logout)
 
-The suite's `oidcc-rp-initiated-logout-bad-post-logout-redirect-uri`
-module (`ExpectPostLogoutRedirectUriNotRegisteredErrorPage`) demands
-that the OP **show an error page saying the request is invalid as the
-`post_logout_redirect_uri` is not a registered one** - a real, visible
-rejection, not a silent fallback. The pre-9a.23 posture redirected an
-unregistered `post_logout_redirect_uri` (when the parameter was
-PRESENTED) to the bare `/sign-in` SPA: the page said nothing, the
-suite's browser interaction placeholder
-(`post_logout_redirect_uri_not_registered_error`) never resolved, and
-the module stalled in WAITING until the harness's visit cap called it
-INTERRUPTED.
+The suite's `oidcc-rp-initiated-logout` family drives THREE error/confirmation
+surfaces the OP must serve as REAL, visible pages (the pre-9a.23 posture
+silently 302'd everything to `/sign-in`):
 
-**Target state.** When a `post_logout_redirect_uri` is PRESENTED but
-refused (not registered for the identified client, or no client
-identified), `/oauth/logout` serves a **server-rendered error page**
-(the same JS-free posture as §9a.8: stable element ids, no JS) with an
-HTTP 200 and the body text `Invalid request - the
-post_logout_redirect_uri is not registered for this client`. When the
-parameter is absent/empty (a session-scoped logout with no landing
-target) the clean 302 → `/sign-in` fallback stays (open-redirect
-defense unchanged). The error page is a TERMINAL response: it clears
-the session cookie exactly as the redirect path does (the logout side
-effect completes), so a browser landing on it is logged out AND
-informed.
+- **`bad-post-logout-redirect-uri` / `query-added-to-post-logout-redirect-uri`**
+  (`ExpectPostLogoutRedirectUriNotRegisteredErrorPage`): a PRESENTED
+  `post_logout_redirect_uri` that is not registered for the identified
+  client serves the error page `Invalid request - the
+  post_logout_redirect_uri is not registered for this client`.
+- **`bad-id-token-hint` / `modified-id-token-hint`**
+  (`ExpectInvalidIdTokenHintErrorPage`): a PRESENTED `id_token_hint`
+  that does not verify as a token THIS OP issued (or whose `aud` does
+  not resolve to a client) serves the error page `Invalid request - the
+  id_token_hint is not valid`. The registered-URI redirect NEVER fires
+  for a bad hint - the hint gate runs BEFORE the landing check.
+- **`no-id-token-hint`** (with a `post_logout_redirect_uri` present):
+  the error page `Invalid request - the id_token_hint is missing` - a
+  landing target MUST NOT be honored without the client identification
+  the spec requires (the redirect target is untrusted otherwise).
+- **`no-params` / `no-post-logout-redirect-uri` / `only-state`**
+  (`ExpectSuccessfulLogoutPage`): a logout with NO landing target
+  (absent/empty hint or URI, or hint-only with no registered landing)
+  is a session-scoped logout: it clears the session and serves a
+  TERMINAL confirmation page `You have been signed out.` (the suite
+  screenshots the successful-logout page - a redirect to `/sign-in`
+  shows the LOGIN page, not a logout confirmation).
 
-The harness (sentin8-auth-oidf fixtures/runner.ts) recognizes the
-auth-served error page by its URL (`/oauth/logout-error` path or the
-`?`-carried marker) and uploads a real screenshot of it - the module's
-placeholder resolves with the page visible.
+All four shapes ride the SAME server-rendered panel family (the §9a.8
+JS-free posture: stable element ids, no JS, HTTP 200, the session
+cookie ALWAYS cleared - the logout side effect completes on every
+terminal page). The landing-redirect path is unchanged: a VALID hint
+(+ `client_id` fallback) with a REGISTERED `post_logout_redirect_uri`
+still 302s to the landing with the echoed `state`.
 
 ```mermaid
 sequenceDiagram
@@ -2052,17 +2073,26 @@ sequenceDiagram
     participant B as browser (suite)
     participant L as /oauth/logout
     participant D as oauth_clients (RLS)
-    B->>L: GET logout?post_logout_redirect_uri=BAD&client_id=...
-    L->>D: resolve client (id_token_hint aud or client_id)
-    alt uri IS registered
+    B->>L: GET logout?id_token_hint=...&post_logout_redirect_uri=...
+    L->>D: verify hint (own keys) → aud client lookup
+    alt hint PRESENTED but invalid/unresolvable
+        L-->>B: 200 error page ("the id_token_hint is not valid")
+    else hint ABSENT + redirect_uri PRESENTED
+        L-->>B: 200 error page ("the id_token_hint is missing")
+    else hint ok/absent + uri PRESENTED but NOT registered
+        L-->>B: 200 error page ("the post_logout_redirect_uri is not registered")
+    else uri REGISTERED
         L-->>B: 302 uri (+echoed state)
-    else uri NOT registered (PRESENTED)
-        L-->>B: 200 error page ("post_logout_redirect_uri is not registered")
-        B->>L: (harness screenshots the error page)
-    else NO post_logout_redirect_uri in the request
-        L-->>B: 302 /sign-in (clean session-scoped logout)
+    else NO landing target at all
+        L-->>B: 200 "You have been signed out." confirmation page
     end
+    Note over L: every terminal page clears the session cookie
 ```
+
+The harness (sentin8-auth-oidf fixtures/runner.ts) recognizes the
+auth-served terminal pages by their URL (`/oauth/logout`) and uploads a
+real screenshot of the visible page - the module's placeholder resolves
+with the page shown (no `about:blank`, no JSON body).
 
 ### 9a.24 Delegated (and service-projection) mints sign the TENANT family
 

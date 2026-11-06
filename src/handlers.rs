@@ -8,7 +8,7 @@
 use std::sync::Arc;
 
 use axum::{
-    extract::State,
+    extract::{Query, State},
     http::{HeaderMap, StatusCode},
     response::{IntoResponse, Response},
     Json,
@@ -967,6 +967,75 @@ pub async fn branding(
         privacy_url: b.privacy_url,
         terms_url: b.terms_url,
     })
+}
+
+/// `GET /v1/auth/client/display?client_id=...` - the DCR client display
+/// metadata (RFC 7591 §2.1: `logo_uri`/`policy_uri`/`tos_uri` are
+/// "SHOULD be displayed to the End-User"; the hosted sign-in UI renders
+/// the REQUESTING client's identity - the suite's
+/// oidcc-registration-logo-uri / -policy-uri / -tos-uri modules).
+/// Anonymous + tenant-resolved (the sign-in page is pre-session); an
+/// unknown/omitted client_id answers the empty shape (the UI renders
+/// nothing client-specific).
+#[utoipa::path(
+    get,
+    path = "/v1/auth/client/display",
+    params(("client_id" = String, Query, description = "The OAuth client id from the authorize request")),
+    responses(
+        (status = 200, description = "The client's DCR display fields (absent members = not registered)", body = crate::dtos::ClientDisplayResponse),
+    ),
+    security(),
+    tag = "auth",
+)]
+pub async fn client_display(
+    State(state): State<AppState>,
+    _headers: HeaderMap,
+    Query(q): Query<std::collections::HashMap<String, String>>,
+) -> Json<crate::dtos::ClientDisplayResponse> {
+    let client_id = q.get("client_id").map(|s| s.as_str()).unwrap_or("");
+    if client_id.is_empty() {
+        return Json(crate::dtos::ClientDisplayResponse {
+            client_name: None,
+            logo_uri: None,
+            client_uri: None,
+            policy_uri: None,
+            tos_uri: None,
+        });
+    }
+    // RLS (§4.3d): the sign-in surface is pre-session; the oauth_clients
+    // read runs on the platform-plane transaction (the with_client_env
+    // pattern). The display row lands as ONE jsonb record (the 5-tuple
+    // exceeds query_as's tuple arity).
+    let display: Option<crate::dtos::ClientDisplayResponse> = match state.pool.begin().await {
+        Ok(mut tx) => {
+            let _ = sqlx::query("SELECT sentin8_set_tenant_context($1)")
+                .bind(crate::config::SYSTEM_ENV_ID)
+                .execute(&mut *tx)
+                .await;
+            let r: Option<serde_json::Value> = sqlx::query_scalar(
+                r#"SELECT to_jsonb(t) FROM (
+                        SELECT client_name, logo_uri, client_uri, policy_uri, tos_uri
+                          FROM oauth_clients
+                         WHERE client_id = $1
+                   ) t"#,
+            )
+            .bind(client_id)
+            .fetch_optional(&mut *tx)
+            .await
+            .ok()
+            .flatten();
+            let _ = tx.commit().await;
+            r.and_then(|v| serde_json::from_value(v).ok())
+        }
+        Err(_) => None,
+    };
+    Json(display.unwrap_or(crate::dtos::ClientDisplayResponse {
+        client_name: None,
+        logo_uri: None,
+        client_uri: None,
+        policy_uri: None,
+        tos_uri: None,
+    }))
 }
 
 /// Merged org→env branding from `sentin8_sys_branding`. Env overrides org per-field

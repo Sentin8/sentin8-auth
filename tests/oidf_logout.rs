@@ -16,11 +16,13 @@
 //! - unregistered/PRESENTED-but-refused: the SERVER-RENDERED ERROR PAGE
 //!   (§9a.23 - terminal 200 + the session-cookie clear, never a silent
 //!   fallback);
-//! - no parameter: the clean 302 → /sign-in fallback (open-redirect
-//!   defense unchanged);
-//! - a FORGED id_token_hint (not this OP's signature): the same
-//!   unregistered-page path (the hint's signature binds the client);
-//! - a MODIFIED id_token (re-signed/attacked): refused the same way;
+//! - a FORGED/MODIFIED id_token_hint (+ even a REGISTERED landing): the
+//!   INVALID-HINT error page (the hint gate runs BEFORE the landing
+//!   check - the suite's ExpectInvalidIdTokenHintErrorPage);
+//! - a landing with NO hint/client_id: the MISSING-HINT error page;
+//! - NO landing target at all: the SIGNED-OUT confirmation page
+//!   (ExpectSuccessfulLogoutPage - a /sign-in redirect shows the LOGIN
+//!   page, not a logout confirmation);
 //! - the back-channel logout TOKEN shape: `events` member present,
 //!   `sid`/`sub` optional, NO `nonce` (the Back-Channel Logout spec's
 //!   rejection rule); fan-out POST carries the token via the
@@ -120,16 +122,24 @@ async fn oidf_logout_registered_redirect_unregistered_error_page() {
         "the RP's state echoes on the post-logout redirect (OIDC RP-Initiated Logout §2.1): {location}"
     );
 
-    // (2) NO post_logout_redirect_uri → the clean /sign-in fallback.
-    let (status2, location2, _b2, cookie2) = do_logout(&app, "?client_id=whatever").await;
+    // (2) NO post_logout_redirect_uri → the signed-out CONFIRMATION page
+    //     (§9a.23: ExpectSuccessfulLogoutPage - a /sign-in 302 shows the
+    //     LOGIN page, not a logout confirmation).
+    let (status2, location2, body2, cookie2) = do_logout(&app, "?client_id=whatever").await;
     assert_eq!(
         status2,
-        StatusCode::FOUND,
-        "the no-parameter logout is a redirect"
+        StatusCode::OK,
+        "the no-landing logout serves the CONFIRMATION page (terminal): {}",
+        &body2.chars().take(80).collect::<String>()
     );
     assert!(
-        location2.starts_with("/sign-in") || location2.contains("/sign-in"),
-        "the clean fallback targets the sign-in page: {location2}"
+        location2.is_empty(),
+        "the confirmation page is terminal (no redirect): {location2}"
+    );
+    assert!(
+        body2.contains("signed out"),
+        "the page SAYS the user has been signed out (the suite's ExpectSuccessfulLogoutPage): {}",
+        &body2.chars().take(200).collect::<String>()
     );
     let cleartype = cookie2.unwrap_or_default();
     assert!(
@@ -174,9 +184,10 @@ async fn oidf_logout_registered_redirect_unregistered_error_page() {
     );
 }
 
-/// The suite's bad-id_token-hint family: a hint this OP never signed
-/// (or a MODIFIED one) must NOT unlock the registered redirect - the
-/// client is unidentified, the presented landing refuses (error page).
+/// The suite's bad-id_token-hint family (§9a.23): a hint this OP never
+/// signed (or a MODIFIED one) must NOT unlock the registered redirect -
+/// the invalid-hint ERROR PAGE names the id_token_hint as the reason (a
+/// hint-less landing with a redirect_uri serves the missing-hint page).
 #[tokio::test]
 async fn oidf_logout_bad_or_modified_id_token_hint_refused() {
     let Some((app, pool)) = oidf::spawn_server().await else {
@@ -186,14 +197,16 @@ async fn oidf_logout_bad_or_modified_id_token_hint_refused() {
     oidf::seed_profile(&pool, &Posture::Standard, None).await;
     let client = logout_client(&pool, None).await;
 
-    // FORGED hint (garbage that parses as JWT-shape but never verifies).
+    // FORGED hint (garbage that parses as JWT-shape but never verifies) +
+    // even a REGISTERED landing: the hint gate runs FIRST - the
+    // invalid-hint page, never a redirect.
     let forged = "eyJhbGciOiJSUzI1NiJ9.eyJhdWQiOiJub3QtYS1jbGllbnQifQ.notasig";
     let (status, _loc, body, _c) = do_logout(
         &app,
         &format!(
             "?id_token_hint={}&post_logout_redirect_uri={}",
             urlencode(forged),
-            urlencode("https://attacker.example.org/collect")
+            urlencode(POST_LOGOUT_URI)
         ),
     )
     .await;
@@ -203,9 +216,32 @@ async fn oidf_logout_bad_or_modified_id_token_hint_refused() {
         "an unverifiable hint cannot unlock a redirect ({status} - the error page path)"
     );
     assert!(
-        body.contains("not registered"),
-        "the refusal serves the not-registered page: {}",
-        &body.chars().take(160).collect::<String>()
+        body.contains("id_token_hint") && body.contains("not valid"),
+        "the refusal names the INVALID id_token_hint (the suite's ExpectInvalidIdTokenHintErrorPage): {}",
+        &body.chars().take(200).collect::<String>()
+    );
+    assert!(
+        !body.contains("not registered"),
+        "the hint refusal is NOT the landing-page message (the wrong-page class the campaign caught): {}",
+        &body.chars().take(200).collect::<String>()
+    );
+
+    // NO hint at all + a landing target: the MISSING-hint page (the
+    // suite's oidcc-rp-initiated-logout-no-id-token-hint module).
+    let (status_nh, _loc_nh, body_nh, _c_nh) = do_logout(
+        &app,
+        &format!("?post_logout_redirect_uri={}", urlencode(POST_LOGOUT_URI)),
+    )
+    .await;
+    assert_eq!(
+        status_nh,
+        StatusCode::OK,
+        "a landing without client identification serves the error page ({status_nh})"
+    );
+    assert!(
+        body_nh.contains("id_token_hint") && body_nh.contains("missing"),
+        "the refusal names the MISSING id_token_hint: {}",
+        &body_nh.chars().take(200).collect::<String>()
     );
     let _ = &client;
 }

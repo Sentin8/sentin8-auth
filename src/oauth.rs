@@ -3613,12 +3613,25 @@ pub async fn authorize(
             (consent_required, redirect_uris, rar_types)
         }
         None => {
+            // RFC 6749 §4.1.2.1 (DESIGN §9a.22 - the browser-visible
+            // reject): an authorization request from an UNKNOWN client
+            // has no safe redirect target - the server MUST NOT
+            // redirect and SHOULD inform the resource owner. The
+            // browser surface (GET /oauth/authorize) serves the
+            // human-visible error page; the JSON `invalid_request`
+            // body stays on the NON-BROWSER surfaces (the PAR API -
+            // the suite's PAR checks read the error body - and the
+            // SPA-internal continue POST).
+            tracing::warn!(
+                client_id = %params.client_id,
+                "authorize: unknown client - serving the browser error page"
+            );
             return (
                 StatusCode::BAD_REQUEST,
-                Json(serde_json::json!({
-                    "error": "invalid_request",
-                    "error_description": "unknown client_id"
-                })),
+                [(axum::http::header::CONTENT_TYPE, "text/html; charset=utf-8")],
+                crate::login_page::authorize_error_page(
+                    "Invalid request - the client_id is unknown to this authorization server",
+                ),
             )
                 .into_response();
         }
@@ -3652,12 +3665,28 @@ pub async fn authorize(
         params.redirect_uri = client_redirect_uris[0].clone();
     }
     if !redirect_uri_registered(&client_redirect_uris, &params.redirect_uri) {
+        // RFC 6749 §4.1.2.1 (DESIGN §9a.22 - the browser-visible
+        // reject): a missing or unregistered redirect_uri has NO safe
+        // redirect target (the one-presented-adoption rule above
+        // already resolved the adoptable shape) - the server MUST NOT
+        // redirect and SHOULD inform the resource owner: the browser
+        // surface serves the human-visible error page naming the
+        // reason (the suite's ExpectRedirectUriMissingErrorPage /
+        // ExpectRedirectUriErrorPage modules). The JSON body stays on
+        // the PAR API surface (the client-facing error channel).
+        let page_msg = if params.redirect_uri.is_empty() {
+            "Invalid request - the redirect uri is missing from the request"
+        } else {
+            "Invalid request - the redirect uri is not registered for this client"
+        };
+        tracing::warn!(
+            redirect_uri = %params.redirect_uri,
+            "authorize: missing/unregistered redirect_uri - serving the browser error page"
+        );
         return (
             StatusCode::BAD_REQUEST,
-            Json(serde_json::json!({
-                "error": "invalid_request",
-                "error_description": "redirect_uri is not registered for this client"
-            })),
+            [(axum::http::header::CONTENT_TYPE, "text/html; charset=utf-8")],
+            crate::login_page::authorize_error_page(page_msg),
         )
             .into_response();
     }
@@ -8022,140 +8051,185 @@ pub async fn logout(
     headers: HeaderMap,
     Query(q): Query<LogoutQuery>,
 ) -> Response {
-    // RP-initiated logout - clear session cookie and redirect to
-    // post_logout_redirect_uri. the redirect target must
-    // be registered for the client (`post_logout_redirect_uris`); otherwise
-    // fall back to the local sign-in page (open-redirect defense).
-    let redirect: String = match q.post_logout_redirect_uri.as_deref() {
-        None => "/sign-in".to_string(),
-        Some(uri) if uri.is_empty() => "/sign-in".to_string(),
-        Some(uri) => {
-            // id_token_hint (preferred) or client_id identifies the client
-            // whose post_logout_redirect_uris we validate against.
-            let client_row: Option<(String, Vec<String>)> = if let Some(hint) =
-                q.id_token_hint.as_deref()
-            {
-                // OIDC RP-Initiated Logout - the hint must be a token THIS
-                // OP issued: the signature verifies against our own keys
-                // (a modified/hint-forged token refuses the registered-URI
-                // redirect and falls back to /sign-in).
-                let aud: Option<String> = state
-                    .keys
-                    .verify_raw(hint)
-                    .ok()
-                    .and_then(|c| c.get("aud").and_then(|v| v.as_str()).map(|s| s.to_string()));
-                // RLS: the handler is an unauthenticated browser redirect -
-                // there is no tenant context; `oauth_clients` reads go
-                // through the platform-plane transaction (the same
-                // `with_client_env` pattern the authorize flow uses).
-                match state.pool.begin().await {
-                    Ok(mut tx) => {
-                        let _ = sqlx::query("SELECT sentin8_set_tenant_context($1)")
-                            .bind(crate::config::SYSTEM_ENV_ID)
-                            .execute(&mut *tx)
-                            .await;
-                        let row = sqlx::query_as(
-                            r#"SELECT client_id, post_logout_redirect_uris FROM oauth_clients
-                               WHERE client_id = $1"#,
-                        )
-                        .bind(aud)
-                        .fetch_optional(&mut *tx)
-                        .await
-                        .ok()
-                        .flatten();
-                        let _ = tx.commit().await;
-                        row
-                    }
-                    Err(_) => None,
-                }
-            } else if let Some(cid) = q.client_id.as_deref() {
-                match state.pool.begin().await {
-                    Ok(mut tx) => {
-                        let _ = sqlx::query("SELECT sentin8_set_tenant_context($1)")
-                            .bind(crate::config::SYSTEM_ENV_ID)
-                            .execute(&mut *tx)
-                            .await;
-                        let row = sqlx::query_as(
-                            r#"SELECT client_id, post_logout_redirect_uris FROM oauth_clients
-                               WHERE client_id = $1"#,
-                        )
-                        .bind(cid)
-                        .fetch_optional(&mut *tx)
-                        .await
-                        .ok()
-                        .flatten();
-                        let _ = tx.commit().await;
-                        row
-                    }
-                    Err(_) => None,
-                }
-            } else {
-                None
-            };
-
-            match client_row {
-                Some((_client_id, post_logout_uris))
-                    if post_logout_uris.iter().any(|u| u == uri) =>
-                {
-                    // (OIDC RP-Initiated Logout §2.1) - echo the
-                    // client's `state` on the redirect so the RP can
-                    // correlate the logout with its request (and bind
-                    // CSRF protection). Only appended when a state was
-                    // sent; a plain registered URI redirect stays
-                    // untouched.
-                    match q.state.as_deref().filter(|s| !s.is_empty()) {
-                        Some(st) => {
-                            let sep = if uri.contains('?') { '&' } else { '?' };
-                            format!("{uri}{sep}state={}", urlencode(st))
-                        }
-                        None => uri.to_string(),
-                    }
-                }
-                _ => {
-                    // An UNREGISTERED landing target - the OIDC
-                    // RP-Initiated Logout suite surface
-                    // (ExpectPostLogoutRedirectUriNotRegisteredErrorPage,
-                    // DESIGN 9a.23) demands a VISIBLE invalid-request page,
-                    // not a silent /sign-in fallback: the silent redirect
-                    // left the suite's screenshot placeholder pending
-                    // forever (the module WAITING until the visit cap =
-                    // INTERRUPTED). Serve the terminal error page (the
-                    // response carries the session-cookie clear).
-                    tracing::warn!(
-                        uri = %uri,
-                        "logout: unregistered post_logout_redirect_uri refused - serving the logout error page"
-                    );
-                    let cookie_domain = crate::sessions::cookie_domain_from_headers(&headers, &state.config.sentin8_domain);
-                    let body = crate::login_page::logout_error_page(
-                        "Invalid request - the post_logout_redirect_uri is not registered for this client",
-                    );
-                    let mut resp = (StatusCode::OK, body).into_response();
-                    *resp.status_mut() = StatusCode::OK;
-                    resp.headers_mut().insert(
-                        axum::http::header::SET_COOKIE,
-                        Session::clear_cookie(&cookie_domain)
-                            .parse()
-                            .unwrap_or(axum::http::HeaderValue::from_static("")),
-                    );
-                    resp.headers_mut().insert(
-                        axum::http::header::CONTENT_TYPE,
-                        axum::http::HeaderValue::from_static("text/html; charset=utf-8"),
-                    );
-                    return resp;
-                }
-            }
-        }
-    };
+    // RP-initiated logout (OIDC RP-Initiated Logout + DESIGN §9a.23):
+    // clear the session on EVERY path; the landing decision is
+    //   - a REGISTERED post_logout_redirect_uri → 302 (+ echoed state)
+    //   - a PRESENTED but refused parameter → a TERMINAL error page
+    //     (invalid/missing id_token_hint, unregistered landing)
+    //   - NO landing target at all → the signed-out confirmation page
+    // Every terminal page clears the session cookie (the logout side
+    // effect completes on all paths).
     let cookie_domain =
         crate::sessions::cookie_domain_from_headers(&headers, &state.config.sentin8_domain);
-    (
-        StatusCode::FOUND,
-        [
-            ("set-cookie", Session::clear_cookie(&cookie_domain)),
-            ("location", redirect),
-        ],
-    )
-        .into_response()
+    let clear_cookie = Session::clear_cookie(&cookie_domain);
+    let terminal_logout_page = |msg: Option<&str>| -> Response {
+        let (body, title) = match msg {
+            Some(m) => (crate::login_page::logout_error_page(m), "Logout error"),
+            None => (crate::login_page::logout_confirmation_page(), "Signed out"),
+        };
+        let _ = title;
+        let mut resp = (StatusCode::OK, body).into_response();
+        resp.headers_mut().insert(
+            axum::http::header::SET_COOKIE,
+            clear_cookie
+                .parse()
+                .unwrap_or(axum::http::HeaderValue::from_static("")),
+        );
+        resp.headers_mut().insert(
+            axum::http::header::CONTENT_TYPE,
+            axum::http::HeaderValue::from_static("text/html; charset=utf-8"),
+        );
+        resp
+    };
+
+    let uri = q
+        .post_logout_redirect_uri
+        .as_deref()
+        .filter(|u| !u.is_empty());
+
+    // No landing target: a session-scoped logout - the confirmation
+    // page (the suite's ExpectSuccessfulLogoutPage modules screenshot a
+    // "logged out" page; a /sign-in 302 shows the LOGIN page).
+    if uri.is_none() {
+        return terminal_logout_page(None);
+    }
+    let uri = uri.unwrap_or_default();
+
+    // id_token_hint (preferred) or client_id identifies the client
+    // whose post_logout_redirect_uris we validate against.
+    let hint_present = q
+        .id_token_hint
+        .as_deref()
+        .filter(|h| !h.is_empty())
+        .is_some();
+    let client_row: Option<(String, Vec<String>)> = if let Some(hint) =
+        q.id_token_hint.as_deref().filter(|h| !h.is_empty())
+    {
+        // OIDC RP-Initiated Logout - the hint must be a token THIS
+        // OP issued: the signature verifies against our own keys
+        // (a modified/hint-forged token refuses the registered-URI
+        // redirect - §9a.23: a bad hint serves the invalid-hint error
+        // page, never a redirect).
+        let aud: Option<String> = state
+            .keys
+            .verify_raw(hint)
+            .ok()
+            .and_then(|c| c.get("aud").and_then(|v| v.as_str()).map(|s| s.to_string()));
+        // RLS: the handler is an unauthenticated browser redirect -
+        // there is no tenant context; `oauth_clients` reads go
+        // through the platform-plane transaction (the same
+        // `with_client_env` pattern the authorize flow uses).
+        match state.pool.begin().await {
+            Ok(mut tx) => {
+                let _ = sqlx::query("SELECT sentin8_set_tenant_context($1)")
+                    .bind(crate::config::SYSTEM_ENV_ID)
+                    .execute(&mut *tx)
+                    .await;
+                let row = sqlx::query_as(
+                    r#"SELECT client_id, post_logout_redirect_uris FROM oauth_clients
+                       WHERE client_id = $1"#,
+                )
+                .bind(aud)
+                .fetch_optional(&mut *tx)
+                .await
+                .ok()
+                .flatten();
+                let _ = tx.commit().await;
+                row
+            }
+            Err(_) => None,
+        }
+    } else if let Some(cid) = q.client_id.as_deref().filter(|c| !c.is_empty()) {
+        match state.pool.begin().await {
+            Ok(mut tx) => {
+                let _ = sqlx::query("SELECT sentin8_set_tenant_context($1)")
+                    .bind(crate::config::SYSTEM_ENV_ID)
+                    .execute(&mut *tx)
+                    .await;
+                let row = sqlx::query_as(
+                    r#"SELECT client_id, post_logout_redirect_uris FROM oauth_clients
+                       WHERE client_id = $1"#,
+                )
+                .bind(cid)
+                .fetch_optional(&mut *tx)
+                .await
+                .ok()
+                .flatten();
+                let _ = tx.commit().await;
+                row
+            }
+            Err(_) => None,
+        }
+    } else {
+        None
+    };
+
+    // The hint gate runs BEFORE the landing check (§9a.23): a PRESENTED
+    // hint that does not verify against this OP's keys serves the
+    // invalid-hint error page; a landing target with NO client
+    // identification at all serves the missing-hint page (the redirect
+    // target is untrusted without the spec's client identification).
+    if hint_present {
+        if client_row.is_none() {
+            tracing::warn!(
+                "logout: id_token_hint presented but not valid - serving the logout error page"
+            );
+            return terminal_logout_page(Some(
+                "Invalid request - the id_token_hint is not valid",
+            ));
+        }
+    } else if q.client_id.as_deref().filter(|c| !c.is_empty()).is_none() {
+        tracing::warn!(
+            "logout: post_logout_redirect_uri presented without id_token_hint/client_id - serving the logout error page"
+        );
+        return terminal_logout_page(Some(
+            "Invalid request - the id_token_hint is missing",
+        ));
+    }
+
+    match client_row {
+        Some((_client_id, post_logout_uris)) if post_logout_uris.iter().any(|u| u == uri) => {
+            // (OIDC RP-Initiated Logout §2.1) - echo the
+            // client's `state` on the redirect so the RP can
+            // correlate the logout with its request (and bind
+            // CSRF protection). Only appended when a state was
+            // sent; a plain registered URI redirect stays
+            // untouched.
+            let location = match q.state.as_deref().filter(|s| !s.is_empty()) {
+                Some(st) => {
+                    let sep = if uri.contains('?') { '&' } else { '?' };
+                    format!("{uri}{sep}state={}", urlencode(st))
+                }
+                None => uri.to_string(),
+            };
+            (
+                StatusCode::FOUND,
+                [
+                    ("set-cookie", clear_cookie),
+                    ("location", location),
+                ],
+            )
+                .into_response()
+        }
+        _ => {
+            // An UNREGISTERED landing target - the OIDC
+            // RP-Initiated Logout suite surface
+            // (ExpectPostLogoutRedirectUriNotRegisteredErrorPage,
+            // DESIGN 9a.23) demands a VISIBLE invalid-request page,
+            // not a silent /sign-in fallback: the silent redirect
+            // left the suite's screenshot placeholder pending
+            // forever (the module WAITING until the visit cap =
+            // INTERRUPTED). Serve the terminal error page (the
+            // response carries the session-cookie clear).
+            tracing::warn!(
+                uri = %uri,
+                "logout: unregistered post_logout_redirect_uri refused - serving the logout error page"
+            );
+            terminal_logout_page(Some(
+                "Invalid request - the post_logout_redirect_uri is not registered for this client",
+            ))
+        }
+    }
 }
 
 #[derive(Debug, Deserialize, utoipa::IntoParams, utoipa::ToSchema)]
