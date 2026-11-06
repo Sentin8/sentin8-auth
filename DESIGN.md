@@ -866,17 +866,22 @@ the ROOT behavior a suite WARNING would surface - §9a.11).
 | `fapi2-message-signing-final-test-plan` | strict-aud (issuer-exact assertion, §9a.16(b)), PAR unsigned-push reject (§9a.16(g)), JAR freshness mandates (§9a.16(f)), PS256 accepted (§9a.16(d)), RS256 request-object reject | `oidf_fapi.rs` (fapi_2_message_signing) |
 | `fapi-ciba-id1-test-plan` (poll/ping cells) | signed request object mandatory + claim validation (CIBA §7.1 §9a.15), exactly-one-hint, poll auth_req_id single-use/expiry, binding_message enforce, ping notification contract | `oidf_fapi.rs` (fapi_ciba row) + `ciba.rs` unit tests |
 | `oid4vci-1_0-issuer-test-plan` | metadata (`credential_configurations_supported` + nonce/batch), §8.1 nonce first-proof GETDEL, unknown config/identifier errors (§7.4 shape), batch N→N, invalid proof | `oidf_vci.rs` + `oid4vci.rs` unit tests |
-| `oid4vci-1_0-issuer-haip-test-plan` | `OAuth-Client-Attestation`(+PoP) auth: trust-anchor pin, iss/sub/expiry checks, PoP jti replay, discovery attestation advertisement (§9a.19), credential-response ECDH-ES encryption | `oidf_vci_haip.rs` + `client_attestation.rs`/`jwe.rs` unit tests |
+| `oid4vci-1_0-issuer-haip-test-plan` | `OAuth-Client-Attestation`(+PoP) auth: trust-anchor pin, iss/sub/expiry checks, PoP jti replay, discovery attestation advertisement (§9a.19), credential-response ECDH-ES encryption, HAIP refresh-token module (OC-27b posture + ATCA §10.3 instance-key binding, §9a.19), two-line DPoP negative on the credential surface (§9a.19 wire path) | `oidf_vci_haip.rs` + `client_attestation.rs`/`jwe.rs` unit tests |
 | `oid4vci-1_0-wallet-test-plan` | credential-offer landing → authorize redirect state echo (`VCIVerifyIssuerStateInAuthorizationRequest`, §9a.20) | `oidf_vci.rs` |
 | Cross-plan | the alias-serialization/no-state-change rules and suite-driver specifics stay HARNESS-ONLY (fixtures/runner.ts) - not server behavior. | (deliberately not mirrored) |
 
 Deliberate suite-side sanctions the mirror does NOT reproduce (client /
 rig artifacts, not server behavior - the rig spec files document them):
-ES256-client RS256-negative SKIPPED cells, the multi-DPoP JVM header
-collapse, the HAIP refresh-token untestable skip, and the two-visit/review
-screenshot placeholder mechanics. The SERVER-side negative each of those
-hides IS mirrored (`ensure_signed_request_object_*`, userinfo
-multiple-DPoP 400, FAPI unconditional refresh).
+the ES256-client RS256-negative SKIPPED cells and the two-visit/review
+screenshot placeholder mechanics. The SERVER-side negative each of
+those hides IS mirrored (`ensure_signed_request_object_*`, userinfo
+multiple-DPoP 400, FAPI unconditional refresh). The two FORMER
+sanctions (the multi-DPoP JVM header collapse, the HAIP refresh-token
+untestable skip) are CLOSED: the sentin8-tls middleware preserves the
+two-line DPoP shape so the reject is observable at the wire (the
+collapse was SDK-side, not JVM-side), and the vci_haip posture now
+rides the OC-27b unconditional-refresh rule - the suite runs BOTH
+modules to green with no bless.
 
 ## 10. Route Inventory (protocol-family grouped, spec-anchored)
 
@@ -1443,13 +1448,7 @@ negatives all read THIS table - a new claim mandate is a one-line flag
 change in `required_flags()`, never a new call-site branch. The two
 ad-hoc `require_exp`/`fapi2_posture` booleans are retired.
 
-**FAPI refresh-token issuance (OC-27b).** Under every FAPI posture the
-authorization-code grant issues a REFRESH TOKEN unconditionally (FAPI
-1.0 Advanced/FAPI 2.0 clients are sender-constrained confidential
-clients - the OIDF refresh-token modules expect one without a
-scope-preamble `offline_access` request; the suite's own WARNING text
-names this: "not to FAPI clients"). The `offline_access`-gate stays
-for the standard family (the RFC 6749 grant policy).
+**FAPI refresh-token issuance (OC-27b).** Under every SENDER-CONSTRAINED posture (FAPI 1.0 Advanced, FAPI 2.0, FAPI 2.0 Message Signing, CIBA, and the OID4VCI `vci_haip` attestation profile) the authorization-code grant issues a REFRESH TOKEN unconditionally - these are confidential, key-holding clients and the OIDF refresh-token modules expect one without a scope-preamble `offline_access` request (the suite's own WARNING text names the policy: "not to FAPI clients"). The `vci_haip` case is special: the suite builds the credential authorization request from the CREDENTIAL CONFIGURATION's advertised scope, so the request carries only `credential:<type>` - the OC-27b posture rule (not the scope) must mint the refresh token, and the ATCA §10.3 instance-key binding must survive the refresh (the caller's `OAuth-Client-Attestation`-PoP key must equal the key that minted the grant - enforced by stamping the attested thumbprint into the refresh claims and comparing on every refresh call). The `offline_access`-gate stays for the standard family (the RFC 6749 grant policy).
 
 ### 9a.15 FAPI CIBA ID1 (poll + ping, static_client / private_key_jwt)
 
@@ -1652,10 +1651,37 @@ read it as the OAuth error shape.
 **Plan census (suite 5.3.3, VCIIssuerTestPlanHaip):** 63 module-variants
 = 21 classes × variant slices - 57 plain
 (`vci_credential_encryption=plain`) + 3 encrypted
-(`=encrypted`) + 3 variant-less runner entries. The rig's runner create
-carries each module's resolved values
+(`=encrypted`) + 3 variant-less runner entries. THREE modules appear
+TWICE with different `vci_credential_encryption` values
+(`oid4vci-1_0-issuer-happy-flow`,
+`oid4vci-1_0-issuer-fail-unknown-credential-configuration`, and the
+metadata pair) - a runner keyed by module NAME alone would run one
+slice twice and leave the sibling PENDING at the plan gate (the rig's
+runner create must key the variant map by name AND variant and run
+every plan entry). The rig's runner create carries each module's
+resolved values
 (`GET /api/plan/<id>.modules[].variant` → `POST /api/runner?variant=<json>`
 with an EMPTY body - a JSON body answers 400).
+
+**HAIP refresh + the wire path to the credential endpoint (the two
+live-found gaps, both closed).** The plan ships the FAPI2-SP
+`refresh-token` module under `fapi_profile=vci_haip`: the suite's
+`VCIDetermineCredentialConfigurationTransferMethod` copies the
+credential configuration's `scope` into the authorization request, so
+the grant carries ONLY `credential:VerifiedPersonCredential` - the
+§9a.14 OC-27b posture rule (not the scope gate) mints the refresh
+token, and the ATCA §10.3 binding holds across the refresh (the
+refresh claims stamp the attested instance-key thumbprint at mint;
+a refresh whose attestation PoP key differs answers
+`invalid_grant`). On the transport plane the suite's two-line DPoP
+negative (`Try with more than one DPoP in the header`) reaches the
+handler ONLY when every header-preserving hop keeps the duplicate -
+the sentin8-tls context middleware APPENDS (never collapses)
+repeated header lines, so `extract_dpop_header`'s exactly-one-proof
+rule answers the RFC 9449 §7.1 400/401 reject on the credential
+surface too (the 200-on-duplicate was the live-found gap: the
+middleware rebuilt the header map with `insert()`, silently blessing
+the forged shape).
 
 **Encrypted-slice capability (OID4VCI §12.2.4 credential
 encryption - implemented).** The issuer metadata publishes

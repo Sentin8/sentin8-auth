@@ -32,15 +32,17 @@ mint tokens or publish signing keys. The business value it delivers:
 - **Certified conformance.** The service is conformance-tested against
   the OIDF suite locally per profile (OIDC Core Basic/Config/Dynamic,
   Logout, FAPI 2 Security Profile + Message Signing, FAPI 1 Advanced,
-  CIBA poll + ping, OID4VCI issuer, OID4VP verifier, eKYC-IDA) with a
-  zero-warning gate before any certification submission.
+  CIBA poll + ping, OID4VCI issuer + OID4VCI HAIP issuer (client-
+  attestation wallets), OID4VP verifier, eKYC-IDA) with a zero-warning
+  gate before any certification submission - every module-variant
+  terminal green, no sanctioned failures or skips.
 
 ## 2. Business Scope (What the Service Provides)
 
 | Area | Capabilities |
 |---|---|
 | Identity & credentials | User accounts (sign-up, sign-in, sign-out, email verification, password reset), sessions, app passwords, MFA factors (TOTP, backup codes), passkeys (WebAuthn), recovery flows |
-| OAuth / OIDC | Authorization-code + PKCE, refresh rotation with replay detection, device code flow, CIBA (decoupled approval, poll + ping), token exchange, client credentials (M2M), PAR, JAR request objects, JARM, introspection (JSON + signed JWT), revocation, userinfo, RP-initiated + back-channel logout, issuer response parameter |
+| OAuth / OIDC | Authorization-code + PKCE, refresh rotation with replay detection (unconditional issuance under every sender-constrained profile - FAPI, CIBA, OID4VCI HAIP - with the attestation instance-key binding across refreshes), device code flow, CIBA (decoupled approval, poll + ping), token exchange, client credentials (M2M), PAR, JAR request objects, JARM, introspection (JSON + signed JWT), revocation, userinfo, RP-initiated + back-channel logout, issuer response parameter |
 | RBAC substrate | Roles (with hierarchy/nesting), groups, memberships, role assignment, API keys, OAuth client registry (including DCR + management), M2M scope grants |
 | Consent grants | FAPI 2.0 standing consent records; tokens embed a grant id so revocation cascades |
 | Enterprise federation | OIDC and SAML connections for enterprise single sign-on |

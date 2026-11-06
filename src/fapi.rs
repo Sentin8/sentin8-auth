@@ -66,6 +66,25 @@ impl FapiProfile {
     }
 }
 
+/// The OC-27b refresh posture (DESIGN §9a.14): true for every
+/// SENDER-CONSTRAINED profile - the whole [`FapiProfile`] family PLUS
+/// the OID4VCI `vci_haip` attestation posture. These clients are
+/// confidential key-holders: the authorization-code grant issues a
+/// refresh token UNCONDITIONALLY (no `offline_access` scope preamble -
+/// the OIDF refresh-token modules request none; the suite's own
+/// WARNING names the policy). The HAIP case is the reason this is a
+/// predicate and not `FapiProfile::from_str(..).is_some()`: the suite
+/// derives the credential authorization's scope from the credential
+/// CONFIGURATION (only `credential:<type>` - never `offline_access`),
+/// so the posture rule - not the scope gate - mints the refresh token,
+/// while `vci_haip` deliberately stays OUT of [`FapiProfile`] (the FAPI
+/// discovery/aud/assertion-alg gates must not flip for the wallet
+/// profile).
+/// Is the OC-27b unconditional-refresh posture.
+pub fn unconditional_refresh_posture(profile: &str) -> bool {
+    FapiProfile::from_str(profile).is_some() || profile == "vci_haip"
+}
+
 /// The required security flags for a FAPI profile.
 
 /// the RELAXED flag set for the non-FAPI postures (standard, vci,
@@ -393,6 +412,39 @@ impl ProfileDefaults {
                 require_iss: true,
                 max_token_lifetime: 900,
                 refresh_rotation: true,
+            },
+            // The OID4VCI issuer posture (§9a.19): the wallet profile -
+            // unsigned request objects, no JARM, refresh rotation stays
+            // the RFC 6749 default (the issuer plan ships no refresh
+            // module).
+            "vci" => Self {
+                require_par: false,
+                require_mtls: false,
+                require_jarm: false,
+                require_dpop: false,
+                require_http_signatures: false,
+                require_jwt_introspection: false,
+                require_iss: false,
+                max_token_lifetime: 900,
+                refresh_rotation: true,
+            },
+            // The OID4VCI HAIP posture (§9a.19): the issuer surface PLUS
+            // attestation-based client auth and DPoP sender constraint
+            // (the seed's vci_haip flag block). The plan ships the
+            // FAPI2-SP refresh module under this profile, so the
+            // FAPI 2.0 Security Profile (final) 5.3.2.1-9 rotation
+            // PROHIBITION applies (the module replays the PREVIOUS
+            // refresh token after 30s and expects it to still work).
+            "vci_haip" => Self {
+                require_par: true,
+                require_mtls: false,
+                require_jarm: false,
+                require_dpop: true,
+                require_http_signatures: false,
+                require_jwt_introspection: false,
+                require_iss: true,
+                max_token_lifetime: 900,
+                refresh_rotation: false,
             },
             _ => return None,
         })

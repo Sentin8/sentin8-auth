@@ -42,7 +42,7 @@ use base64::Engine as _;
 use p256::ecdsa::signature::Signer as _;
 use tower::ServiceExt;
 
-use oidf::{b64url, register_client, ClientSpec, Posture, SYS_ENV};
+use oidf::{b64url, register_client, urlencode, ClientSpec, Posture, REDIRECT_URI, SYS_ENV};
 
 /// The attester identity the haip profile seeds (the seed's
 /// `client_attestation_issuer`; the per-env form).
@@ -547,6 +547,140 @@ async fn oidf_haip_attestation_iss_mismatch_rejected() {
     .await;
     assert!(
         s == StatusCode::UNAUTHORIZED && b["error"].as_str() == Some("invalid_client"),
- "a foreign attestation iss → 401 ('s mismatch class): {s} {b}"
+        "a foreign attestation iss → 401 ('iss mismatch' class): {s} {b}"
+    );
+}
+
+/// §9a.14 OC-27b + §9a.19 ATCA 10.3: the HAIP code exchange mints a
+/// REFRESH TOKEN unconditionally (the credential-scope authorization
+/// carries no `offline_access` - the posture rule, not the scope gate,
+/// issues it), the refresh claims stamp the attested instance-key
+/// thumbprint, and a refresh request whose attestation presents a
+/// DIFFERENT instance key answers `invalid_grant` (the suite's
+/// FAPI2SPFinalRefreshToken different-instance-key negative), while the
+/// SAME key refreshes fine.
+#[tokio::test]
+async fn oidf_haip_posture_refresh_and_instance_key_binding() {
+    let Some((app, pool)) = oidf::spawn_server().await else {
+        return;
+    };
+    let _guard = oidf::DB_MUTEX.lock().await;
+    let anchor_key = p256::ecdsa::SigningKey::random(&mut rand::rngs::OsRng);
+    let anchor = attester_from_key(&anchor_key);
+    oidf::seed_profile(
+        &pool,
+        &Posture::VciHaip,
+        Some((&anchor.leaf_pem, ATTESTATION_ISSUER)),
+    )
+    .await;
+    let (proof_jwk, proof_key) = oidf::mk_es256_key_for_tests();
+    let client = register_client(
+        &pool,
+        &ClientSpec {
+            name: "Oidf Haip Refresh Client",
+            auth_method: "attest_jwt_client_auth",
+            grant_types: &["authorization_code", "refresh_token"],
+            response_types: &["code"],
+            scopes: &["credential:VerifiedPersonCredential"],
+            ..ClientSpec::private_key_jwt(proof_jwk.clone())
+        },
+    )
+    .await;
+    let (_email, _pw, session) = oidf::sign_up_user(&app).await;
+
+    // The credential-scope authorization (NO offline_access - the suite's
+    // credential-configuration-derived scope): authorize + continue.
+    let verifier = "e".repeat(64);
+    let challenge = sentin8_auth_server::pkce_s256_challenge_for_tests(&verifier);
+    let authorize_uri = format!(
+        "/oauth/authorize?response_type=code&client_id={}&redirect_uri={}&scope=credential%3AVerifiedPersonCredential&state=st-haip-rt&code_challenge={}&code_challenge_method=S256&prompt=none",
+        client.client_id,
+        urlencode(REDIRECT_URI),
+        challenge,
+    );
+    let (st, _b, loc) = oidf::authorize_continue(&app, &pool, &session, &authorize_uri).await;
+    assert_eq!(st, StatusCode::FOUND, "the HAIP journey completes");
+    let loc = loc.expect("callback location");
+    let code = loc
+        .split("code=")
+        .nth(1)
+        .unwrap_or("")
+        .split('&')
+        .next()
+        .unwrap_or("")
+        .to_string();
+    assert!(!code.is_empty(), "code issued: {loc}");
+
+    // The EXCHANGE rides the attestation pair (the HAIP authenticator).
+    let audience = "https://auth.test.local.sentin8.dev";
+    let att = mk_attestation(&anchor, &client.client_id, &proof_jwk, 3600, None);
+    let pop = mk_pop(&proof_key, audience, &oidf::unique_jti("oidf-rt-exchange"));
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/oauth/token")
+                .header("x-sentin8-env-id", SYS_ENV.to_string())
+                .header("content-type", "application/x-www-form-urlencoded")
+                .header("OAuth-Client-Attestation", &att)
+                .header("OAuth-Client-Attestation-PoP", &pop)
+                .body(Body::from(format!(
+                    "grant_type=authorization_code&code={code}&redirect_uri={}&client_id={}&code_verifier={verifier}",
+                    urlencode(REDIRECT_URI),
+                    client.client_id,
+                )))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let ex_status = resp.status();
+    let bytes = axum::body::to_bytes(resp.into_body(), 1024 * 1024)
+        .await
+        .unwrap();
+    let tok: serde_json::Value = serde_json::from_slice(&bytes).unwrap_or_default();
+    assert_eq!(ex_status, StatusCode::OK, "the attested exchange mints: {tok}");
+    let refresh = tok["refresh_token"]
+        .as_str()
+        .expect("vci_haip posture issues a refresh token with NO offline_access (OC-27b)")
+        .to_string();
+
+    // The REFRESH with the SAME instance key (fresh PoP jti, same
+    // attested key) → 200.
+    let pop2 = mk_pop(&proof_key, audience, &oidf::unique_jti("oidf-rt-refresh"));
+    let (rs, rb) = token_request(
+        &app,
+        &att,
+        &pop2,
+        &format!(
+            "grant_type=refresh_token&refresh_token={refresh}&client_id={}",
+            client.client_id
+        ),
+    )
+    .await;
+    assert!(
+        rs == StatusCode::OK,
+        "the same instance key refreshes (ATCA 10.3 binding holds): {rs} {rb}"
+    );
+
+    // A DIFFERENT instance key (fresh attestation whose cnf.jwk is a
+    // DIFFERENT key, PoP signed by it - internally consistent K2): the
+    // bound cnf.jkt mismatches → invalid_grant.
+    let (jwk2, key2) = oidf::mk_es256_key_for_tests();
+    let att_k2 = mk_attestation(&anchor, &client.client_id, &jwk2, 3600, None);
+    let pop_k2 = mk_pop(&key2, audience, &oidf::unique_jti("oidf-rt-k2"));
+    let (rs2, rb2) = token_request(
+        &app,
+        &att_k2,
+        &pop_k2,
+        &format!(
+            "grant_type=refresh_token&refresh_token={refresh}&client_id={}",
+            client.client_id
+        ),
+    )
+    .await;
+    assert!(
+        rs2 == StatusCode::BAD_REQUEST && rb2["error"].as_str() == Some("invalid_grant"),
+        "a DIFFERENT client instance key → 400 invalid_grant (ATCA 10.3): {rs2} {rb2}"
     );
 }

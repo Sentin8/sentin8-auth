@@ -5861,18 +5861,24 @@ async fn handle_code_exchange(
         None
     };
 
-    // OC-27b (DESIGN 9a.14): under every FAPI posture the
+    // OC-27b (DESIGN 9a.14): under every SENDER-CONSTRAINED posture
+    // (the FAPI family + the OID4VCI vci_haip attestation profile) the
     // authorization-code grant issues a REFRESH TOKEN unconditionally -
-    // sender-constrained confidential clients are refresh-bearing (the
-    // OIDF refresh-token modules request no offline_access preamble; the
-    // suite's own WARNING names the policy: refresh tokens for FAPI
-    // clients). The standard family keeps the offline_access grant rule.
-    let fapi_posture = crate::fapi::FapiProfile::from_str(
+    // these confidential key-holding clients are refresh-bearing (the
+    // OIDF refresh-token modules request no offline_access preamble;
+    // the suite's own WARNING names the policy). The HAIP credential
+    // authorization carries only the credential scope - the posture
+    // rule, not the scope gate, mints the refresh token. The standard
+    // family keeps the offline_access grant rule. When the client
+    // authenticated via OAuth-Client-Attestation, the refresh claims
+    // stamp the ATTESTED instance-key thumbprint (cnf.jkt) - the ATCA
+    // 10.3 binding a later refresh request must re-present (the suite's
+    // different-instance-key negative).
+    let refresh_token = if crate::fapi::unconditional_refresh_posture(
         &resolve_security_profile(&state.pool, &headers, "env").await.profile,
-    )
-    .is_some();
-    let refresh_token = if fapi_posture || scope.contains("offline_access") {
-        let refresh_claims = AuthClaims::refresh(
+    ) || scope.contains("offline_access")
+    {
+        let mut refresh_claims = AuthClaims::refresh(
             &issuer,
             user_id,
             scope,
@@ -5880,6 +5886,9 @@ async fn handle_code_exchange(
             Duration::seconds(state.config.refresh_token_ttl_secs as i64),
             Some(&client.client_id),
         );
+        if let Some(attested) = client.attested_jkt.as_deref().filter(|j| !j.is_empty()) {
+            refresh_claims.cnf = Some(crate::dpop::build_dpop_cnf_claim(attested));
+        }
         state
             .keys
             .sign_value_alg(
@@ -5974,6 +5983,40 @@ async fn handle_refresh(
             "invalid_grant",
             "refresh token was issued to a different client",
         )));
+    }
+
+    // ATCA 10.3 instance-key binding (DESIGN 9a.19, the HAIP
+    // refresh module's different-instance-key negative): a refresh
+    // token minted under OAuth-Client-Attestation carries the ATTESTED
+    // key's thumbprint in cnf.jkt - every refresh request must present
+    // the SAME client instance key (its attestation's cnf.jwk). The
+    // mint-time stamp comes from the authenticated caller's attestation
+    // (handle_code_exchange); the live value is the authenticated
+    // caller's CURRENT attestation thumbprint. A mismatch answers
+    // invalid_grant (RFC 6749 6 + the draft's 10.3 - the suite accepts
+    // invalid_client/invalid_grant/invalid_request/invalid_client_
+    // attestation). Non-attestation callers have no live thumbprint -
+    // the stamp (when present) still binds them (a token minted under
+    // attestation cannot refresh via any other mechanism).
+    let bound_jkt = claims
+        .cnf
+        .as_ref()
+        .and_then(|c| c.get("jkt"))
+        .and_then(|k| k.as_str())
+        .map(str::to_string);
+    if let Some(bound) = bound_jkt {
+        let live = client.attested_jkt.as_deref().unwrap_or("");
+        if live != bound {
+            tracing::warn!(
+                client_id = %client.client_id,
+                "refresh token ATCA instance-key binding rejected"
+            );
+            return Err(TokenError::OAuth(OAuthTokenError::with_desc(
+                StatusCode::BAD_REQUEST,
+                "invalid_grant",
+                "refresh token client instance key does not match the key the grant was issued under",
+            )));
+        }
     }
 
     let user_id: Uuid = claims
@@ -6096,7 +6139,7 @@ async fn handle_refresh(
         let remaining = (claims.exp - chrono::Utc::now().timestamp()).max(1);
         revoke_jti(state, &claims.jti, remaining).await;
 
-        let new_refresh_claims = AuthClaims::refresh(
+        let mut new_refresh_claims = AuthClaims::refresh(
             &issuer,
             user_id,
             &scope,
@@ -6104,6 +6147,18 @@ async fn handle_refresh(
             Duration::seconds(state.config.refresh_token_ttl_secs as i64),
             Some(&client.client_id),
         );
+        // ATCA 10.3 (DESIGN 9a.19): the rotated token carries the SAME
+        // instance-key binding the original mint stamped - rotation
+        // must not widen the refresh surface to a different instance
+        // key.
+        if let Some(bound) = claims
+            .cnf
+            .as_ref()
+            .and_then(|c| c.get("jkt"))
+            .and_then(|k| k.as_str())
+        {
+            new_refresh_claims.cnf = Some(crate::dpop::build_dpop_cnf_claim(bound));
+        }
         Some(
             state
                 .keys
