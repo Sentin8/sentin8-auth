@@ -302,7 +302,14 @@ async fn verify_client_assertion(
         // fapi1-advanced plan asserts the reject; Part2 §8.6 - PS256/ES256
         // only, RS256 'shall not use'). The default posture keeps RS256.
         let profile = resolve_security_profile(&state.pool, headers, "env").await;
-        if crate::fapi::FapiProfile::from_str(&profile.profile).is_some() {
+        // `fapi_ciba` stays out of the FapiProfile enum (design 9a.15),
+        // so the posture predicate - not enum membership - carries the
+        // mandate to the CIBA poll: without it an RSA-keyed RS256
+        // assertion VERIFIES (the ("RSA","RS256") verify arm) and the
+        // poll falls through to the status gates.
+        if crate::fapi::FapiProfile::from_str(&profile.profile).is_some()
+            || crate::fapi::fapi_ciba_posture(&profile.profile)
+        {
             return Err((
                 StatusCode::UNAUTHORIZED,
                 "invalid_client: RS256 is not a permitted client_assertion algorithm under the FAPI security profile".to_string(),

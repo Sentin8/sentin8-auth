@@ -872,16 +872,16 @@ the ROOT behavior a suite WARNING would surface - §9a.11).
 
 Deliberate suite-side sanctions the mirror does NOT reproduce (client /
 rig artifacts, not server behavior - the rig spec files document them):
-the ES256-client RS256-negative SKIPPED cells and the two-visit/review
-screenshot placeholder mechanics. The SERVER-side negative each of
-those hides IS mirrored (`ensure_signed_request_object_*`, userinfo
-multiple-DPoP 400, FAPI unconditional refresh). The two FORMER
-sanctions (the multi-DPoP JVM header collapse, the HAIP refresh-token
-untestable skip) are CLOSED: the sentin8-tls middleware preserves the
+the two-visit/review screenshot placeholder mechanics. The SERVER-side
+negative each of those hides IS mirrored (`ensure_signed_request_object
+*`, userinfo multiple-DPoP 400, FAPI unconditional refresh). The three
+FORMER sanctions are CLOSED: the sentin8-tls middleware preserves the
 two-line DPoP shape so the reject is observable at the wire (the
-collapse was SDK-side, not JVM-side), and the vci_haip posture now
-rides the OC-27b unconditional-refresh rule - the suite runs BOTH
-modules to green with no bless.
+collapse was SDK-side, not JVM-side); the vci_haip posture rides the
+OC-27b unconditional-refresh rule - the suite runs the refresh module
+to green with no bless; and the CIBA RS256-negative cells RUN (the
+seed's CIBA clients are RSA-PS256-keyed so the suite's keys[0].alg gate
+no longer skips - §9a.15's alg mandate covers the poll assertion).
 
 ## 10. Route Inventory (protocol-family grouped, spec-anchored)
 
@@ -1466,6 +1466,26 @@ holder-of-key - the presented client certificate's thumbprint binds to
 the grant at bc-authorize and the poll must present the SAME cert
 (`invalid_grant` otherwise); (e) approval via `POST /v1/ciba/approve`
 (ping-aware, session-bound).
+
+**Client-assertion alg mandate covers the CIBA posture.** The
+`fapi_ciba` profile deliberately stays OUT of the [`FapiProfile`] enum
+(its own auth-method/aud rules string-match on the profile name), so
+the enum-recognized FAPI postures alone did not carry the
+client-assertion signing-alg mandate to the CIBA token poll - an
+RSA-keyed client could sign its poll assertion with RS256 and the
+signature VERIFIED (`verify_with_jwk`'s ("RSA","RS256") arm), leaving
+the next gate (status/claims) to answer. The suite's
+`fapi-ciba-id1-ensure-client-assertion-signature-algorithm-in-token-
+endpoint-request-is-RS256-fails` expects `invalid_client` (FAPI Part2
+§8.6: PS256/ES256 only - RS256 'shall not use'). The reject now rides
+the fapi-ciba-membership predicate (`fapi.rs::fapi_ciba_posture`) the
+same way every posture-scoped gate does: an RS256-signed client
+assertion rejects 401 `invalid_client` under `fapi_ciba` exactly as it
+does under the enum-recognized FAPI postures. The plan's seeded client
+key is RSA-PS256 (the suite's skip gate reads keys[0].alg of the plan
+config's client.jwks and SKIPS both RS256 negatives for an EC client -
+the §9a.10 no-skip rule forbids shipping that skip), and the request-
+object RS256 negative (§7.1 alg policy) runs against the same key.
 
 **Grant URN vocabulary (profile allow-list parity).** The CIBA poll
 grant is served at the token endpoint under the OpenID CIBA §4 URN

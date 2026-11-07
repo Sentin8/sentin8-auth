@@ -85,6 +85,18 @@ pub fn unconditional_refresh_posture(profile: &str) -> bool {
     FapiProfile::from_str(profile).is_some() || profile == "vci_haip"
 }
 
+/// Is a FAPI-CLASS posture whose client assertions carry the ES256/PS256
+/// signing-alg mandate. The [`FapiProfile`] enum deliberately excludes
+/// `fapi_ciba` (its auth-method/aud rules string-match on the profile
+/// name throughout the CIBA paths), so a predicate - not enum
+/// membership - carries the mandate to the CIBA poll: an RS256-signed
+/// client assertion rejects `invalid_client` under `fapi_ciba` exactly
+/// as it does under the enum-recognized postures (FAPI Part2 §8.6 -
+/// design §9a.15).
+pub fn fapi_ciba_posture(profile: &str) -> bool {
+    profile == "fapi_ciba"
+}
+
 /// The required security flags for a FAPI profile.
 
 /// the RELAXED flag set for the non-FAPI postures (standard, vci,
