@@ -419,6 +419,9 @@ CREATE TABLE IF NOT EXISTS auth.oauth_clients (
     -- OIDC Back-Channel Logout 1.0 (Story 1.1.37).
     backchannel_logout_uri                  TEXT,
     backchannel_logout_session_required     BOOLEAN NOT NULL DEFAULT false,
+    -- OIDC 3rd-Party-Initiated Login (OAuth-R): the third party's
+    -- login-initiation URI at the client (https-validated at DCR).
+    initiate_login_uri                      TEXT,
     -- OIDC CIBA 1.0 §4 (DESIGN §9a.3) - the client's ping-mode
     -- notification callback. When a CIBA request registered with
     -- request_mode=ping is approved/denied, auth POSTs the notification
@@ -1208,7 +1211,7 @@ CREATE TABLE IF NOT EXISTS auth.security_profiles (
     scope           TEXT NOT NULL,                     -- 'platform', 'org', 'env'
     org_id UUID,                              -- NULL for platform scope
     env_id  UUID,                              -- NULL for platform/org scope
-    profile         TEXT NOT NULL CHECK (profile IN ('standard', 'fapi_1_baseline', 'fapi_1_advanced', 'fapi_2', 'fapi_2_message_signing', 'fapi_ciba', 'vci', 'vci_haip')),
+    profile         TEXT NOT NULL CHECK (profile IN ('standard', 'fapi_1_baseline', 'fapi_1_advanced', 'fapi_2', 'fapi_2_message_signing', 'fapi_ciba', 'vci', 'vci_haip', 'formpost_basic', 'formpost_hybrid', 'formpost_implicit', 'formpost', 'sm_session', 'vp')),
     require_par     BOOLEAN NOT NULL DEFAULT false,    -- Pushed Authorization Request
     require_mtls    BOOLEAN NOT NULL DEFAULT false,    -- Mutual Sentin8:TLS for token endpoint
     require_jarm    BOOLEAN NOT NULL DEFAULT false,    -- JWT-Secured Authorization Response Mode

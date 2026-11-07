@@ -458,6 +458,20 @@ impl ProfileDefaults {
                 max_token_lifetime: 900,
                 refresh_rotation: false,
             },
+            // The FORMPOST family (the OIDF `Form Post OP` profile -
+            // design 9a.25): plain postures (the response_mode serves the
+            // form channel; no FAPI constraints).
+            "formpost_basic" | "formpost_hybrid" | "formpost_implicit" => Self {
+                require_par: false,
+                require_mtls: false,
+                require_jarm: false,
+                require_dpop: false,
+                require_http_signatures: false,
+                require_jwt_introspection: false,
+                require_iss: true,
+                max_token_lifetime: 3600,
+                refresh_rotation: true,
+            },
             _ => return None,
         })
     }

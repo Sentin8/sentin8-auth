@@ -2182,3 +2182,194 @@ sequenceDiagram
     S->>E: ctx.scopes = live set (NOT empty)
     E-->>S: allow (memberships:admin matched)
 ```
+
+### 9a.25 Implicit + Hybrid + Form-Post OP certification (OIDCFP-1)
+
+The OP-side certification family beyond Basic (the OIDF profiles
+`Implicit OP`, `Hybrid OP`, `Form Post OP`): three suite plans driven
+per family env.
+
+**Implicit (`oidcc-implicit-certification-test-plan`).** 58 module
+runs per cell across `response_type ∈ {id_token, id_token token}`
+(the plan's two pinned entries; `client_auth_type` pinned
+`client_secret_basic` - unused since implicit clients carry no client
+secret at the browser). Served by the §9a.13 fragment cells: the
+authorize response encodes `id_token`/`access_token` + `state` (+
+`code`/`iss` when present) in the URL FRAGMENT over the registered
+redirect_uri. Module demands beyond basic: `nonce` is MANDATORY for
+both types (`AuthorizeRequestWithoutNonceMustBeRejected`), `at_hash`
+rides every token-bearing id_token (the mint's `id_token_with_details`
+carries it unconditionally), and the fragment error channel mirrors
+the success channel (§9a.22's error-fragment branch). Suite-side the
+browser reads `location.hash` and POSTs it to the suite's
+`implicit_submit` path - the OP only performs the standard 302.
+
+**Hybrid (`oidcc-hybrid-certification-test-plan`).** Three
+response-type entries (`code id_token`, `code token`,
+`code id_token token`), each run over fragment + the token endpoint's
+code exchange with `client_secret_basic` (one `client_secret_post`
+module). Demands: `c_hash` alongside `at_hash` on fragment id_tokens
+(the mint adds `c_hash` when the record carries a code), auth-code
+single-use (`invalid_grant` on reuse - the burned-code cascade §9a.11)
+and the 30s-reuse module's access-token revocation cascade,
+PKCE-bearing code requests MUST succeed, userinfo (GET + POST both
+auth styles) for every type.
+
+**Form Post (`oidcc-formpost-{basic,hybrid,implicit}` = the ONE `Form
+Post OP` profile).** The same three plans' module lists with
+`response_mode=form_post`: the authorize response (and its error
+channel) is a 200 HTML auto-POST form to the redirect_uri
+(`<form method="post" action="{redirect_uri}">` + one hidden input per
+parameter, `autosubmit` JS) instead of the query/fragment redirect.
+`response_modes_supported` advertises `form_post` when the env's
+profile is one of the formpost family (profile-scoped discovery
+honesty - the same seam as the FAPI `jwt` mode); the client row's
+registration carries no change. The suite's callback asserts:
+HTTP POST body `application/x-www-form-urlencoded`, NO code/error in
+the URL query.
+
+| Plan cell | response_type | response_mode | channel |
+|---|---|---|---|
+| implicit | `id_token` / `id_token token` | fragment | 302 fragment |
+| hybrid | `code id_token` / `code token` / `code id_token token` | fragment | 302 fragment + token exchange |
+| formpost-* | the source plan's types | `form_post` | 200 HTML form |
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant SU as suite browser
+    participant AU as auth /oauth/authorize
+    SU->>AU: GET authorize (response_type, response_mode)
+    alt response_mode=form_post
+        AU-->>SU: 200 HTML <form action=redirect_uri method=post>
+        SU->>SU: JS submit → callback POST body
+    else fragment (default)
+        AU-->>SU: 302 Location: redirect_uri#...
+        SU->>SU: JS reads location.hash → implicit_submit
+    end
+    SU->>AU: POST /oauth/token (code cells only)
+```
+
+### 9a.26 Session management + third-party-initiated login + backchannel-rp-initiated logout (OIDCSM-1)
+
+The three additional certifiable OP plans that ride the logout stack
+(each a small plan over the existing §9a.23 logout surface):
+
+**Session management (`oidcc-session-management-certification-test-plan`).**
+(a) discovery advertises `check_session_iframe` =
+`{issuer}/oauth/check-session` - the endpoint serves the OIDC Session
+Management 3.3 postMessage listener (HTML shim hashing
+`{client_id} {session_state} {salt}`/`op` values, answering
+`changed|unchanged|error` via postMessage); (b) every interactive
+(authorization-code) authorize mints a `session_state` for the
+triple `(client_id, user session, issuer salt)` and the authorize
+response carries it (query + fragment channels alike); (c)
+RP-initiated logout destroys the server session (§9a.23) so the
+iframe's next poll answers `changed`; (d) the suite's final
+`prompt=none` re-auth answers the logged-out error (session
+independence proven). The salt is a Valkey-stored per-issuer random,
+and `session_state` = HS256 over `client_id + ' ' + user session id +
+salt` (truncated base64url, opaque to the client).
+
+**Third-party-initiated login (`oidcc-3rdparty-init-login-certification-test-plan`).**
+DCR metadata round: (a) an https `initiate_login_uri` (OAuth-R) is
+accepted at registration and echoed by BOTH the registration response
+and `GET {registration_client_uri}` (RFC 7592's client-config
+endpoint); (b) a non-https `initiate_login_uri` rejects `400
+invalid_client_metadata` (the URI's scheme is validated at the same
+surface as every redirect_uri rule). The OP is not required to drive
+the third-party initiation itself (the suite asserts the metadata
+contract).
+
+**Backchannel + RP-initiated logout (`oidcc-backchannel-rp-initiated-logout-certification-test-plan`).**
+(a) id_tokens mint `sid` = the user's session id (a stable session
+identifier distinct from the session-cookie token value - the
+JWT's `jti`-shaped session binding): the id_token mint sites stamp it
+on every interactive issuance; (b) the RP-initiated logout handler
+FANS OUT the backchannel logout (the registered clients with
+`backchannel_logout_uri` receive the `logout_token` JWT - `iss`,
+`aud`, `events`
+`http://schemas.openid.net/event/backchannel-logout`, `sid`,
+optionally `sub`, NO `nonce` - the pre-existing sender surface becomes
+the §9a.23 handler's side effect); (c) discovery keeps
+`backchannel_logout_supported: true` + adds
+`backchannel_logout_session_supported: true`; (d) after logout the
+suite's `prompt=none` re-auth fails (the session is destroyed).
+
+```mermaid
+flowchart LR
+    A[RP logout GET /oauth/logout] --> B[hint + landing gates 9a.23]
+    B --> C[session destroyed + cookie cleared]
+    C --> D{registered clients with backchannel_logout_uri}
+    D -->|POST logout_token JWT sid+events| E[collection endpoints]
+    C --> F[302 redirect with state / signed-out page]
+```
+
+### 9a.27 OID4VP verifier family - DCQL + direct_post.(jwt) + x509_hash (OID4VP-1)
+
+The OID4VP verifier surface (`wallet.rs`) is rebuilt to the standard so
+both the certifiable `oid4vp-1final-verifier-haip-test-plan` and the
+alpha plain plan run against it (the suite plays the WALLET; the
+deployed verifier is exercised through its own endpoints):
+
+- **The wallet-verifier authorize surface** (`GET /oauth/authorize?prompt=wallet`
+  becomes the dedicated verifier-request creator `POST /v1/auth/verifier/request`):
+  builds the presentation REQUEST (DCQL - the OID4VP 1.0-Final
+  credential-query form; `presentation_definition` (DIF PE) stays the
+  wallet-plan's accepted alternative), mints a fresh 128-bit request
+  `nonce` (Valkey-stored, single-use, TTL 600s), and - when the
+  request is signed - serves the request object at
+  `GET/POST /oauth/vp/request/{request_id}` with `typ
+  oauth-authz-req+jwt`, signed by the verifier's x5c chain
+  (`x509_hash` client-id prefix: `client_id =
+  x509_hash:<sha256-thumbprint of the request object's x5c[0]>` - the
+  WALLET derives and checks the equality, so the request object must
+  carry the certificate the client_id names). `request_uri_method=post`
+  echoes the posted `wallet_nonce` claim. `response_type=vp_token`,
+  `response_uri={issuer}/oauth/vp/response`, `response_mode`
+  `direct_post.jwt` (HAIP) / `direct_post` (plain), `client_metadata`
+  carrying the verifier's ephemeral `jwks` (`kid`, enc keys + `kid`
+  match) + `authorization_encrypted_response_alg/enc` when the
+  request is encrypted.
+- **The response endpoint** (`POST /oauth/vp/response`) answers
+  OID4VP §8.2: validates the (encrypted or form) body, verifies the
+  SD-JWT/KB-JWT (the KB key derives from the credential's OWN
+  `cnf.jwk`; checks `aud` = the request's client_id, `nonce` = the
+  request's nonce, `sd_hash` over the pre-KB form, `iat` window), the
+  credential signature (connection trust anchor), status-list
+  revocation (the credential's `status` URI fetch - scheme/origin
+  checks), DCQL claim satisfaction, then answers `200
+  {"redirect_uri": "..."}` ONLY (the verifier_info/transaction data
+  path rides later plans) and consumes the stored request. Negative
+  presentations reject with the request's `error` (invalid_request)
+  status AND the stored request is consumed so the negative cannot be
+  replayed as a valid flow.
+- **The verifier metadata** (`/.well-known/openid-credential-verifier`)
+  becomes honest: the SINGLE client_id form used by the requests
+  (`x509_hash` prefix under HAIP), the vp formats +
+  `sd-jwt_alg_values`/`kb-jwt_alg_values`, the response modes +
+  encryption metadata actually used, `client_name`.
+- Status lists gain the `time` query semantics (the current list +
+  the fetcher's media-type negotiation is the issuer-side behavior
+  kept).
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant W as suite (wallet)
+    participant V as auth verifier surface
+    W->>V: GET/POST /oauth/vp/request/{id} (fetch the signed request object)
+    V-->>W: JWT typ=oauth-authz-req+jwt (x5c chain, dcql_query, nonce, response_uri)
+    W->>W: validate x509_hash(client_id) + signature + freshness
+    W->>W: mint vp_token (sd-jwt + kb-jwt, status list on suite URIs)
+    W->>V: POST response_uri (direct_post.jwt: JWE in the verifier's metadata keys)
+    V->>V: decrypt → verify kb-jwt (aud/nonce/sd_hash from cnf.jwk) + credential sig + status + DCQL
+    V-->>W: 200 {"redirect_uri": "..."} (or 4xx reject: request consumed either way)
+```
+
+**Deliberate exclusions.** The verifier's mdoc/iso_mdl cells and the
+dc_api response modes stay OUT of the battery (no iso-mdl fixture
+machinery); the suite's `vp_profile=haip` + `sd_jwt_vc` +
+`direct_post.jwt` cell is the certifiable path driven. The wallet
+plan's alpha cells (`oid4vci-1_0-wallet-test-plan`) keep their
+existing discovery-entry run.

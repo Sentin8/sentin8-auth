@@ -100,8 +100,11 @@ fn issue_logout_token(
     issuer: &str,
     client_id: &str,
     user_id: Option<Uuid>,
-    session_id: Option<Uuid>,
+    sid: Option<String>,
 ) -> Result<String, String> {
+    // `sid` = the SESSION's persistent id (the id_token's sid claim -
+    // design 9a.26: the fanout's sid MUST equal the id_token sid the
+    // suite captured at login).
     let claims = LogoutTokenClaims {
         iss: issuer.to_string(),
         aud: client_id.to_string(),
@@ -111,7 +114,7 @@ fn issue_logout_token(
             "http://schemas.openid.net/event/backchannel-logout": {}
         }),
         sub: user_id.map(|u| u.to_string()),
-        sid: session_id.map(|s| s.to_string()),
+        sid,
     };
     keys.sign_value(&serde_json::to_value(claims).map_err(|e| format!("serialize claims: {e}"))?)
 }
@@ -151,26 +154,59 @@ pub async fn trigger_backchannel_logout(
     .fetch_all(&state.pool)
     .await
     .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    let rows: Vec<BackchannelClientRow> = rows
+        .into_iter()
+        .map(|r| BackchannelClientRow {
+            client_id: r.client_id,
+            backchannel_logout_uri: r.backchannel_logout_uri.unwrap_or_default(),
+        })
+        .collect();
 
+    let (sent, failed, details) =
+        fanout_backchannel_logout(&state, req.user_id, Some(req.session_id.to_string()), req.client_id.as_deref(), &rows).await;
+    Ok(Json(BackchannelLogoutResponse { sent, failed, details }))
+}
+
+/// One registered backchannel client (the fanout's row shape).
+pub struct BackchannelClientRow {
+    /// The client identifier.
+    pub client_id: String,
+    /// The client's backchannel logout URI.
+    pub backchannel_logout_uri: String,
+}
+
+/// The fanout body (design 9a.26): mint + POST the logout token to every
+/// client WITH a backchannel_logout_uri (optionally restricted to one
+/// client). PUBLIC - the RP-initiated logout handler (oauth.rs logout)
+/// calls the SAME fanout as its side effect (the Back-Channel OP plan's
+/// module family).
+pub async fn fanout_backchannel_logout(
+    state: &crate::handlers::AppState,
+    user_id: Uuid,
+    sid: Option<String>,
+    client_filter: Option<&str>,
+    rows: &[BackchannelClientRow],
+) -> (u32, u32, Vec<ClientResult>) {
     let issuer = state.config.issuer.clone();
+    let _ = client_filter;
     let mut sent = 0u32;
     let mut failed = 0u32;
     let mut details = Vec::new();
 
     for row in rows {
-        let uri = row.backchannel_logout_uri.unwrap_or_default();
+        let uri = row.backchannel_logout_uri.clone();
         let logout_token = match issue_logout_token(
             &state.keys,
             &issuer,
             &row.client_id,
-            Some(req.user_id),
-            Some(req.session_id),
+            Some(user_id),
+            sid.clone(),
         ) {
             Ok(t) => t,
             Err(e) => {
                 failed += 1;
                 details.push(ClientResult {
-                    client_id: row.client_id,
+                    client_id: row.client_id.clone(),
                     backchannel_logout_uri: uri,
                     status: "error".into(),
                     error: Some(format!("token signing failed: {e}")),
@@ -184,7 +220,7 @@ pub async fn trigger_backchannel_logout(
             Ok(()) => {
                 sent += 1;
                 details.push(ClientResult {
-                    client_id: row.client_id,
+                    client_id: row.client_id.clone(),
                     backchannel_logout_uri: uri,
                     status: "sent".into(),
                     error: None,
@@ -193,7 +229,7 @@ pub async fn trigger_backchannel_logout(
             Err(e) => {
                 failed += 1;
                 details.push(ClientResult {
-                    client_id: row.client_id,
+                    client_id: row.client_id.clone(),
                     backchannel_logout_uri: uri,
                     status: "error".into(),
                     error: Some(e),
@@ -202,11 +238,7 @@ pub async fn trigger_backchannel_logout(
         }
     }
 
-    Ok(Json(BackchannelLogoutResponse {
-        sent,
-        failed,
-        details,
-    }))
+    (sent, failed, details)
 }
 
 /// POST the logout token to the client's backchannel_logout_uri.

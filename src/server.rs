@@ -314,6 +314,14 @@ pub fn build_router(state: AppState) -> Router {
         .route("/mtls/oauth/revoke", post(crate::mtls_alias::mtls_revoke))
         // Device Authorization Grant (RFC 8628)
         .route("/oauth/device", post(oauth::device_authorization))
+        // The form_post continuation page (design 9a.25): the OP-hosted
+        // one-time HTML form carrying the authorization response's
+        // parameters (GET the ref -> the browser auto-POSTs the params).
+        .route("/oauth/form-post/{ref_id}", get(oauth::form_post_page))
+        // OIDC Session Management (design 9a.26): the postMessage shim +
+        // the session-state verifier behind it.
+        .route("/oauth/check-session", get(oauth::check_session_status))
+        .route("/oauth/check-session/iframe", get(oauth::check_session_iframe))
         .route("/device/verify", post(oauth::device_verify))
         .route("/oauth/introspect", post(oauth::introspect))
         // FAPI 2.0 Grant Management.
@@ -326,6 +334,12 @@ pub fn build_router(state: AppState) -> Router {
         )
         // EUDI wallet - OID4VP sign-in + metadata.
         .route("/oauth/vp/response", post(crate::wallet::vp_response))
+        // The OID4VP request_uri surface (design 9a.27): the wallet
+        // fetches the signed request object (GET, or POST + wallet_nonce).
+        .route(
+            "/oauth/vp/request/{request_id}",
+            get(crate::wallet::vp_request_object).post(crate::wallet::vp_request_object),
+        )
         .route(
             "/v1/auth/wallet/metadata",
             get(crate::wallet::wallet_metadata),

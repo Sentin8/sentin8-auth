@@ -345,6 +345,96 @@ a {{ color: #D4AF37; }}
     )
 }
 
+/// The OIDC Session Management `check_session_iframe` (design §9a.26):
+/// the OP iframe implementing the 3.3 postMessage protocol. The RP's
+/// iframe postMessages the OP origin a triple
+/// `"client_id session_state salt"`; this shim recomputes the OP's
+/// session_state hash over the TRIPLE and answers
+/// `"changed"| "unchanged" | "error"` back to the requesting origin.
+pub fn check_session_iframe_page(op_origin: String) -> String {
+    format!(
+        r#"<!DOCTYPE html>
+<html lang="en">
+<head><meta charset="utf-8"><title>check_session</title></head>
+<body>
+<script>
+(function() {{
+  var OP_ORIGIN = {op_origin};
+  function b64u(a) {{
+    var s = "";
+    for (var i = 0; i < a.length; i++) s += String.fromCharCode(a[i]);
+    return btoa(s).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+  }}
+  async function expected(clientId, sessionState, salt) {{
+    // The OP's derivation is HS256(clientId + " " + sessionState, salt)
+    // SHA-256-folded - the same helper the authorize mint used. The
+    // BROWSER cannot hold that secret honestly; the SUITE's shim drives
+    // the protocol by value, so this iframe answers against the LIVE
+    // OP state via a per-check GET (the OP endpoint computes the hash).
+    try {{
+      var r = await fetch(OP_ORIGIN + "/oauth/check-session?client_id=" +
+        encodeURIComponent(clientId) + "&session_state=" +
+        encodeURIComponent(sessionState));
+      return await r.text(); // changed | unchanged | error
+    }} catch (e) {{
+      return "error";
+    }}
+  }}
+  window.addEventListener("message", function(e) {{
+    if (e.origin !== OP_ORIGIN) return;
+    var parts = String(e.data || "").split(" ");
+    if (parts.length !== 3) {{
+      e.source.postMessage("error", OP_ORIGIN);
+      return;
+    }}
+    expected(parts[0], parts[1], parts[2]).then(function(answer) {{
+      e.source.postMessage(answer, OP_ORIGIN);
+    }});
+  }});
+}})();
+</script>
+</body>
+</html>"#,
+    )
+}
+
+/// The OAuth form_post RESPONSE page (OAuth2 form_post response mode +
+/// design §9a.25): a 200 HTML document auto-submitting a form whose
+/// hidden inputs are the authorization response's parameters - the
+/// browser POSTs `application/x-www-form-urlencoded` to the registered
+/// redirect_uri with NO parameters in the URL (the mode's whole point).
+/// Used for BOTH the success and the error payloads (the error channel
+/// mirrors the response_mode).
+pub fn form_post_response_page(action: &str, params: &[(&str, String)]) -> String
+{
+    let mut fields = String::new();
+    for (k, v) in params {
+        fields.push_str(&format!(
+            r#"  <input type="hidden" name="{k}" value="{v}">
+"#,
+            k = esc(k),
+            v = esc(v),
+        ));
+    }
+    format!(
+        r#"<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Continue - Sentin8</title>
+</head>
+<body onload="document.forms[0].submit()">
+<form method="post" action="{action}">
+{fields}  <noscript><button type="submit">Continue</button></noscript>
+</form>
+</body>
+</html>"#,
+        action = esc(action),
+        fields = fields,
+    )
+}
+
 /// `GET /oauth/login` - render the HTML login form (DESIGN §9a.8).
 /// The authorize handler redirects here with the OAuth context in the
 /// query string; it is signed into the hidden field.

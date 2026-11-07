@@ -1253,6 +1253,9 @@ pub struct DiscoveryDocument {
     pub introspection_endpoint: String,
     /// The end session endpoint.
     pub end_session_endpoint: String,
+    /// The OIDC Session Management iframe (check_session_iframe).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub check_session_iframe: Option<String>,
     /// The response types supported.
     pub response_types_supported: Vec<String>,
     /// The response modes supported.
@@ -1486,6 +1489,9 @@ pub async fn discovery(
         revocation_endpoint: format!("{issuer}/oauth/revoke"),
         introspection_endpoint: format!("{issuer}/oauth/introspect"),
         end_session_endpoint: format!("{issuer}/oauth/logout"),
+        // OIDC Session Management (design 9a.26): the postMessage shim
+        // behind the certification's Session-OP plan.
+        check_session_iframe: Some(format!("{issuer}/oauth/check-session/iframe")),
         // The standard five (OIDC Core §3.1.2.1 family + DESIGN §9a.13):
         // the certification family runs variant cells per response_type.
         response_types_supported: [
@@ -1499,10 +1505,12 @@ pub async fn discovery(
             .map(|s| s.to_string())
             .collect(),
         // JARM is advertised when require_jarm is true.
-        response_modes_supported: if profile.require_jarm {
-            vec!["query".into(), "jwt".into()]
-        } else {
-            vec!["query".into()]
+        response_modes_supported: {
+            let mut modes = vec!["query".into(), "form_post".into()];
+            if profile.require_jarm {
+                modes.push("jwt".into());
+            }
+            modes
         },
         grant_types_supported: {
             // The 'implicit' RESPONSE-TYPE form (§9a.13 - the OIDC family's
@@ -3953,13 +3961,13 @@ pub async fn authorize(
         // and ERROR alike) in the URL FRAGMENT (OAuth-); the query
         // channel is only for the `code`-only cell.
         let fragment_mode = crate::oauth::is_fragment_response(&params.response_type);
-        let error_redirect = |err: &str, desc: &str, mode: Option<&str>| -> Response {
+        let error_redirect = |err: String, desc: String, mode: Option<String>| -> Response {
             let mut url = format!(
                 "{}{}error={}&error_description={}",
                 params.redirect_uri,
                 if fragment_mode { "#" } else { "?" },
-                urlencode(err),
-                urlencode(desc)
+                urlencode(&err),
+                urlencode(&desc)
             );
             if !params.state.is_empty() {
                 url.push_str(&format!("&state={}", urlencode(&params.state)));
@@ -3968,17 +3976,13 @@ pub async fn authorize(
                 url.push_str(&format!("&iss={}", urlencode(&resolve_issuer(&state.config, &headers))));
             }
             // JARM wraps authorization errors too (response_mode=jwt).
-            if profile.require_jarm && mode == Some("jwt") {
+            if profile.require_jarm && mode.as_deref() == Some("jwt") {
                 let jarm_claims = crate::jarm::build_jarm_error(
                     &state.config.issuer,
                     &params.client_id,
-                    err,
-                    Some(desc),
-                    if params.state.is_empty() {
-                        None
-                    } else {
-                        Some(&params.state)
-                    },
+                    err.as_str(),
+                    Some(desc.as_str()),
+                    if params.state.is_empty() { None } else { Some(&params.state) },
                 );
                 if let Ok(jwt) = crate::jarm::sign_jarm_jwt(&state.keys, &jarm_claims, &profile.signing_alg) {
                     let url = crate::jarm::build_jarm_redirect_url(&params.redirect_uri, &jwt);
@@ -3997,7 +4001,26 @@ pub async fn authorize(
             } else {
                 "no active session"
             };
-            return error_redirect("login_required", desc, params.response_mode.as_deref());
+            // The form_post family (design 9a.25): the error rides the
+            // one-time HTML form too (the error channel mirrors the mode).
+            if is_form_post_flow(params.response_mode.as_deref(), &profile.profile) {
+                let pairs: Vec<(&str, String)> = vec![
+                    ("error", "login_required".to_string()),
+                    ("error_description", desc.to_string()),
+                    ("state", urlencode(&params.state)),
+                ];
+                if let Some(ref_id) =
+                    register_form_post_ref(&state.config.valkey_url, &params.redirect_uri.clone(), &pairs).await
+                {
+                    let url = format!("{}/oauth/form-post/{}", resolve_issuer(&state.config, &headers), ref_id);
+                    return (StatusCode::FOUND, [("location", url)]).into_response();
+                }
+            }
+            return error_redirect(
+                "login_required".to_string(),
+                desc.to_string(),
+                params.response_mode.as_deref().map(str::to_string),
+            );
         }
         // Fresh session present - issue the code silently (no UI).
         let user_id = session_user.expect("checked above");
@@ -4169,6 +4192,13 @@ pub async fn authorize(
             if wants_code {
                 id_claims["c_hash"] = serde_json::json!(crate::jwt::c_hash(&code));
             }
+            // OIDC Back-Channel Logout / Session Management (design 9a.26):
+            // the id_token carries `sid` = the session's persistent id.
+            if let Some(tok) = existing_session.as_deref() {
+                if session_user.is_some() {
+                    id_claims["sid"] = serde_json::json!(tok);
+                }
+            }
             let id_token = match state.keys.sign_value_alg(&id_claims, &profile.signing_alg) {
                 Ok(t) => t,
                 Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
@@ -4186,8 +4216,28 @@ pub async fn authorize(
                 fragment_params.push(("id_token", id_token));
             }
             fragment_params.push(("state", urlencode(&params.state)));
+            // OIDC Session Management (design 9a.26): the session_state
+            // rides EVERY authorize response the user is signed in for.
+            if let Some(tok) = existing_session.as_deref() {
+                if session_user.is_some() {
+                    let salt = session_salt_from_issuer(&resolve_issuer(&state.config, &headers));
+                    fragment_params.push(("session_state", urlencode(&session_state_value(&params.client_id, tok, &salt))));
+                }
+            }
             if profile.require_iss {
                 fragment_params.push(("iss", urlencode(&issuer2)));
+            }
+            // The form_post family (design §9a.25): the parameters ride
+            // the one-time OP-hosted HTML form instead of the URL.
+            if is_form_post_flow(params.response_mode.as_deref(), &profile.profile) {
+                let redirect = params.redirect_uri.clone();
+                if let Some(ref_id) =
+                    register_form_post_ref(&state.config.valkey_url, &redirect, &fragment_params).await
+                {
+                    let url = format!("{}/oauth/form-post/{}", resolve_issuer(&state.config, &headers), ref_id);
+                    return (StatusCode::FOUND, [("location", url)]).into_response();
+                }
+                // registration failure keeps the fragment channel (degrade)
             }
             let mut url = params.redirect_uri.clone();
             let pairs: Vec<String> = fragment_params
@@ -4205,6 +4255,32 @@ pub async fn authorize(
         );
         if profile.require_iss {
             url.push_str(&format!("&iss={}", urlencode(&resolve_issuer(&state.config, &headers))));
+        }
+        // OIDC Session Management (design 9a.26): the signed-in user's
+        // session_state rides the code response too.
+        if let Some(tok) = existing_session.as_deref() {
+            if session_user.is_some() {
+                let salt = session_salt_from_issuer(&resolve_issuer(&state.config, &headers));
+                url.push_str(&format!(
+                    "&session_state={}",
+                    urlencode(&session_state_value(&params.client_id, tok, &salt))
+                ));
+            }
+        }
+        // The form_post family (design §9a.25): the code rides the one-time
+        // HTML form (the code cell's response_mode).
+        if is_form_post_flow(params.response_mode.as_deref(), &profile.profile) {
+            let redirect = params.redirect_uri.clone();
+            let pairs: Vec<(&str, String)> = vec![
+                ("code", urlencode(&code)),
+                ("state", urlencode(&params.state)),
+            ];
+            if let Some(ref_id) =
+                register_form_post_ref(&state.config.valkey_url, &redirect, &pairs).await
+            {
+                let url = format!("{}/oauth/form-post/{}", resolve_issuer(&state.config, &headers), ref_id);
+                return (StatusCode::FOUND, [("location", url)]).into_response();
+            }
         }
         if profile.require_jarm && params.response_mode.as_deref() == Some("jwt") {
             let jarm_claims = crate::jarm::build_jarm_success(
@@ -4295,6 +4371,20 @@ pub async fn authorize(
                     );
                     if profile.require_iss {
                         url.push_str(&format!("&iss={}", urlencode(&resolve_issuer(&state.config, &headers))));
+                    }
+                    // The form_post family (design §9a.25).
+                    if is_form_post_flow(params.response_mode.as_deref(), &profile.profile) {
+                        let redirect = params.redirect_uri.clone();
+                        let pairs: Vec<(&str, String)> = vec![
+                            ("code", urlencode(&code)),
+                            ("state", urlencode(&params.state)),
+                        ];
+                        if let Some(ref_id) =
+                            register_form_post_ref(&state.config.valkey_url, &redirect, &pairs).await
+                        {
+                            let url = format!("{}/oauth/form-post/{}", resolve_issuer(&state.config, &headers), ref_id);
+                            return (StatusCode::FOUND, [("location", url)]).into_response();
+                        }
                     }
                     if profile.require_jarm && params.response_mode.as_deref() == Some("jwt") {
                         let jarm_claims = crate::jarm::build_jarm_success(
@@ -4605,6 +4695,23 @@ pub async fn authorize_continue(
                 urlencode(&resolve_issuer(&state.config, &headers))
             ));
         }
+        // The form_post family (design §9a.25): the deny rides the one-time
+        // HTML form as well (the error channel mirrors the response_mode).
+        if is_form_post_flow(req.response_mode.as_deref(), &profile.profile) {
+            let redirect = req.redirect_uri.clone();
+            let pairs: Vec<(&str, String)> = vec![
+                ("error", "access_denied".to_string()),
+                ("state", urlencode(&req.state)),
+            ];
+            if let Some(ref_id) =
+                register_form_post_ref(&state.config.valkey_url, &redirect, &pairs).await
+            {
+                return Ok(Json(serde_json::json!({
+                    "redirect_url": format!("{}/oauth/form-post/{}", resolve_issuer(&state.config, &headers), ref_id),
+                }))
+                .into_response());
+            }
+        }
         // The SPA's authorizeContinue contract: a JSON body carrying the
         // redirect_url (the SPA navigates the browser itself) - a raw
         // 302 would be followed by fetch and break the client-side
@@ -4722,7 +4829,17 @@ pub async fn authorize_continue(
         &format!("code={}", urlencode(&code)),
         &[("state", urlencode(&req.state))],
     ) + &iss_param
-        + &accounts_param;
+        + &accounts_param
+        // OIDC Session Management (design 9a.26): the approving
+        // session's session_state rides the code response.
+        + &format!(
+            "&session_state={}",
+            urlencode(&session_state_value(
+                &req.client_id,
+                &req.session_token,
+                &session_salt_from_issuer(&resolve_issuer(&state.config, &headers)),
+            ))
+        );
 
     // JARM (`response_mode=jwt`): when the profile
     // requires JARM and the client requested the JWT response mode, the
@@ -4856,6 +4973,8 @@ pub async fn authorize_continue(
         if wants_code {
             id_claims["c_hash"] = serde_json::json!(crate::jwt::c_hash(&code));
         }
+        // OIDC Back-Channel Logout / Session Management (design 9a.26).
+        id_claims["sid"] = serde_json::json!(&req.session_token);
         let id_token = state
             .keys
             .sign_value_alg(&id_claims, &profile.signing_alg)
@@ -4874,6 +4993,12 @@ pub async fn authorize_continue(
             fragment_params.push(("id_token", id_token));
         }
         fragment_params.push(("state", urlencode(&req.state)));
+        // OIDC Session Management (design 9a.26): the approving session's
+        // session_state rides the continue response.
+        {
+            let salt = session_salt_from_issuer(&resolve_issuer(&state.config, &headers));
+            fragment_params.push(("session_state", urlencode(&session_state_value(&req.client_id, &req.session_token, &salt))));
+        }
         if profile.require_iss {
             fragment_params.push(("iss", urlencode(&issuer)));
         }
@@ -4885,6 +5010,22 @@ pub async fn authorize_continue(
                 .collect();
             url.push('#');
             url.push_str(&pairs.join("&"));
+        }
+        // The form_post family (design §9a.25): the fragment members ride
+        // the one-time OP-hosted HTML form (the SPA navigates the browser
+        // there; the FORM's POST delivers the members to the callback).
+        if is_form_post_flow(req.response_mode.as_deref(), &profile.profile) {
+            let redirect = req.redirect_uri.clone();
+            if let Some(ref_id) =
+                register_form_post_ref(&state.config.valkey_url, &redirect, &fragment_params).await
+            {
+                return Ok(Json(serde_json::json!({
+                    "redirect_url": format!("{}/oauth/form-post/{}", resolve_issuer(&state.config, &headers), ref_id),
+                    "code": code,
+                    "state": req.state,
+                }))
+                .into_response());
+            }
         }
         url
     } else {
@@ -8195,7 +8336,55 @@ pub async fn logout(
     }
 
     match client_row {
-        Some((_client_id, post_logout_uris)) if post_logout_uris.iter().any(|u| u == uri) => {
+        Some((bc_client_id, post_logout_uris)) if post_logout_uris.iter().any(|u| u == uri) => {
+            // OIDC Back-Channel Logout (design 9a.26): the RP-initiated
+            // logout FANS OUT the logout tokens - every REGISTERED client
+            // with a backchannel_logout_uri receives the signed
+            // `logout_token` (sid = the destroyed session's id). The
+            // session destroyed here is the BROWSER's session (the
+            // cleared cookie's token); when the hint carries the same
+            // sub the fanout rides that user id. The fanout NEVER
+            // blocks the redirect (a slow client is not the user's
+            // wait) - best-effort, single attempt per registered client.
+            {
+                let browser_session =
+                    crate::handlers::extract_session_token(&headers).map(|t| t.to_string());
+                let logout_user = match browser_session.as_deref() {
+                    Some(tok) => crate::sessions::Session::find_by_token(&state.pool, tok)
+                        .await
+                        .ok()
+                        .flatten(),
+                    None => None,
+                };
+                if let Some(sess) = logout_user {
+                    let rows = sqlx::query!(
+                        r#"SELECT client_id, backchannel_logout_uri
+                           FROM oauth_clients
+                           WHERE backchannel_logout_uri IS NOT NULL
+                             AND backchannel_logout_uri != ''
+                             AND status = 'active'"#,
+                    )
+                    .fetch_all(&state.pool)
+                    .await
+                    .unwrap_or_default();
+                    let rows: Vec<crate::backchannel_logout::BackchannelClientRow> = rows
+                        .into_iter()
+                        .map(|r| crate::backchannel_logout::BackchannelClientRow {
+                            client_id: r.client_id,
+                            backchannel_logout_uri: r.backchannel_logout_uri.unwrap_or_default(),
+                        })
+                        .collect();
+                    let _ = crate::backchannel_logout::fanout_backchannel_logout(
+                        &state,
+                        sess.user_id,
+                        Some(sess.token_id.clone()),
+                        None,
+                        &rows,
+                    )
+                    .await;
+                }
+                let _ = bc_client_id;
+            }
             // (OIDC RP-Initiated Logout §2.1) - echo the
             // client's `state` on the redirect so the RP can
             // correlate the logout with its request (and bind
@@ -8317,6 +8506,215 @@ pub fn authorize_error_redirect(
         url.push_str(&v);
     }
     (StatusCode::FOUND, [("location", url)]).into_response()
+}
+
+/// The OIDC Session Management `session_state` (design §9a.26): a
+/// deterministic, client-binding hash over `(client_id, session-id,
+/// salt)` - HS256, salt derived from the issuer (opaque to clients,
+/// stable across instances since the SALT travels INSIDE the value the
+/// OP hashed). Truncated to 32 base64url chars. `check_session_iframe`
+/// recomputes the same hash to answer changed/unchanged, so the
+/// derivation MUST be identical on both sides (one helper).
+pub fn session_state_value(
+    client_id: &str,
+    session_token_id: &str,
+    salt: &str,
+) -> String {
+    use base64::Engine as _;
+    use hmac::{Hmac, Mac};
+    use sha2::{Digest, Sha256};
+    let mut mac = <Hmac<Sha256> as Mac>::new_from_slice(salt.as_bytes())
+        .expect("HMAC accepts any key length");
+    mac.update(client_id.as_bytes());
+    mac.update(b" ");
+    mac.update(session_token_id.as_bytes());
+    let tag = mac.finalize().into_bytes();
+    let salted = Sha256::digest([&tag[..], salt.as_bytes()].concat());
+    base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .encode(&salted.as_slice()[..24])
+}
+
+/// The check_session_iframe's SALT (design §9a.26): derived from the
+/// issuer (the same derivation every instance computes - the salt is
+/// not secret FROM THE OP, it is opaque to the CLIENT; the
+/// postMessage protocol's hash covers the salt by value).
+pub fn session_salt_from_issuer(issuer: &str) -> String {
+    use base64::Engine as _;
+    use sha2::{Digest, Sha256};
+    let digest = Sha256::digest(issuer.as_bytes());
+    base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(digest.as_slice())
+}
+
+/// Is this authorization flow answering through the OAuth2 form_post
+/// response mode (design §9a.25)? Two sources: the request's explicit
+/// `response_mode=form_post`, or the env's formpost-family profile.
+pub fn is_form_post_flow(
+    explicit: Option<&str>,
+    profile_name: &str,
+) -> bool {
+    if explicit == Some("form_post") {
+        return true;
+    }
+    if explicit.is_some() {
+        return false; // an explicit OTHER mode (query/jwt) wins
+    }
+    matches!(profile_name, "formpost_basic" | "formpost_hybrid" | "formpost_implicit")
+}
+
+/// Register the form_post continuation (design §9a.25): the response's
+/// parameters (success or error) ride a one-time OP-hosted HTML page -
+/// the browser lands on `/oauth/form-post/{ref}` (a GET the OP
+/// answers with the auto-submitting form), and the FORM's POST carries
+/// the parameters to the redirect_uri (NO parameters in the URL - the
+/// mode's contract). TTL 120s + GETDEL single-use.
+pub async fn register_form_post_ref(
+    valkey_url: &str,
+    redirect_uri: &str,
+    params: &[(&str, String)],
+) -> Option<String> {
+    let Ok(conn) =
+        sentin8::middleware::valkey_client(valkey_url, "sentin8:auth").await
+    else {
+        return None;
+    };
+    use glide::AsyncCommands as _;
+    let ref_id = uuid::Uuid::new_v4().to_string();
+    let payload = serde_json::json!({
+        "redirect_uri": redirect_uri,
+        "params": params.iter().map(|(k, v)| serde_json::json!({"name": k, "value": v})).collect::<Vec<_>>(),
+    });
+    let key = format!("auth:formpost:{ref_id}");
+    if conn
+        .set_ex::<_, _, ()>(&key, payload.to_string(), 120)
+        .await
+        .is_err()
+    {
+        return None;
+    }
+    Some(ref_id)
+}
+
+/// `GET /oauth/check-session` - the session-state verifier behind the
+/// `check_session_iframe` (design §9a.26): recomputes the OP hash over
+/// `(client_id, session_state-as-presented)` against EVERY active
+/// session's own hash for the client (an RP may present any one of its
+/// sessions' states; a mismatch = changed). Answers the protocol's
+/// three-word vocabulary in plain text (the iframe shim proxies it).
+pub async fn check_session_status(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    axum::extract::Query(q): axum::extract::Query<CheckSessionQuery>,
+) -> Response {
+    let client_id = q.client_id.unwrap_or_default();
+    let presented = q.session_state.unwrap_or_default();
+    if client_id.is_empty() || presented.is_empty() {
+        return (StatusCode::OK, "error").into_response();
+    }
+    let issuer = resolve_issuer(&state.config, &headers);
+    let salt = session_salt_from_issuer(&issuer);
+    // Any ACTIVE session for this client still hashing to the
+    // presented value = unchanged.
+    let rows = sqlx::query!(r#"SELECT token_id FROM sessions WHERE status = 'active'"#)
+        .fetch_all(&state.pool)
+        .await
+        .unwrap_or_default();
+    let alive = rows.iter().any(|r| {
+        session_state_value(&client_id, &r.token_id, &salt) == presented
+    });
+    (StatusCode::OK, if alive { "unchanged" } else { "changed" }).into_response()
+}
+
+/// `GET /oauth/check-session/iframe` - the OIDC Session Management
+/// postMessage shim page (design §9a.26) - discovery's
+/// `check_session_iframe` target.
+pub async fn check_session_iframe(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> Response {
+    let issuer = resolve_issuer(&state.config, &headers);
+    (
+        StatusCode::OK,
+        [(axum::http::header::CONTENT_TYPE, "text/html; charset=utf-8")],
+        crate::login_page::check_session_iframe_page(issuer),
+    )
+        .into_response()
+}
+
+#[derive(Debug, Deserialize, utoipa::IntoParams)]
+/// The checksessionquery type.
+pub struct CheckSessionQuery {
+    /// The RP's client_id.
+    #[serde(default)]
+    /// The client identifier.
+    pub client_id: Option<String>,
+    /// The presented session_state value.
+    #[serde(default)]
+    /// The session state.
+    pub session_state: Option<String>,
+}
+
+/// The form_post continuation GET (`GET /oauth/form-post/{ref}`,
+/// design §9a.25): consume ONE stored payload and serve the HTML
+/// auto-submit form. A consumed/missing ref answers a terminal error
+/// page (the browser already missed its one shot - a redirect would
+/// loop).
+pub async fn form_post_page(
+    State(state): State<AppState>,
+    axum::extract::Path(ref_id): axum::extract::Path<String>,
+) -> Response {
+    use glide::AsyncCommands as _;
+    let conn = match sentin8::middleware::valkey_client(&state.config.valkey_url, "sentin8:auth").await {
+        Ok(c) => c,
+        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    };
+    let key = format!("auth:formpost:{ref_id}");
+    let fetched: Result<Option<String>, _> = conn.get_del(&key).await;
+    let payload = match fetched {
+        Ok(Some(json)) => json,
+        _ => {
+            return (
+                StatusCode::OK,
+                [(axum::http::header::CONTENT_TYPE, "text/html; charset=utf-8")],
+                crate::login_page::authorize_error_page(
+                    "the request timed out - retry the sign-in",
+                ),
+            )
+                .into_response();
+        }
+    };
+    let Ok(v) = serde_json::from_str::<serde_json::Value>(&payload) else {
+        return (StatusCode::INTERNAL_SERVER_ERROR, "corrupt continuation").into_response();
+    };
+    let uri = v["redirect_uri"].as_str().unwrap_or_default().to_string();
+    if uri.is_empty() {
+        return (StatusCode::INTERNAL_SERVER_ERROR, "corrupt continuation").into_response();
+    }
+    let mut params: Vec<(&str, String)> = Vec::new();
+    if let Some(items) = v["params"].as_array() {
+        for item in items {
+            let name = item["name"].as_str().unwrap_or_default().to_string();
+            let value = item["value"].as_str().unwrap_or_default().to_string();
+            params.push((match name.as_str() {
+                "access_token" => "access_token",
+                "token_type" => "token_type",
+                "expires_in" => "expires_in",
+                "code" => "code",
+                "id_token" => "id_token",
+                "state" => "state",
+                "iss" => "iss",
+                "error" => "error",
+                "error_description" => "error_description",
+                "session_state" => "session_state",
+                other => Box::leak(other.to_string().into_boxed_str()),
+            }, value));
+        }
+    }
+    (
+        StatusCode::OK,
+        [(axum::http::header::CONTENT_TYPE, "text/html; charset=utf-8")],
+        crate::login_page::form_post_response_page(&uri, &params),
+    )
+        .into_response()
 }
 
 fn redirect_uri_registered(registered: &[String], uri: &str) -> bool {

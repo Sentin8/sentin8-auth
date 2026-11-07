@@ -48,6 +48,12 @@ pub struct RegisterRequest {
     /// end-session request's URI against this allow-list.
     #[serde(default)]
     pub post_logout_redirect_uris: Vec<String>,
+    /// OIDC 3rd-Party-Initiated Login (OAuth-R): the URI a third party
+    /// uses to initiate a login at the client. Stored + echoed via
+    /// registration + the RFC 7592 client-config endpoint; a non-https
+    /// value rejects `400 invalid_client_metadata` (design §9a.26).
+    #[serde(default)]
+    pub initiate_login_uri: Option<String>,
     #[serde(default)]
     /// The grant types.
     pub grant_types: Vec<String>,
@@ -156,6 +162,10 @@ pub struct RegisterResponse {
     #[serde(skip_serializing_if = "Vec::is_empty", default)]
     /// The post-logout redirect uris (OIDC RP-Initiated Logout).
     pub post_logout_redirect_uris: Vec<String>,
+    /// OIDC 3rd-Party-Initiated Login (OAuth-R) - the client's
+    /// login-initiation URI (echoed per OIDCR-3.2).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub initiate_login_uri: Option<String>,
     /// The grant types.
     pub grant_types: Vec<String>,
     /// The response types.
@@ -201,6 +211,10 @@ pub struct UpdateRequest {
     #[serde(default)]
     /// The client name.
     pub client_name: Option<String>,
+    /// OIDC 3rd-Party-Initiated Login (OAuth-R) (update form -
+    /// COALESCE onto the existing value per RFC 7592).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub initiate_login_uri: Option<String>,
     #[serde(default)]
     /// The redirect uris.
     pub redirect_uris: Option<Vec<String>>,
@@ -560,6 +574,19 @@ pub async fn register(
         return Err(DcrError(StatusCode::BAD_REQUEST, format!("invalid_redirect_uri: fragment not allowed: {bad}"),));
     }
 
+    // OIDC 3rd-Party-Initiated Login (design 9a.26): when the client
+    // declares `initiate_login_uri` it MUST be https (the suite's
+    // oidc-3rdparty-non-https negative sends an http:// value and
+    // expects 400 invalid_client_metadata).
+    if let Some(ilu) = req.initiate_login_uri.as_deref().filter(|u| !u.is_empty()) {
+        if !ilu.starts_with("https://") {
+            return Err(DcrError(
+                StatusCode::BAD_REQUEST,
+                "invalid_client_metadata: initiate_login_uri must be https".into(),
+            ));
+        }
+    }
+
     // RFC 7591 §2 - sector_identifier_uri must be a reachable https URL
     // whose document lists EVERY registered redirect_uri (the suite's
     // oidcc-registration-sector-bad negative sends an unreachable/bad
@@ -713,19 +740,20 @@ pub async fn register(
                 registration_access_token_hash, dcr_protected,
                 tls_client_auth_subject_dn, self_signed_tls_client_auth_thumbprint,
                 consent_required, backchannel_client_notification_endpoint,
-                post_logout_redirect_uris)
+                post_logout_redirect_uris, initiate_login_uri)
            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10,
                    $11, $12, $13, $14, $15, $16, $17, $18, $19,
                    $20, $21, $22, $23, $24, $25, $26, true,
                    $27, $28, $29, $30,
-                   $31)
+                   $31, $32)
            RETURNING
                client_id, client_id_issued_at, client_secret_expires_at,
                client_name, redirect_uris, grant_types, response_types,
                token_endpoint_auth_method, scopes,
                software_id, software_statement,
                logo_uri, client_uri, policy_uri, tos_uri, contacts,
-               application_type, consent_required, post_logout_redirect_uris"#,
+               application_type, consent_required, post_logout_redirect_uris,
+               initiate_login_uri"#,
         env_id,
         &client_id,
         &client_name,
@@ -763,6 +791,7 @@ pub async fn register(
         // registered through DCR exactly like the suite does.
         req.backchannel_client_notification_endpoint.as_deref(),
         &req.post_logout_redirect_uris,
+        req.initiate_login_uri.as_deref().filter(|u| !u.is_empty()),
     )
     .fetch_one(&mut *tx)
     .await
@@ -806,6 +835,7 @@ pub async fn register(
             contacts: row.contacts,
             application_type: row.application_type,
             consent_required: row.consent_required,
+            initiate_login_uri: row.initiate_login_uri,
         }),
     ))
 }
@@ -858,7 +888,8 @@ pub async fn get_client(
                software_id, software_statement,
                logo_uri, client_uri, policy_uri, tos_uri, contacts,
                jwks_uri, jwks, sector_identifier_uri, application_type,
-               registration_access_token_hash, consent_required
+               registration_access_token_hash, consent_required,
+               initiate_login_uri
            FROM oauth_clients
            WHERE client_id = $1 AND dcr_protected = true"#,
         client_id,
@@ -895,6 +926,7 @@ pub async fn get_client(
         "jwks_uri": row.jwks_uri,
         "jwks": row.jwks,
         "sector_identifier_uri": row.sector_identifier_uri,
+        "initiate_login_uri": row.initiate_login_uri,
         "application_type": row.application_type,
         "consent_required": row.consent_required,
     })))
@@ -1013,6 +1045,7 @@ pub async fn update_client(
                software_id = COALESCE($16, software_id),
                software_statement = COALESCE($17, software_statement),
                consent_required = COALESCE($18, consent_required),
+               initiate_login_uri = COALESCE($19, initiate_login_uri),
                updated_at = now()
            WHERE client_id = $1
            RETURNING
@@ -1021,7 +1054,8 @@ pub async fn update_client(
                token_endpoint_auth_method, scopes,
                software_id, software_statement,
                logo_uri, client_uri, policy_uri, tos_uri, contacts,
-               jwks_uri, jwks, sector_identifier_uri, application_type, consent_required"#,
+               jwks_uri, jwks, sector_identifier_uri, application_type, consent_required,
+               initiate_login_uri"#,
         client_id,
         req.client_name,
         &redirect_uris,
@@ -1040,6 +1074,7 @@ pub async fn update_client(
         req.software_id.as_deref(),
         req.software_statement.as_deref(),
         req.consent_required,
+        req.initiate_login_uri.as_deref().filter(|u| !u.is_empty()),
     )
     .fetch_optional(&mut *tx)
     .await

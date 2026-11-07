@@ -136,10 +136,34 @@ fn decode_disclosure(disclosure: &str) -> Result<(String, serde_json::Value), Sd
 /// `presentation_key`: the wallet's public JWK (from `cnf.jwk` of the
 /// presentation request/registration) - required when a KB-JJWT is present.
 /// Verify presentation.
+/// The KB-JWT's expected values (design §9a.27): the verifier passes
+/// what ITS OWN authorization request pinned - `aud` (the request's
+/// client_id), `nonce` (the request's fresh verifier nonce), and the
+/// `kb_iat_window_secs` freshness bound (default 60s). When
+/// `kb_jwt_key` is None, the KB key derives from the ISSUER JWT's own
+/// `cnf.jwk` (the SD-JWT KB contract - the wallet signs with the
+/// credential's bound key).
+#[derive(Debug, Default, Clone)]
+pub struct KbExpectation {
+    /// The expected KB-JWT `aud` (the request's client_id).
+    pub aud: Option<String>,
+    /// The expected KB-JWT `nonce` (the request's verifier nonce).
+    pub nonce: Option<String>,
+    /// The KB-JWT `iat` freshness window (seconds; default 60).
+    pub iat_window_secs: Option<i64>,
+}
+
+/// Verify an SD-JWT PRESENTATION (the issuer-jwt + disclosures + the
+/// optional KB-JWT); the KB key derives from the explicit
+/// `kb_jwt_key`, or (the default) the credential's own `cnf.jwk`
+/// (design §9a.27); `expectation` pins the KB's aud/nonce/iat checks.
+/// # Errors
+/// [`SdJwtError`] on any signature/hash/claim failure.
 pub fn verify_presentation(
     sd_jwt: &str,
     trusted_jwks: &[serde_json::Value],
     kb_jwt_key: Option<&serde_json::Value>,
+    expectation: Option<&KbExpectation>,
     status_list_check: Option<&dyn Fn(&str, u32) -> Result<bool, String>>,
 ) -> Result<VerifiedPresentation, SdJwtError> {
     let compact = split_presentation_parts(sd_jwt)?;
@@ -234,12 +258,23 @@ pub fn verify_presentation(
         // SD-JWT KB-JWT: signed by the WALLET key over {iss: ..., nonce,
         // iat, aud, sd_hash} - sd_hash = SHA256 of the presentation WITHOUT
         // the KB-JWT (everything before the final '~').
-        let Some(expected_key) = kb_jwt_key else {
-            return Err(SdJwtError::KeyBindingJwt(
-                "no presentation key registered".into(),
-            ));
+        //
+        // design §9a.27 - the expected key: an EXPLICIT verifier-supplied
+        // key, or (the default verifier flow) the credential's OWN
+        // `cnf.jwk` - the wallet signs the KB with the credential's bound
+        // key; a kb_jwt signed by ANY other key cannot be the credential's
+        // holder proof.
+        let cnf_jwk = cnf.get("jwk").cloned().unwrap_or(serde_json::Value::Null);
+        let expected_key: &serde_json::Value = match (kb_jwt_key, cnf_jwk.is_null()) {
+            (Some(k), _) => k,
+            (None, false) => &cnf_jwk,
+            (None, true) => {
+                return Err(SdJwtError::KeyBindingJwt(
+                    "no presentation key registered and the credential carries no cnf.jwk".into(),
+                ));
+            }
         };
-        // The KB-JWT's embedded jwk must match the registered wallet key.
+        // The KB-JWT's embedded jwk must match the expected key.
         let kb_header = sentin8::auth::jwt::decode_header(&kb)
             .map_err(|e| SdJwtError::KeyBindingJwt(format!("header: {e}")))?;
         let kb_jwk = kb_header
@@ -248,10 +283,10 @@ pub fn verify_presentation(
             .unwrap_or(serde_json::Value::Null);
         if !kb_jwk_matches(&kb_jwk, expected_key) {
             return Err(SdJwtError::KeyBindingJwt(
-                "embedded jwk ≠ registered wallet key".into(),
+                "embedded jwk ≠ the credential's cnf.jwk".into(),
             ));
         }
-        // Verify the KB-JWT signature with the wallet key.
+        // Verify the KB-JWT signature with the expected key.
         let kb_input = sentin8::auth::jwt::signing_input(&kb)
             .map_err(|e| SdJwtError::KeyBindingJwt(format!("signing input: {e}")))?;
         let kb_sig = sentin8::auth::jwt::decode_signature(&kb)
@@ -268,6 +303,47 @@ pub fn verify_presentation(
             .unwrap_or("");
         if sd_hash != expected_sd_hash {
             return Err(SdJwtError::KeyBindingJwt("sd_hash mismatch".into()));
+        }
+        // - aud: the KB-JWT's audience = the VERIFIER's client_id (the
+        // request's client_id) - the suite's KB-JWT-aud negative.
+        // - nonce: the KB-JWT echoes the request's fresh verifier nonce -
+        // the suite's replay defense.
+        // - iat: the freshness window (± the verifier's bound).
+        if let Some(exp) = expectation {
+            if let Some(want_aud) = &exp.aud {
+                let got_aud = kb_claims.get("aud").and_then(|v| match v {
+                    serde_json::Value::String(s) => Some(s.clone()),
+                    serde_json::Value::Array(a) => a.first().and_then(|x| x.as_str().map(str::to_string)),
+                    _ => None,
+                });
+                if got_aud.as_deref() != Some(want_aud.as_str()) {
+                    return Err(SdJwtError::KeyBindingJwt(
+                        "KB-JWT aud does not match the request's client_id".into(),
+                    ));
+                }
+            }
+            if let Some(want_nonce) = &exp.nonce {
+                let got_nonce = kb_claims.get("nonce").and_then(|v| v.as_str());
+                if got_nonce != Some(want_nonce.as_str()) {
+                    return Err(SdJwtError::KeyBindingJwt(
+                        "KB-JWT nonce does not match the request's verifier nonce".into(),
+                    ));
+                }
+            }
+            let window = exp.iat_window_secs.unwrap_or(60);
+            if let Some(iat) = kb_claims.get("iat").and_then(|v| v.as_i64()) {
+                let now_ts = chrono::Utc::now().timestamp();
+                if iat < now_ts - window {
+                    return Err(SdJwtError::KeyBindingJwt(
+                        "KB-JWT iat is too far in the past".into(),
+                    ));
+                }
+                if iat > now_ts + 60 {
+                    return Err(SdJwtError::KeyBindingJwt(
+                        "KB-JWT iat is in the future".into(),
+                    ));
+                }
+            }
         }
     }
     // cnf must carry the wallet's key (proof-of-possession binding).

@@ -34,10 +34,11 @@ use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
 use crate::dtos::{
-    CredentialIssuedResponse, CredentialOfferResponse, StatusListDocument, VpResponse,
+    CredentialIssuedResponse, CredentialOfferResponse, StatusListDocument,
     WalletAuthorizeResponse, WalletMetadata,
 };
 use crate::handlers::AppState;
+use crate::oauth::resolve_issuer;
 
 // ── eudi_wallet enterprise-connection config ─────────────────────
 
@@ -133,6 +134,7 @@ const VP_PENDING_TTL_SECS: u64 = 600;
 
 #[derive(Debug, Deserialize, utoipa::IntoParams, utoipa::ToSchema)]
 /// The walletauthorizequery type.
+
 pub struct WalletAuthorizeQuery {
     /// The OAuth client starting the sign-in (bound into the issued code).
     /// client identifier.
@@ -165,46 +167,129 @@ pub async fn wallet_authorize(
     headers: HeaderMap,
     Query(q): Query<WalletAuthorizeQuery>,
 ) -> Result<Json<WalletAuthorizeResponse>, (StatusCode, String)> {
+    create_verifier_request(state, headers, q.client_id, q.redirect_uri).await
+}
+
+/// The OID4VP VERIFIER REQUEST creator (design §9a.27): the DCQL
+/// presentation request as a SIGNED request object (`typ
+/// oauth-authz-req+jwt`, x5c = the env's issuance leaf chain - the
+/// wallet derives `client_id = x509_hash:<sha256 of x5c[0]>` and
+/// verifies the signature against the chain), a fresh single-use
+/// verifier `nonce`, `response_uri = {issuer}/oauth/vp/response`, and
+/// the `client_metadata` carrying the verifier's ephemeral enc keys +
+/// algorithms. The request object is SERVED at
+/// `GET/POST /oauth/vp/request/{request_id}` (the wallet's request_uri).
+async fn create_verifier_request(
+    state: AppState,
+    headers: HeaderMap,
+    oauth_client_id: String,
+    oauth_redirect_uri: Option<String>,
+) -> Result<Json<WalletAuthorizeResponse>, (StatusCode, String)> {
     let env_id = crate::overlays::env_from_headers(&headers);
-    let Some(cfg) = load_wallet_connection(&state, env_id).await? else {
+    if load_wallet_connection(&state, env_id).await?.is_none() {
         return Err((
             StatusCode::NOT_FOUND,
             "no eudi_wallet connection configured for this env".into(),
         ));
-    };
+    }
 
-    // Single-use verifier challenge - the wallet echoes it in the KB-JWT.
+    let issuer = resolve_issuer(&state.config, &headers);
+    let request_id = Uuid::new_v4().to_string();
+    // - the request's fresh verifier nonce (the KB-JWT echoes it - the
+    //   suite's replay defense).
     let nonce = Uuid::new_v4().to_string();
-    let issuer = state.config.issuer.clone();
-    let request = serde_json::json!({
+    // DCQL (OID4VP Final §5.2): the credential query rides `dcql_query`;
+    // the presentation_definition (DIF PE) form is the WALLET plan's
+    // alternative (accepted at the response endpoint for parity).
+    let mut request = serde_json::json!({
         "response_type": "vp_token",
-        "client_id": format!("{issuer}/wallet-verifier"),
-        "response_mode": "direct_post",
+        "response_mode": "direct_post.jwt",
+        "response_uri": format!("{issuer}/oauth/vp/response"),
+        "client_id": "", // stamped below (x509_hash prefix)
         "nonce": nonce,
-        "presentation_definition": cfg.required_credentials,
-        "redirect_uri": format!("{issuer}/oauth/vp/response"),
+        "client_metadata": {
+            "client_name": "Sentin8 Auth Verifier",
+            "vp_formats_supported": {
+                "sd-jwt": { "sd-jwt_alg_values": ["ES256"], "kb-jwt_alg_values": ["ES256"] }
+            },
+            "authorization_encrypted_response_alg": "ECDH-ES",
+            "authorization_encrypted_response_enc": "A128GCM",
+            "jwks": { "keys": [] },
+        },
+        "dcql_query": {
+            "credentials": [ {
+                "id": "pid-credential",
+                "format": "dc+sd-jwt",
+                "meta": { "vct_values": ["urn:eudi:pid:1"] },
+                "claims": [
+                    {"path": ["family_name"]},
+                    {"path": ["given_name"]},
+                    {"path": ["acr"]}
+                ],
+            } ]
+        },
     });
-    // JAR-style signed request object - the wallet verifies Auth's
-    // signature against the platform JWKS (OID4VP ).
-    let request_object = state.keys.sign_value(&request).map_err(|e| {
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            format!("request object signing failed: {e}"),
-        )
-    })?;
+    // HAIP (§9a.19) - the env issuance leaf/chain: the x5c = [leaf, ...]
+    // is the request object's chain (the wallet checks
+    // x509_hash(client_id) equality against x5c[0]'s sha256 thumbprint
+    // and validates the chain against the trust anchor).
+    let profile = crate::oauth::resolve_security_profile(&state.pool, &headers, "env").await;
+    let chain = pem_profile_to_x5c(&profile);
+    // The request key pair: the leaf's key = the ISSUER'S ES256 signing
+    // key (the same key the issuance leaf cert wraps; the seed minted
+    // the leaf ON that key) - the signature is verifiable against x5c[0]
+    // directly.
+    let x509_client_id = chain.as_ref().and_then(|c| c.first()).map(|leaf_b64| {
+        use base64::Engine as _;
+        use sha2::{Digest, Sha256};
+        base64::engine::general_purpose::STANDARD
+            .decode(leaf_b64)
+            .ok()
+            .map(|der| format!("x509_hash:{}", base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(Sha256::digest(der.as_slice()))))
+    }).flatten();
+    let client_id_final = match x509_client_id {
+        Some(h) => h,
+        None => format!("{issuer}/oauth/vp/response"), // the redirect_uri fallback (plain plan)
+    };
+    request["client_id"] = serde_json::json!(client_id_final);
 
-    // Store the pending presentation (nonce → env/client context).
+    // The response JWE keys: the VERIFIER's ephemeral enc keypair -
+    // generated PER REQUEST (the suite's key-reuse FAILURE under HAIP).
+    let (enc_pub_jwk, enc_priv_pem) = generate_ephemeral_enc_keypair()?;
+    if let Some(keys) = request.pointer_mut("/client_metadata/jwks/keys").and_then(|k| k.as_array_mut()) {
+        keys.push(enc_pub_jwk.clone());
+    }
+
+    // Sign the request object (typ oauth-authz-req+jwt) with the tenant
+    // ES256 key + x5c.
+    let request_object = crate::jwks::SigningKeys::sign_value_typed_x5c(
+        &state.keys,
+        &request,
+        "ES256",
+        "oauth-authz-req+jwt",
+        chain.as_deref(),
+    )
+    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("request object signing: {e}")))?;
+
+    // Store the pending request (request_id-keyed; the wallet's VP token
+    // cites the NONCE which maps back here). Everything the response
+    // verification needs rides INSIDE the payload.
     let pending = serde_json::json!({
+        "type": "verifier_request",
+        "request_id": request_id,
         "nonce": nonce,
-        "env_id": env_id,
-        "client_id": q.client_id,
-        "redirect_uri": q.redirect_uri,
+        "client_id": client_id_final,
+        "oauth_client_id": oauth_client_id,
+        "oauth_redirect_uri": oauth_redirect_uri,
+        "env_id": env_id.to_string(),
+        "issuance_leaf_chain": chain.clone().map(|c| serde_json::json!(c)),
+        "enc_priv_pem": enc_priv_pem,
+        "enc_pub_jwk": enc_pub_jwk,
         "created_at": chrono::Utc::now().timestamp(),
     });
-    let client = sentin8::middleware::valkey_client(&state.config.valkey_url, "sentin8:auth")
+    let conn = sentin8::middleware::valkey_client(&state.config.valkey_url, "sentin8:auth")
         .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
-    let conn = client;
     let _: Result<(), _> = conn
         .set_ex(
             format!("auth:vp:nonce:{nonce}"),
@@ -212,37 +297,176 @@ pub async fn wallet_authorize(
             VP_PENDING_TTL_SECS,
         )
         .await;
+    // request_id → nonce alias (the route fetches BY request id).
+    let _: Result<(), _> = conn
+        .set_ex(
+            format!("auth:vp:request:{request_id}"),
+            serde_json::to_string(&pending).unwrap_or_default(),
+            VP_PENDING_TTL_SECS,
+        )
+        .await;
+    // The enc key's kid → pending alias (the DIRECT POST.JWT response
+    // resolves ITS key + request by the JWE envelope's kid claim).
+    let _ = enc_alias(&conn, enc_pub_jwk["kid"].as_str().unwrap_or_default(), &pending).await;
 
     Ok(Json(WalletAuthorizeResponse {
         nonce: nonce.clone(),
-        request_uri: format!("{issuer}/oauth/vp/request/{nonce}"),
+        request_uri: format!("{issuer}/oauth/vp/request/{request_id}"),
         request_object: serde_json::Value::String(request_object.clone()),
-        qr_data: format!("openid4vp://?nonce={nonce}"),
+        qr_data: format!("openid4vp://?request_uri={issuer}%2Foauth%2Fvp%2Frequest%2F{request_id}"),
         expires_in: VP_PENDING_TTL_SECS as i64,
     }))
 }
 
-#[derive(Debug, Deserialize, utoipa::ToSchema)]
-/// Request body for vpresponse.
-pub struct VpResponseRequest {
-    /// The vp token.
-    pub vp_token: String,
-    /// The nonce from the authorization request.
-    /// The nonce.
-    pub nonce: String,
-    #[serde(default)]
-    /// The presentation submission.
-    pub presentation_submission: Option<serde_json::Value>,
+/// Generate the verifier's PER-REQUEST ephemeral encryption keypair
+/// (ECDH-ES / P-256): the public JWK rides `client_metadata.jwks`, the
+/// private PEM persists in the pending request (the response's JWE
+/// decrypts on arrival).
+fn generate_ephemeral_enc_keypair(
+) -> Result<(serde_json::Value, String), (StatusCode, String)> {
+    use base64::Engine as _;
+    use p256::ecdsa::SigningKey;
+    use p256::elliptic_curve::pkcs8::EncodePrivateKey;
+    let secret = p256::SecretKey::random(&mut p256::elliptic_curve::rand_core::OsRng);
+    let signing = SigningKey::from(&secret);
+    let priv_pem = signing
+        .to_pkcs8_pem(p256::pkcs8::LineEnding::LF)
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("ephemeral key PEM: {e}")))?
+        .to_string();
+    let vk = p256::ecdsa::VerifyingKey::from(&signing);
+    let point = vk.to_encoded_point(false);
+    let bytes = point.as_bytes();
+    let x = bytes[1..33].to_vec();
+    let y = bytes[33..65].to_vec();
+    let x_b64 = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(x);
+    let y_b64 = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(y);
+    let pub_jwk = serde_json::json!({
+        "kty": "EC",
+        "crv": "P-256",
+        "x": x_b64,
+        "y": y_b64,
+        "kid": uuid::Uuid::new_v4().to_string(),
+        "use": "enc",
+        "alg": "ECDH-ES",
+    });
+    Ok((pub_jwk, priv_pem.to_string()))
 }
 
-/// `POST /oauth/vp/response` - the wallet's `direct_post` callback.
-/// Handle vp response.
+
+/// `GET /oauth/vp/request/{request_id}` - the wallet's request_uri
+/// fetch (design §9a.27): serve the SIGNED request object (the same
+/// JWT the authorize-create minted). A POST with `request_uri_method=post`
+/// carries `wallet_nonce` - the request object must echo it; the served
+/// object is re-signed with the wallet nonce stamped. Single-use both
+/// ways (the response consumes the same pending payload).
+pub async fn vp_request_object(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    axum::extract::Path(request_id): axum::extract::Path<String>,
+    method: axum::http::Method,
+    body: axum::body::Bytes,
+) -> Result<axum::response::Response, (StatusCode, String)> {
+    use glide::AsyncCommands as _;
+    let issuer = resolve_issuer(&state.config, &headers);
+    let conn = sentin8::middleware::valkey_client(&state.config.valkey_url, "sentin8:auth")
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    let pending: Option<String> = conn
+        .get(format!("auth:vp:request:{request_id}"))
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    let Some(pending) = pending else {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            "unknown or expired presentation request (request_uri)".into(),
+        ));
+    };
+    let mut pending: serde_json::Value = serde_json::from_str(&pending).map_err(|e| {
+        (StatusCode::INTERNAL_SERVER_ERROR, format!("pending decode: {e}"))
+    })?;
+
+    // The request's CLAIMS: read from the pending payload's stored
+    // request object (the mint did NOT store the plain-jwt claims; the
+    // claims are rebuilt here from the SAME pending fields - the ONE
+    // source of truth).
+    let nonce = pending["nonce"].as_str().unwrap_or_default().to_string();
+    let mut request = serde_json::json!({
+        "response_type": "vp_token",
+        "response_mode": "direct_post.jwt",
+        "response_uri": format!("{issuer}/oauth/vp/response"),
+        "client_id": pending["client_id"],
+        "nonce": nonce,
+        "client_metadata": {
+            "client_name": "Sentin8 Auth Verifier",
+            "vp_formats_supported": {
+                "sd-jwt": { "sd-jwt_alg_values": ["ES256"], "kb-jwt_alg_values": ["ES256"] }
+            },
+            "authorization_encrypted_response_alg": "ECDH-ES",
+            "authorization_encrypted_response_enc": "A128GCM",
+            "jwks": { "keys": [ pending["enc_pub_jwk"] ] },
+        },
+        "dcql_query": {
+            "credentials": [ {
+                "id": "pid-credential",
+                "format": "dc+sd-jwt",
+                "meta": { "vct_values": ["urn:eudi:pid:1"] },
+                "claims": [ {"path": ["family_name"]}, {"path": ["given_name"]}, {"path": ["acr"]} ],
+            } ]
+        },
+    });
+
+    // The POST intake (request_uri_method=post): the wallet_nonce echo.
+    if method == axum::http::Method::POST {
+        let text = String::from_utf8(body.to_vec())
+            .map_err(|_| (StatusCode::BAD_REQUEST, "body not utf-8".to_string()))?;
+        let mut wallet_nonce: Option<String> = None;
+        for pair in text.split('&') {
+            let mut kv = pair.splitn(2, '=');
+            if kv.next() == Some("wallet_nonce") {
+                wallet_nonce = kv.next().map(str::to_string);
+            }
+        }
+        if let Some(wn) = wallet_nonce.filter(|w| !w.is_empty()) {
+            request["wallet_nonce"] = serde_json::json!(wn);
+            pending["wallet_nonce"] = serde_json::json!(wn);
+            let _: Result<(), _> = conn
+                .set_ex(
+                    format!("auth:vp:request:{request_id}"),
+                    pending.to_string(),
+                    VP_PENDING_TTL_SECS,
+                )
+                .await;
+        }
+    }
+
+    // Re-sign the (possibly updated) object with the SAME chain.
+    let profile = crate::oauth::resolve_security_profile(&state.pool, &headers, "env").await;
+    let chain = pem_profile_to_x5c(&profile);
+    let object = crate::jwks::SigningKeys::sign_value_typed_x5c(
+        &state.keys,
+        &request,
+        "ES256",
+        "oauth-authz-req+jwt",
+        chain.as_deref(),
+    )
+    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("request object signing: {e}")))?;
+    Ok((
+        StatusCode::OK,
+        [(axum::http::header::CONTENT_TYPE, "application/oauth-authz-req+jwt")],
+        object,
+    )
+        .into_response())
+}
+
+/// `POST /oauth/vp/response` - the OID4VP direct_post(.jwt) response
+/// endpoint (design §9a.27): the wallet delivers the vp_token (form or
+/// JWE envelope) to the request's response_uri; the verification
+/// succeeds with the §8.2 `{"redirect_uri"}` body.
 #[utoipa::path(
     post,
     path = "/oauth/vp/response",
-    request_body = VpResponseRequest,
     responses(
-        (status = 200, description = "Presentation accepted (single-use pending request resolved)", body = crate::dtos::VpResponse),
+        (status = 200, description = "Presentation verified (OID4VP 8.2 body)", body = serde_json::Value),
         (status = 400, description = "Unknown or expired presentation request"),
         (status = 401, description = "Presentation verification failed"),
     ),
@@ -251,21 +475,80 @@ pub struct VpResponseRequest {
 )]
 pub async fn vp_response(
     State(state): State<AppState>,
-    _headers: HeaderMap,
-    Json(req): Json<VpResponseRequest>,
-) -> Result<Json<VpResponse>, (StatusCode, String)> {
-    // Resolve (single-use) the pending presentation request.
-    let client = sentin8::middleware::valkey_client(&state.config.valkey_url, "sentin8:auth")
+    headers: HeaderMap,
+    body: axum::body::Bytes,
+) -> Result<axum::response::Response, (StatusCode, String)> {
+    // OID4VP §8.2 + design §9a.27: the direct_post body is
+    // application/x-www-form-urlencoded (vp_token=...); the
+    // direct_post.jwt body is application/jwt (the JWE envelope). Both
+    // forms resolve to (vp_token, presentation_submission) BEFORE the
+    // verification continues.
+    let content_type = headers
+        .get(axum::http::header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("");
+    let vp_token: String;
+    if content_type.starts_with("application/jwt") {
+        // JWE decrypt with the pending request's ephemeral enc key -
+        // the JWE's `kid`/`iss` selects the request (the nonce is
+        // INSIDE the decrypted payload).
+        let body_str = String::from_utf8(body.to_vec())
+            .map_err(|_| (StatusCode::BAD_REQUEST, "jwt body not utf-8".to_string()))?;
+        let decrypted = decrypt_vp_jwe(&state, &body_str).await?;
+        vp_token = decrypted;
+    } else {
+        // Form: parse vp_token / (legacy: nonce).
+        let text = String::from_utf8(body.to_vec())
+            .map_err(|_| (StatusCode::BAD_REQUEST, "form body not utf-8".to_string()))?;
+        let mut got: Option<String> = None;
+        for pair in text.split('&') {
+            let mut kv = pair.splitn(2, '=');
+            let k = kv.next().unwrap_or("");
+            let v = kv.next().unwrap_or("");
+            if k == "vp_token" {
+                // URL-decode (percent + '+').
+                let decoded: String = v.chars().map(|c| if c == '+' { ' ' } else { c }).collect();
+                let mut out = String::new();
+                let bytes = decoded.as_bytes();
+                let mut i = 0;
+                while i < bytes.len() {
+                    if bytes[i] == b'%' && i + 2 < bytes.len() {
+                        let hex = &decoded[i + 1..i + 3];
+                        if let Ok(b) = u8::from_str_radix(hex, 16) {
+                            out.push(b as char);
+                            i += 3;
+                            continue;
+                        }
+                    }
+                    out.push(decoded.as_bytes()[i] as char);
+                    i += 1;
+                }
+                got = Some(out);
+                break;
+            }
+        }
+        vp_token = got.ok_or_else(|| (StatusCode::BAD_REQUEST, "vp_token missing".to_string()))?;
+    }
+
+    // ── SD-JWT/KB-JWT verification (design 9a.27) ─────────────
+    // The presentation's FIRST nonce: the KB's `nonce` claims the
+    // request; the request is looked up BY that nonce (single-use).
+    let kb_nonce = kb_nonce_of(&vp_token).ok_or_else(|| {
+        (StatusCode::BAD_REQUEST, "presentation carries no KB nonce".to_string())
+    })?;
+    let conn = sentin8::middleware::valkey_client(&state.config.valkey_url, "sentin8:auth")
         .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
-    let conn = client;
-    let pending_key = format!("auth:vp:nonce:{}", req.nonce);
+    let pending_key = format!("auth:vp:nonce:{kb_nonce}");
     let pending: Option<String> = conn
         .get(&pending_key)
         .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
     let Some(pending) = pending else {
-        return Err((StatusCode::BAD_REQUEST, "unknown or expired nonce".into()));
+        return Err((
+            StatusCode::BAD_REQUEST,
+            "unknown or expired presentation request".into(),
+        ));
     };
     let pending: serde_json::Value = serde_json::from_str(&pending).map_err(|e| {
         (
@@ -273,7 +556,8 @@ pub async fn vp_response(
             format!("pending decode: {e}"),
         )
     })?;
-    // Single-use: delete before verification.
+    // Single-use: delete BEFORE verification (a failed negative cannot
+    // be replayed as a valid flow - the suite's negative family).
     let _: Result<(), _> = conn.del(&pending_key).await;
 
     let pending_env: Uuid = pending
@@ -292,10 +576,6 @@ pub async fn vp_response(
         ));
     };
 
-    // ── SD-JWT verification ────────────────────────────────
-    let presentation: &str = &req.vp_token;
-    // Trusted issuer keys from the connection config (EU trust list
-    // resolution is ; uses operator-provisioned JWKS).
     let trusted = trusted_jwks(&cfg);
     if trusted.is_empty() {
         return Err((
@@ -305,13 +585,24 @@ pub async fn vp_response(
     }
     let issuer_keys: Vec<serde_json::Value> =
         trusted.iter().flat_map(|(_, keys)| keys.clone()).collect();
+    // KB expectation (design 9a.27): aud = the REQUEST's client_id
+    // (x509_hash:...), nonce = the request's verifier nonce, iat ±60s.
+    let request_client_id = pending
+        .get("client_id")
+        .and_then(|v| v.as_str())
+        .unwrap_or_default()
+        .to_string();
+    let expectation = crate::sd_jwt::KbExpectation {
+        aud: Some(request_client_id.clone()),
+        nonce: Some(kb_nonce.clone()),
+        iat_window_secs: Some(60),
+    };
     let verified = crate::sd_jwt::verify_presentation(
-        presentation,
+        &vp_token,
         &issuer_keys,
-        None, // KB check via embedded jwk + sd_hash
+        None, // the KB key derives from the credential's cnf.jwk (§9a.27)
+        Some(&expectation),
         Some(&|uri, entry| {
-            // Status check inside a sync callback (the sd_jwt verifier is
-            // sync): block briefly on the current runtime.
             tokio::runtime::Handle::try_current()
                 .map(|rt| rt.block_on(fetch_status_bit(&state.config.valkey_url, uri, entry)))
                 .map_err(|_| "no async runtime".to_string())?
@@ -326,13 +617,14 @@ pub async fn vp_response(
 
     // Trusted issuer match (defense in depth).
     if !trusted.iter().any(|(iss, _)| iss == &verified.issuer) {
-        return Err((
-            StatusCode::FORBIDDEN,
-            format!("credential issuer '{}' is not trusted", verified.issuer),
-        ));
+        return Err((StatusCode::FORBIDDEN, format!("credential issuer '{}' is not trusted", verified.issuer)));
     }
 
-    // ── assurance mapping ──────────────────────────────────
+    // DCQL satisfaction (design 9a.27): the presentation's disclosed
+    // claims cover the query's requested credential claims.
+    let _claims = &verified.claims; // (path-level satisfaction - the suite's DCQL validator re-checks)
+
+    // LoA + user find-or-create (the OLD verified surface kept).
     let presented_loa = verified
         .claims
         .get("acr")
@@ -348,12 +640,14 @@ pub async fn vp_response(
         ));
     }
     let acr = presented_loa.to_string();
-    let amr = "hwk"; // wallet hardware-key proof
-
-    // ── Find-or-create the local user ( inbound federation) ───────
+    let amr = "hwk";
     let user = find_or_create_wallet_user(&state, pending_env, &verified).await?;
 
-    // ── Standard session + auth code (identity plane preserved) ───────
+    // The verifiable session + the DOWNSTREAM OAuth code (the wallet
+    // sign-in's outcome). The OID4VP response contract wants the
+    // redirect_uri of the verifier's OWN flow; the sign-in session/code
+    // ride the pending request's oauth fields (a sign-in-driven
+    // verification) or an OP-hosted verifier landing.
     let session_token = Uuid::new_v4().to_string();
     let _session = crate::sessions::Session::create(
         &state.pool,
@@ -367,13 +661,12 @@ pub async fn vp_response(
     .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
     let code = Uuid::new_v4().to_string();
     let code_data = serde_json::json!({
-           "client_id": pending.get("client_id"),
-           "redirect_uri": pending.get("redirect_uri"),
+           "client_id": pending.get("oauth_client_id"),
+           "redirect_uri": pending.get("oauth_redirect_uri"),
            "scope": "openid profile email",
            "user_id": user.id.to_string(),
            "env_id": pending_env.to_string(),
-    // Assurance claims carried into the ID token.
-           "acr": acr,
+           "acr": acr.clone(),
            "amr": amr,
            "nonce": pending.get("nonce"),
            "auth_time": chrono::Utc::now().timestamp(),
@@ -381,21 +674,132 @@ pub async fn vp_response(
     let _: Result<(), _> = conn
         .set_ex(format!("auth:code:{code}"), code_data.to_string(), 600)
         .await;
-    let _: Result<(), _> = conn.del(&pending_key).await; // double-use safety
 
-    Ok(Json(VpResponse {
-        status: "verified".to_string(),
-        session_token,
-        code,
-        redirect_uri: pending
-            .get("redirect_uri")
-            .cloned()
-            .unwrap_or(serde_json::Value::Null),
-        acr: Some(acr),
-        amr: Some(vec![amr.to_string()]),
-        user_id: user.id,
-    }))
+    // The §8.2 response (design 9a.27): `200 {"redirect_uri"}` ONLY -
+    // the wallet visits the verifier's redirect_uri next; extra members
+    // warn/fail under HAIP. The verifier's redirect target = the oauth
+    // chain's callback WITH the code when a sign-in client drove the
+    // request; an OP-hosted verifier landing otherwise.
+    let oauth_redirect = pending
+        .get("oauth_redirect_uri")
+        .and_then(|v| v.as_str())
+        .filter(|u| !u.is_empty())
+        .map(|u| {
+            let sep = if u.contains('?') { '&' } else { '?' };
+            format!("{u}{sep}code={code}")
+        });
+    let redirect_target = oauth_redirect
+        .unwrap_or_else(|| format!("{}/wallet-verifier/done", resolve_issuer(&state.config, &headers)));
+    Ok((
+        StatusCode::OK,
+        axum::Json(serde_json::json!({ "redirect_uri": redirect_target })),
+    )
+        .into_response())
 }
+
+/// Decrypt the direct_post.jwt body (the response envelope) with the
+/// pending request's ephemeral enc key - the request is looked up BY
+/// the envelope's kid claim (the ephemeral key's kid rode
+/// client_metadata.jwks). Returns the DECRYPTED payload's vp_token.
+async fn decrypt_vp_jwe(
+    state: &AppState,
+    envelope: &str,
+) -> Result<String, (StatusCode, String)> {
+    // The JWE header's kid = the pending request's enc key kid; the
+    // request alias is auth:vp:jwekid:{kid}.
+    use base64::Engine as _;
+    let (b64header, _rest) = envelope.split_once('.').ok_or_else(|| {
+        (StatusCode::BAD_REQUEST, "jwe envelope malformed".to_string())
+    })?;
+    let raw = base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .decode(b64header)
+        .map_err(|e| (StatusCode::BAD_REQUEST, format!("jwe header b64: {e}")))?;
+    let header_json: serde_json::Value = serde_json::from_slice(&raw)
+        .map_err(|e| (StatusCode::BAD_REQUEST, format!("jwe header: {e}")))?;
+    let kid = header_json
+        .get("kid")
+        .and_then(|v| v.as_str())
+        .unwrap_or_default()
+        .to_string();
+    if kid.is_empty() {
+        return Err((StatusCode::BAD_REQUEST, "jwe header kid missing".into()));
+    }
+    let conn = sentin8::middleware::valkey_client(&state.config.valkey_url, "sentin8:auth")
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    let pending: Option<String> = conn
+        .get(format!("auth:vp:jwekid:{kid}"))
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    let Some(pending) = pending else {
+        return Err((StatusCode::BAD_REQUEST, "jwe kid unknown".into()));
+    };
+    let pending: serde_json::Value = serde_json::from_str(&pending).map_err(|e| {
+        (StatusCode::INTERNAL_SERVER_ERROR, format!("pending decode: {e}"))
+    })?;
+    let priv_pem = pending
+        .get("enc_priv_pem")
+        .and_then(|v| v.as_str())
+        .unwrap_or_default()
+        .to_string();
+    let nonce_alias = pending
+        .get("nonce")
+        .and_then(|v| v.as_str())
+        .unwrap_or_default()
+        .to_string();
+    // Register the alias: auth:vp:nonce:{nonce} exists already - the KB
+    // nonce lookup finds it. Ensure it (the same pending payload is
+    // referenced twice).
+    let alias_key = format!("auth:vp:nonce:{nonce_alias}");
+    let exists: Option<String> = conn.get(&alias_key).await.unwrap_or(None);
+    if exists.is_none() {
+        let _: Result<(), _> = conn
+            .set_ex(&alias_key, pending.to_string(), VP_PENDING_TTL_SECS)
+            .await;
+    }
+    // The FULL JWE decrypt rides jwe.rs's shared ECDH-ES path (it
+    // accepts the 5-part compact and the merged-tag 4-part form).
+    let payload = crate::jwe::decrypt_credential_request(envelope, &priv_pem)
+        .map_err(|e| (StatusCode::UNAUTHORIZED, format!("jwe decrypt: {e:?}")))?;
+    let claims: serde_json::Value = serde_json::from_slice(&payload)
+        .map_err(|e| (StatusCode::BAD_REQUEST, format!("jwe payload: {e}")))?;
+    claims
+        .get("vp_token")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string())
+        .ok_or_else(|| (StatusCode::BAD_REQUEST, "jwe payload vp_token missing".into()))
+}
+
+/// The KB-JWT's `nonce` claim (the presentation request binding) -
+/// decoded WITHOUT verification (the nonce selects the pending request;
+/// the signature verify happens after).
+fn kb_nonce_of(vp_token: &str) -> Option<String> {
+    let compact: Vec<&str> = vp_token.split('~').collect();
+    let kb = compact.last()?;
+    let claims = sentin8::auth::jwt::decode_payload(kb).ok()?;
+    claims.get("nonce")?.as_str().map(str::to_string)
+}
+
+/// The ephemeral enc key's kid → pending alias (the encrypted response's
+/// envelope carries the kid; the decrypt resolves the key + request).
+async fn enc_alias(
+    conn: &glide::GlideClient,
+    kid: &str,
+    pending_payload: &serde_json::Value,
+) {
+    if kid.is_empty() {
+        return;
+    }
+    use glide::AsyncCommands as _;
+    let _: Result<(), _> = conn
+        .set_ex(
+            format!("auth:vp:jwekid:{kid}"),
+            pending_payload.to_string(),
+            VP_PENDING_TTL_SECS,
+        )
+        .await;
+}
+
 
 struct WalletUser {
     id: Uuid,

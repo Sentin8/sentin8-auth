@@ -280,7 +280,6 @@ paths(
         crate::grants::GrantResponse,
         crate::grants::CreateGrantRequest,
         crate::grants::PatchGrantRequest,
-        crate::wallet::VpResponseRequest,
         crate::wallet::WalletAuthorizeQuery,
         crate::wallet::CredentialOfferRequest,
         crate::wallet::CredentialIssueRequest,
