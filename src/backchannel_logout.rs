@@ -73,7 +73,8 @@ pub struct ClientResult {
     pub error: Option<String>,
 }
 
-/// Logout token JWT claims (per OIDC Back-Channel Logout ).
+/// Logout token JWT claims (per OIDC Back-Channel Logout 1.0 -
+/// https://openid.net/specs/openid-connect-backchannel-1_0.html §2.4).
 #[derive(Debug, Serialize)]
 pub struct LogoutTokenClaims {
     /// The issuer identifier (this OP).
@@ -82,6 +83,9 @@ pub struct LogoutTokenClaims {
     pub aud: String,
     /// Issued-at (unix seconds).
     pub iat: i64,
+    /// Expiration (unix seconds) - REQUIRED by the spec; short
+    /// (2 minutes) per its anti-replay security consideration.
+    pub exp: i64,
     /// Unique token identifier (the RP's replay key).
     pub jti: String,
     /// The `events` member - names the backchannel-logout event URI.
@@ -94,7 +98,17 @@ pub struct LogoutTokenClaims {
     pub sid: Option<String>,
 }
 
-/// Issue a logout token JWT signed with Auth's RSA key.
+/// The Logout Token's lifetime (spec §4 security considerations: short,
+/// preferably at most two minutes).
+const LOGOUT_TOKEN_TTL_SECS: i64 = 120;
+
+/// Issue a Logout Token JWT signed with the OP's signing key family.
+///
+/// The JOSE header carries `typ: logout+jwt` (the spec's explicit-typing
+/// recommendation - the token MUST NOT be usable as an id_token, §4.1
+/// cross-JWT confusion). The claims carry the spec's REQUIRED set
+/// (`iss`, `aud`, `iat`, `exp`, `jti`, `events`) plus `sub` and/or `sid`
+/// and NEVER `nonce` (§2.4).
 fn issue_logout_token(
     keys: &SigningKeys,
     issuer: &str,
@@ -102,13 +116,19 @@ fn issue_logout_token(
     user_id: Option<Uuid>,
     sid: Option<String>,
 ) -> Result<String, String> {
+    let now = Utc::now().timestamp();
     // `sid` = the SESSION's persistent id (the id_token's sid claim -
     // design 9a.26: the fanout's sid MUST equal the id_token sid the
-    // suite captured at login).
+    // suite captured at login). A Logout Token MUST contain `sub` or
+    // `sid` (§2.4) - with neither present the mint is a caller bug.
+    if user_id.is_none() && sid.is_none() {
+        return Err("logout token must carry sub or sid".into());
+    }
     let claims = LogoutTokenClaims {
         iss: issuer.to_string(),
         aud: client_id.to_string(),
-        iat: Utc::now().timestamp(),
+        iat: now,
+        exp: now + LOGOUT_TOKEN_TTL_SECS,
         jti: Uuid::new_v4().to_string(),
         events: serde_json::json!({
             "http://schemas.openid.net/event/backchannel-logout": {}
@@ -116,7 +136,8 @@ fn issue_logout_token(
         sub: user_id.map(|u| u.to_string()),
         sid,
     };
-    keys.sign_value(&serde_json::to_value(claims).map_err(|e| format!("serialize claims: {e}"))?)
+    let payload = serde_json::to_value(claims).map_err(|e| format!("serialize claims: {e}"))?;
+    keys.sign_value_typed(&payload, "RS256", "logout+jwt")
 }
 
 /// Handler - `POST /oauth/backchannel-logout` / `POST /v1/backchannel-logout/trigger`.
@@ -162,8 +183,12 @@ pub async fn trigger_backchannel_logout(
         })
         .collect();
 
+    // The Logout Token's issuer is the REQUEST-RESOLVED one (the same
+    // `resolve_issuer` every protocol endpoint uses - a cert env's
+    // tokens carry the cert tenant's auth host).
+    let issuer = crate::oauth::resolve_issuer(&state.config, &headers);
     let (sent, failed, details) =
-        fanout_backchannel_logout(&state, req.user_id, Some(req.session_id.to_string()), req.client_id.as_deref(), &rows).await;
+        fanout_backchannel_logout(&state, &issuer, req.user_id, Some(req.session_id.to_string()), req.client_id.as_deref(), &rows).await;
     Ok(Json(BackchannelLogoutResponse { sent, failed, details }))
 }
 
@@ -179,15 +204,17 @@ pub struct BackchannelClientRow {
 /// client WITH a backchannel_logout_uri (optionally restricted to one
 /// client). PUBLIC - the RP-initiated logout handler (oauth.rs logout)
 /// calls the SAME fanout as its side effect (the Back-Channel OP plan's
-/// module family).
+/// module family). `issuer` is the REQUEST-RESOLVED issuer (the
+/// tenant's auth host - the Logout Token's `iss` MUST match the
+/// id_token's issuer the RP validated, or the RP's iss check fails).
 pub async fn fanout_backchannel_logout(
     state: &crate::handlers::AppState,
+    issuer: &str,
     user_id: Uuid,
     sid: Option<String>,
     client_filter: Option<&str>,
     rows: &[BackchannelClientRow],
 ) -> (u32, u32, Vec<ClientResult>) {
-    let issuer = state.config.issuer.clone();
     let _ = client_filter;
     let mut sent = 0u32;
     let mut failed = 0u32;
@@ -197,7 +224,7 @@ pub async fn fanout_backchannel_logout(
         let uri = row.backchannel_logout_uri.clone();
         let logout_token = match issue_logout_token(
             &state.keys,
-            &issuer,
+            issuer,
             &row.client_id,
             Some(user_id),
             sid.clone(),
@@ -292,6 +319,7 @@ mod tests {
             iss: "https://auth.example.com".into(),
             aud: "client_123".into(),
             iat: 1700000000,
+            exp: 1700000120,
             jti: "jti-abc".into(),
             events: serde_json::json!({"http://schemas.openid.net/event/backchannel-logout": {}}),
             sub: Some("user-456".into()),
@@ -301,6 +329,7 @@ mod tests {
         assert_eq!(json["iss"], "https://auth.example.com");
         assert_eq!(json["aud"], "client_123");
         assert_eq!(json["jti"], "jti-abc");
+        assert_eq!(json["exp"], 1700000120);
         assert!(json["events"]["http://schemas.openid.net/event/backchannel-logout"].is_object());
         assert_eq!(json["sub"], "user-456");
         assert_eq!(json["sid"], "session-789");
@@ -309,19 +338,10 @@ mod tests {
     }
 
     #[test]
-    fn logout_token_no_sub_or_sid() {
-        // Per spec, sub and sid are optional - the token can omit them.
-        let claims = LogoutTokenClaims {
-            iss: "https://auth.example.com".into(),
-            aud: "client_123".into(),
-            iat: 1700000000,
-            jti: "jti-abc".into(),
-            events: serde_json::json!({"http://schemas.openid.net/event/backchannel-logout": {}}),
-            sub: None,
-            sid: None,
-        };
-        let json = serde_json::to_value(&claims).unwrap();
-        assert!(json.get("sub").is_none());
-        assert!(json.get("sid").is_none());
+    fn logout_token_needs_sub_or_sid() {
+        // Per spec the token can omit either claim, but never both - the
+        // mint refuses a neither claim (Back-Channel Logout 1.0 §2.4).
+        let keys = SigningKeys::generate_for_testing().unwrap();
+        assert!(issue_logout_token(&keys, "https://op", "c1", None, None).is_err());
     }
 }

@@ -222,6 +222,58 @@ CREATE POLICY auth_sessions_delete_policy ON auth.sessions
 
 ALTER TABLE auth.sessions FORCE ROW LEVEL SECURITY;
 
+-- ── Session-RP bindings (OIDC Back-Channel Logout 1.0 §2.3) ──────────
+-- The OP's "remembering logged-in RPs": one row per (session, client)
+-- the user actually logged into - recorded at authorization-code mint
+-- (the moment the RP holds tokens for the session's user). The
+-- RP-initiated logout fanout notifies ONLY the backchannel-registered
+-- clients in THIS set (design 9a.26): an unrelated bc-registered
+-- client never saw the session, so it is not notified.
+CREATE TABLE IF NOT EXISTS auth.session_clients (
+    id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    env_id      UUID NOT NULL,
+    session_token_id TEXT NOT NULL,
+    client_id   TEXT NOT NULL,
+    created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+    UNIQUE (session_token_id, client_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_auth_session_clients_session
+    ON auth.session_clients (session_token_id);
+CREATE INDEX IF NOT EXISTS idx_auth_session_clients_env_client
+    ON auth.session_clients (env_id, client_id);
+
+ALTER TABLE auth.session_clients ENABLE ROW LEVEL SECURITY;
+ALTER TABLE auth.session_clients FORCE ROW LEVEL SECURITY;
+
+DROP POLICY IF EXISTS auth_session_clients_select ON auth.session_clients;
+CREATE POLICY auth_session_clients_select ON auth.session_clients
+    FOR SELECT USING (
+        sentin8_context_initialized()
+        AND (
+            sentin8_bypass_rls()
+            OR env_id = sentin8_current_env_id()
+        )
+    );
+DROP POLICY IF EXISTS auth_session_clients_insert ON auth.session_clients;
+CREATE POLICY auth_session_clients_insert ON auth.session_clients
+    FOR INSERT WITH CHECK (
+        sentin8_context_initialized()
+        AND (
+            sentin8_bypass_rls()
+            OR env_id = sentin8_current_env_id()
+        )
+    );
+DROP POLICY IF EXISTS auth_session_clients_delete ON auth.session_clients;
+CREATE POLICY auth_session_clients_delete ON auth.session_clients
+    FOR DELETE USING (
+        sentin8_context_initialized()
+        AND (
+            sentin8_bypass_rls()
+            OR env_id = sentin8_current_env_id()
+        )
+    );
+
 -- ── EUDI credentials (OID4VCI, EUDI.2.1) ────────────────────────────
 -- One row per verifiable credential Auth issued to a wallet. The wallet
 -- holds the credential; Auth holds only the status/audit record (secret-free
@@ -286,6 +338,11 @@ CREATE TABLE IF NOT EXISTS auth.grants (
     user_id       UUID NOT NULL,
     scope         TEXT NOT NULL DEFAULT '',
     authorization_details JSONB,
+    -- OIDC Core §5.5 (design §9a.11): the authorization's claims
+    -- request rides the grant so the userinfo endpoint can honor the
+    -- userinfo-member selection (the essential-claim family - the
+    -- access token carries only scope, the claims context lives here).
+    claims_request JSONB,
     status        TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active','revoked')),
     created_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at    TIMESTAMPTZ NOT NULL DEFAULT now()
@@ -2178,7 +2235,7 @@ CREATE POLICY auth_webhook_attempts_write_policy ON auth.webhook_attempts
 
 -- sentin8_auth_service: DML on all auth tables.
 GRANT SELECT, INSERT, UPDATE, DELETE ON
-    auth.users, auth.sessions, auth.oauth_clients,
+    auth.users, auth.sessions, auth.session_clients, auth.oauth_clients,
     auth.api_keys, auth.m2m_dcr_credentials, auth.roles,
     auth.user_roles, auth.groups, auth.group_members,
     auth.group_roles, auth.client_roles, auth.federated_credentials,

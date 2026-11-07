@@ -279,7 +279,13 @@ pub fn print(section: Option<String>) -> anyhow::Result<()> {
             pages: ADMIN_UI_PAGES,
         }),
         sql_migrations: vec![SqlMigration {
-            version: 1,
+            // Greenfield versioning: the migration row is the
+            // sys.vertical_migrations key - a CONTENT change to the
+            // idempotent init.sql ships as the next version so enroll's
+            // convergence re-applies it (every statement is CREATE IF
+            // NOT EXISTS / ON CONFLICT guarded - a re-apply is a no-op
+            // except the new DDL).
+            version: 5,
             name: "init",
             sql: SQL_1_INIT,
         }],

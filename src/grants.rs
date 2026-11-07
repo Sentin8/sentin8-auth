@@ -106,6 +106,7 @@ pub async fn record_grant(
     client_db_id: Option<Uuid>,
     scope: &str,
     authorization_details: Option<&serde_json::Value>,
+    claims_request: Option<&serde_json::Value>,
 ) -> Result<Uuid, sqlx::Error> {
     let mut tx = state.pool.begin().await?;
     let _ = sqlx::query("SELECT sentin8_set_tenant_context($1)")
@@ -156,8 +157,8 @@ pub async fn record_grant(
 
     let id: Uuid = sqlx::query_scalar(
         r#"INSERT INTO auth.grants
-               (env_id, client_id, client_db_id, user_id, scope, authorization_details)
-           VALUES ($1, $2, $3, $4, $5, $6)
+               (env_id, client_id, client_db_id, user_id, scope, authorization_details, claims_request)
+           VALUES ($1, $2, $3, $4, $5, $6, $7)
            RETURNING id"#,
     )
     .bind(env_id)
@@ -166,6 +167,7 @@ pub async fn record_grant(
     .bind(user_id)
     .bind(scope)
     .bind(authorization_details)
+    .bind(claims_request)
     .fetch_one(&mut *tx)
     .await?;
     tx.commit().await?;
@@ -199,6 +201,7 @@ pub async fn create_grant(
         None,
         &req.scope,
         req.authorization_details.as_ref(),
+        None,
     )
     .await
     .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;

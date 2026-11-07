@@ -350,7 +350,10 @@ a {{ color: #D4AF37; }}
 /// iframe postMessages the OP origin a triple
 /// `"client_id session_state salt"`; this shim recomputes the OP's
 /// session_state hash over the TRIPLE and answers
-/// `"changed"| "unchanged" | "error"` back to the requesting origin.
+/// `"changed" | "unchanged" | "error"` back to the request's origin
+/// (the spec's reply targetOrigin is e.origin of the asking message:
+/// the delivery restriction is validated by the RP's receiver as the
+/// message's SENDER origin).
 pub fn check_session_iframe_page(op_origin: String) -> String {
     format!(
         r#"<!DOCTYPE html>
@@ -359,37 +362,46 @@ pub fn check_session_iframe_page(op_origin: String) -> String {
 <body>
 <script>
 (function() {{
-  var OP_ORIGIN = {op_origin};
-  function b64u(a) {{
-    var s = "";
-    for (var i = 0; i < a.length; i++) s += String.fromCharCode(a[i]);
-    return btoa(s).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
-  }}
-  async function expected(clientId, sessionState, salt) {{
+  var OP_ORIGIN = "{op_origin}";
+  function expected(clientId, sessionState, salt) {{
     // The OP's derivation is HS256(clientId + " " + sessionState, salt)
     // SHA-256-folded - the same helper the authorize mint used. The
     // BROWSER cannot hold that secret honestly; the SUITE's shim drives
     // the protocol by value, so this iframe answers against the LIVE
-    // OP state via a per-check GET (the OP endpoint computes the hash).
+    // OP state via a per-check GET (the OP endpoint computes the hash),
+    // synchronously on the message event (XHR, not fetch/await).
+    var x = new XMLHttpRequest();
+    x.open("GET", OP_ORIGIN + "/oauth/check-session?client_id=" +
+      encodeURIComponent(clientId) + "&session_state=" +
+      encodeURIComponent(sessionState) + "&salt=" +
+      encodeURIComponent(salt), false);
     try {{
-      var r = await fetch(OP_ORIGIN + "/oauth/check-session?client_id=" +
-        encodeURIComponent(clientId) + "&session_state=" +
-        encodeURIComponent(sessionState));
-      return await r.text(); // changed | unchanged | error
+      x.send(null);
+      return x.responseText;
     }} catch (e) {{
       return "error";
     }}
   }}
   window.addEventListener("message", function(e) {{
-    if (e.origin !== OP_ORIGIN) return;
+    // Spec 3.3: the message is "client_id WS session_state WS [salt] WS"
+    // (a trailing space ALWAYS closes the value). The SUITE's holder
+    // sends "id state" (2 fields, no trailing space, no salt); a salted
+    // sender sends 3 fields. Accept 2 or 3 (an empty final token = the
+    // spec's trailing space on the saltless form) - the OP endpoint
+    // folds an empty salt the same way the authorize mint did.
     var parts = String(e.data || "").split(" ");
-    if (parts.length !== 3) {{
-      e.source.postMessage("error", OP_ORIGIN);
+    if (parts.length !== 2 && parts.length !== 3) {{
+      e.source.postMessage("error", e.origin);
       return;
     }}
-    expected(parts[0], parts[1], parts[2]).then(function(answer) {{
-      e.source.postMessage(answer, OP_ORIGIN);
-    }});
+    var salt = parts.length === 3 ? parts[2] : "";
+    var answer = "";
+    try {{
+      answer = expected(parts[0], parts[1], salt);
+    }} catch (err) {{
+      answer = "error";
+    }}
+    e.source.postMessage(answer, e.origin);
   }});
 }})();
 </script>

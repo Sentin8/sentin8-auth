@@ -3202,6 +3202,253 @@ pub async fn pushed_authorization_request(
         .into_response())
 }
 
+/// The fragment-cell authorize response (design §9a.13): the
+/// id_token/token/code members encoded in the URL FRAGMENT over the
+/// redirect_uri (OAuth Response Modes §2.1 / OIDC Core §3.1.2.5) - the
+/// shared mint for BOTH silent-issuance paths (prompt=none and the
+/// fresh-session interactive block) so a fragment cell NEVER answers on
+/// the query channel (the suite's RejectAuthCodeInUrlQuery).
+///
+/// `session_token`/`session_present` drive the `sid` +
+/// `session_state` members (9a.26); `auth_time` is the session's own
+/// issue time (never `now` - the max-age pair compares it).
+async fn fragment_cell_response(
+    state: &AppState,
+    headers: &HeaderMap,
+    params: &AuthorizeParams,
+    profile: &SecurityProfile,
+    user_id: uuid::Uuid,
+    env_id: uuid::Uuid,
+    code: &str,
+    auth_time: Option<i64>,
+    session_token: Option<&str>,
+    session_present: bool,
+) -> Response {
+    let wants_id_token = params.response_type.split_whitespace().any(|p| p == "id_token");
+    let wants_token = params.response_type.split_whitespace().any(|p| p == "token");
+    let wants_code = params.response_type.split_whitespace().any(|p| p == "code");
+    let issuer2 = resolve_issuer(&state.config, headers);
+    let access_token_for_hash = if wants_token {
+        let scope = params.scope.clone();
+        let merged = crate::handlers::merge_scopes(
+            &scope,
+            &crate::handlers::fetch_role_scopes(&state.pool, user_id)
+                .await
+                .unwrap_or_default(),
+        );
+        let access_claims = {
+            let mut c = AuthClaims::access_with_client(
+                &issuer2,
+                user_id,
+                &scope,
+                env_id,
+                None,
+                Some(&params.client_id),
+                Duration::seconds(state.config.access_token_ttl_secs as i64),
+            );
+            c.token_tp = "access".into();
+            // OIDC Core 5.4/5.5 (DESIGN 9a.11): the claims request's
+            // USERINFO selection stamps onto the access token (the
+            // token endpoint does the same) - userinfo serves a
+            // selected claim name without the scope family granting it
+            // (the essential-claim family: the selection is the
+            // client's explicit, login-time consent signal).
+            {
+                let selection = params
+                    .claims
+                    .as_ref()
+                    .and_then(|c| c.get("userinfo"))
+                    .and_then(|v| v.as_object());
+                if let Some(sel) = selection.filter(|o| !o.is_empty()) {
+                    c.userinfo_claims = Some(sel.keys().cloned().collect::<Vec<_>>());
+                }
+            }
+            c
+        };
+        let _ = merged;
+        let claims_json = serde_json::to_value(&access_claims).unwrap_or(serde_json::json!({}));
+        match state.keys.sign_value_alg(&claims_json, &profile.signing_alg) {
+            Ok(t) => t,
+            Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+        }
+    } else {
+        String::new()
+    };
+    let user_row = {
+        let mut tx = match state.pool.begin().await {
+            Ok(t) => t,
+            Err(_) => {
+                return (StatusCode::INTERNAL_SERVER_ERROR, "pool unavailable").into_response();
+            }
+        };
+        let _ = sqlx::query("SELECT sentin8_set_tenant_context($1)")
+            .bind(env_id)
+            .execute(&mut *tx)
+            .await;
+        let row = sqlx::query!(
+            r#"SELECT email, first_name, last_name, phone,
+                      street_address, locality, region, postal_code, country,
+                      oidc_profile, updated_at
+               FROM users WHERE id = $1"#,
+            user_id,
+        )
+        .fetch_optional(&mut *tx)
+        .await
+        .unwrap_or(None);
+        let _ = tx.commit().await;
+        row
+    };
+    let email = user_row.as_ref().map(|r| r.email.clone());
+    let name = user_row.as_ref().map(|r| {
+        crate::jwt::derive_profile_name(
+            r.oidc_profile.get("name").and_then(|v| v.as_str()),
+            r.first_name.as_deref().map(str::trim).filter(|s| !s.is_empty()),
+            r.last_name.as_deref().map(str::trim).filter(|s| !s.is_empty()),
+        )
+        .unwrap_or_default()
+    });
+    let phone = user_row.as_ref().and_then(|r| r.phone.clone());
+    let address = user_row.as_ref().and_then(|r| {
+        crate::jwt::build_address_claim(
+            r.street_address.as_deref(),
+            r.locality.as_deref(),
+            r.region.as_deref(),
+            r.postal_code.as_deref(),
+            r.country.as_deref(),
+        )
+    });
+    // OIDC Core §5.4 (the implicit/hybrid cells, design §9a.13): the
+    // id_token delivered FROM THE AUTHORIZATION ENDPOINT carries the
+    // scope-consented standard claims - `scope=profile email ...` maps
+    // to the standard claim families (the suite's
+    // VerifyScopesReturnedInAuthorizationEndpointIdToken). This is the
+    // OPPOSITE posture of the token-endpoint id_token (§9a.11's
+    // conservative surface - there the §5.5 claims request selects,
+    // scope alone never suffices): the authorization-endpoint token is
+    // the only token the client receives in the id_token-only cells,
+    // so the scope IS the request. A §5.5 `claims.id_token` selection
+    // narrows further below (the essential-claim family).
+    let id_selection = params
+        .claims
+        .as_ref()
+        .and_then(|c| c.get("id_token"))
+        .and_then(|v| v.as_object());
+    let scope_has = |s: &str| params.scope.split_whitespace().any(|x| x == s);
+    let id_claims = crate::jwt::AuthClaims::id_token_with_details(
+        &issuer2,
+        user_id,
+        &params.client_id,
+        params.nonce.as_deref(),
+        auth_time.unwrap_or_else(|| chrono::Utc::now().timestamp()),
+        &access_token_for_hash,
+        email.as_deref(),
+        // OIDC Core §5.4 + the suite's RESPONSE-TYPE-DEPENDENT email
+        // rule: the id_token-only cell carries email/email_verified
+        // (the id_token is the ONLY claim carrier - no access token
+        // exists for userinfo); the token-bearing cells keep email in
+        // userinfo (EnsureIdTokenDoesNotContainEmailForScopeEmail).
+        // The profile/phone/address families always ride per scope
+        // (VerifyScopesReturnedInAuthorizationEndpointIdToken).
+        !wants_token && scope_has("email")
+            || id_selection.map(|o| o.contains_key("email")).unwrap_or(false),
+        name.as_deref(),
+        scope_has("profile")
+            || id_selection.map(|o| o.contains_key("name")).unwrap_or(false),
+        phone.as_deref(),
+        scope_has("phone")
+            || id_selection.map(|o| o.contains_key("phone_number")).unwrap_or(false),
+        address.as_ref(),
+        scope_has("address")
+            || id_selection.map(|o| o.contains_key("address")).unwrap_or(false),
+        Duration::seconds(state.config.access_token_ttl_secs as i64),
+        params.authorization_details.as_ref(),
+        // The §5.4 profile family rides the fragment id_token as the
+        // extra-claims overlay (the token-endpoint mint's own
+        // §5.5-conservative filter does NOT apply here - the
+        // authorization-endpoint id_token carries the full
+        // scope-mapped family; `name` is served by the primary member
+        // above, the overlay's copy is idempotent).
+        (scope_has("profile")
+            .then(|| {
+                user_row.as_ref().map(|r| {
+                    crate::jwt::build_profile_claims(
+                        name.as_deref(),
+                        &r.oidc_profile,
+                        Some(r.updated_at.timestamp()),
+                    )
+                })
+            })
+            .flatten())
+        .as_ref(),
+        // OIDC Core §3.1.2.1 (the acr echo): the id_token's `acr` names
+        // the achieved context - ONE of the requested acr_values, not
+        // the raw multi-value string (the suite's AcrValues check
+        // expects membership in the requested set).
+        params
+            .acr
+            .as_deref()
+            .and_then(|raw| raw.split_whitespace().next()),
+    );
+    let mut id_claims = id_claims;
+    if wants_code {
+        id_claims["c_hash"] = serde_json::json!(crate::jwt::c_hash(code));
+    }
+    // OIDC Back-Channel Logout / Session Management (design 9a.26):
+    // the id_token carries `sid` = the session's persistent id.
+    if let Some(tok) = session_token.filter(|t| session_present && !t.is_empty()) {
+        id_claims["sid"] = serde_json::json!(tok);
+    }
+    let id_token = match state.keys.sign_value_alg(&id_claims, &profile.signing_alg) {
+        Ok(t) => t,
+        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    };
+    let mut fragment_params: Vec<(&str, String)> = Vec::new();
+    if wants_token {
+        fragment_params.push(("access_token", access_token_for_hash.clone()));
+        fragment_params.push(("token_type", "Bearer".to_string()));
+        fragment_params.push(("expires_in", state.config.access_token_ttl_secs.to_string()));
+    }
+    if wants_code {
+        fragment_params.push(("code", urlencode(code)));
+    }
+    if wants_id_token {
+        fragment_params.push(("id_token", id_token));
+    }
+    fragment_params.push(("state", urlencode(&params.state)));
+    // OIDC Session Management (design 9a.26): the session_state rides
+    // EVERY authorize response the user is signed in for.
+    if let Some(tok) = session_token.filter(|t| session_present && !t.is_empty()) {
+        let salt = session_salt_from_issuer(&resolve_issuer(&state.config, headers));
+        fragment_params.push((
+            "session_state",
+            urlencode(&session_state_value(&params.client_id, tok, &salt)),
+        ));
+    }
+    if profile.require_iss {
+        fragment_params.push(("iss", urlencode(&issuer2)));
+    }
+    // The form_post family (design §9a.25): the parameters ride the
+    // one-time OP-hosted HTML form instead of the URL.
+    if is_form_post_flow(params.response_mode.as_deref(), &profile.profile) {
+        let redirect = params.redirect_uri.clone();
+        if let Some(ref_id) =
+            register_form_post_ref(&state.config.valkey_url, &redirect, &fragment_params).await
+        {
+            let url = format!("{}/oauth/form-post/{}", resolve_issuer(&state.config, headers), ref_id);
+            return (StatusCode::FOUND, [("location", url)]).into_response();
+        }
+        // registration failure keeps the fragment channel (degrade)
+    }
+    let mut url = params.redirect_uri.clone();
+    let pairs: Vec<String> = fragment_params
+        .iter()
+        .map(|(k, v)| format!("{k}={v}"))
+        .collect();
+    url.push('#');
+    url.push_str(&pairs.join("&"));
+    (StatusCode::FOUND, [("location", url)]).into_response()
+}
+
 /// Normalized authorization params - either from inline query params or
 /// resolved from a PAR request / JAR request object.
 struct AuthorizeParams {
@@ -3806,6 +4053,24 @@ pub async fn authorize(
             Some(params.state.as_str()),
         );
     }
+    // OIDC Core §3.2.1.1 / §3.3.2.1 (the implicit + hybrid cells, design
+    // §9a.25): `nonce` is REQUIRED for every response_type that mints an
+    // id_token in the fragment - a missing nonce answers the OAuth error
+    // redirect (the suite's ensure-request-without-nonce-fails reads the
+    // callback's error=invalid_request), encoded in the FRAGMENT for
+    // the fragment cells (OIDC Core §3.2.2.1 - RejectErrorInUrlQuery).
+    if crate::oauth::is_fragment_response(&params.response_type)
+        && params.response_type.split_whitespace().any(|p| p == "id_token")
+        && params.nonce.as_deref().map(str::trim).unwrap_or("").is_empty()
+    {
+        return authorize_error_redirect_channel(
+            &params.redirect_uri,
+            "invalid_request",
+            "nonce is required for response types that return an id_token from the authorization endpoint",
+            Some(params.state.as_str()),
+            true,
+        );
+    }
     // DESIGN §9a.22 - the deferred PKCE-missing reject (the same
     // post-validation channel; the PAR-flow PKCE negatives read the
     // callback with an invalid_request error - in the JARM form when the
@@ -4054,6 +4319,13 @@ pub async fn authorize(
             // wall-clock-check it - the Valkey TTL alone is only the
             // 600s upper bound, never the RFC 6749 short-lived posture.
             "iat": chrono::Utc::now().timestamp(),
+            // OIDC Back-Channel Logout / Session Management (design
+            // 9a.26): the OP Session ID (the resolved session's
+            // token_id) rides the code record so the token exchange
+            // stamps id_token["sid"] - the suite compares the id_token's
+            // sid to the Logout Token's (Back-Channel Logout 1.0
+            // §2.6 step 11).
+            "session_token": existing_session.clone().unwrap_or_default(),
             // DESIGN §9a.13 - the CELL's response_type (the fragment
             // cells deliver id_token/token in the fragment even on the
             // silent path).
@@ -4087,6 +4359,11 @@ pub async fn authorize(
             )
                 .into_response();
         }
+        // The session-RP binding (design 9a.26; Back-Channel Logout
+        // 1.0 §2.3) - recorded at code mint, best-effort.
+        if let Some(tok) = existing_session.clone() {
+            record_session_client(&state, env_id, &tok, &params.client_id).await;
+        }
         if let Some(pk) = params.par_key.as_deref().filter(|s| !s.is_empty()) {
             mark_par_used(&state, pk).await;
         }
@@ -4094,159 +4371,11 @@ pub async fn authorize(
         // encodes id_token/token + code members in the FRAGMENT
         // (OAuth-). The code-only cell keeps the query encoding.
         if crate::oauth::is_fragment_response(&params.response_type) {
-            let wants_id_token = params.response_type.split_whitespace().any(|p| p == "id_token");
-            let wants_token = params.response_type.split_whitespace().any(|p| p == "token");
-            let wants_code = params.response_type.split_whitespace().any(|p| p == "code");
-            let issuer2 = resolve_issuer(&state.config, &headers);
-            let access_token_for_hash = if wants_token {
-                let scope = params.scope.clone();
-                let merged = crate::handlers::merge_scopes(
-                    &scope,
-                    &crate::handlers::fetch_role_scopes(&state.pool, user_id).await.unwrap_or_default(),
-                );
-                let access_claims = {
-                    let mut c = AuthClaims::access_with_client(
-                        &issuer2,
-                        user_id,
-                        &scope,
-                        env_id,
-                        None,
-                        Some(&params.client_id),
-                        Duration::seconds(state.config.access_token_ttl_secs as i64),
-                    );
-                    c.token_tp = "access".into();
-                    c
-                };
-                let _ = merged;
-                let claims_json = serde_json::to_value(&access_claims).unwrap_or(serde_json::json!({}));
-                match state.keys.sign_value_alg(&claims_json, &profile.signing_alg) {
-                    Ok(t) => t,
-                    Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
-                }
-            } else {
-                String::new()
-            };
-            let Ok(mut tx) = state.pool.begin().await else {
-                return (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    Json(serde_json::json!({"error": "server_error",
-                        "error_description": "pool unavailable"})),
-                )
-                    .into_response();
-            };
-            let _ = sqlx::query("SELECT sentin8_set_tenant_context($1)")
-                .bind(env_id)
-                .execute(&mut *tx)
-                .await;
-            let user_row = sqlx::query!(
-                r#"SELECT email, first_name, last_name, phone,
-                          street_address, locality, region, postal_code, country,
-                          oidc_profile, updated_at
-                   FROM users WHERE id = $1"#,
-                user_id,
+            return fragment_cell_response(
+                &state, &headers, &params, &profile, user_id, env_id, &code,
+                session_auth_time, existing_session.as_deref(), session_user.is_some(),
             )
-            .fetch_optional(&mut *tx)
-            .await
-            .unwrap_or(None);
-            let _ = tx.commit().await;
-            let email = user_row.as_ref().map(|r| r.email.clone());
-            let name = user_row.as_ref().map(|r| {
-                crate::jwt::derive_profile_name(
-                    r.oidc_profile.get("name").and_then(|v| v.as_str()),
-                    r.first_name.as_deref().map(str::trim).filter(|s| !s.is_empty()),
-                    r.last_name.as_deref().map(str::trim).filter(|s| !s.is_empty()),
-                )
-                .unwrap_or_default()
-            });
-            let phone = user_row.as_ref().and_then(|r| r.phone.clone());
-            let address = user_row.as_ref().and_then(|r| {
-                crate::jwt::build_address_claim(
-                    r.street_address.as_deref(),
-                    r.locality.as_deref(),
-                    r.region.as_deref(),
-                    r.postal_code.as_deref(),
-                    r.country.as_deref(),
-                )
-            });
-            let id_claims = crate::jwt::AuthClaims::id_token_with_details(
-                &issuer2,
-                user_id,
-                &params.client_id,
-                params.nonce.as_deref(),
-                session_auth_time.unwrap_or_else(|| chrono::Utc::now().timestamp()),
-                &access_token_for_hash,
-                email.as_deref(),
-                params.scope.split_whitespace().any(|s| s == "email"),
-                name.as_deref(),
-                params.scope.split_whitespace().any(|s| s == "profile"),
-                phone.as_deref(),
-                params.scope.split_whitespace().any(|s| s == "phone"),
-                address.as_ref(),
-                params.scope.split_whitespace().any(|s| s == "address"),
-                Duration::seconds(state.config.access_token_ttl_secs as i64),
-                params.authorization_details.as_ref(),
-                None,
-                params.acr.as_deref(),
-            );
-            let mut id_claims = id_claims;
-            if wants_code {
-                id_claims["c_hash"] = serde_json::json!(crate::jwt::c_hash(&code));
-            }
-            // OIDC Back-Channel Logout / Session Management (design 9a.26):
-            // the id_token carries `sid` = the session's persistent id.
-            if let Some(tok) = existing_session.as_deref() {
-                if session_user.is_some() {
-                    id_claims["sid"] = serde_json::json!(tok);
-                }
-            }
-            let id_token = match state.keys.sign_value_alg(&id_claims, &profile.signing_alg) {
-                Ok(t) => t,
-                Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
-            };
-            let mut fragment_params: Vec<(&str, String)> = Vec::new();
-            if wants_token {
-                fragment_params.push(("access_token", access_token_for_hash.clone()));
-                fragment_params.push(("token_type", "Bearer".to_string()));
-                fragment_params.push(("expires_in", state.config.access_token_ttl_secs.to_string()));
-            }
-            if wants_code {
-                fragment_params.push(("code", urlencode(&code)));
-            }
-            if wants_id_token {
-                fragment_params.push(("id_token", id_token));
-            }
-            fragment_params.push(("state", urlencode(&params.state)));
-            // OIDC Session Management (design 9a.26): the session_state
-            // rides EVERY authorize response the user is signed in for.
-            if let Some(tok) = existing_session.as_deref() {
-                if session_user.is_some() {
-                    let salt = session_salt_from_issuer(&resolve_issuer(&state.config, &headers));
-                    fragment_params.push(("session_state", urlencode(&session_state_value(&params.client_id, tok, &salt))));
-                }
-            }
-            if profile.require_iss {
-                fragment_params.push(("iss", urlencode(&issuer2)));
-            }
-            // The form_post family (design §9a.25): the parameters ride
-            // the one-time OP-hosted HTML form instead of the URL.
-            if is_form_post_flow(params.response_mode.as_deref(), &profile.profile) {
-                let redirect = params.redirect_uri.clone();
-                if let Some(ref_id) =
-                    register_form_post_ref(&state.config.valkey_url, &redirect, &fragment_params).await
-                {
-                    let url = format!("{}/oauth/form-post/{}", resolve_issuer(&state.config, &headers), ref_id);
-                    return (StatusCode::FOUND, [("location", url)]).into_response();
-                }
-                // registration failure keeps the fragment channel (degrade)
-            }
-            let mut url = params.redirect_uri.clone();
-            let pairs: Vec<String> = fragment_params
-                .iter()
-                .map(|(k, v)| format!("{k}={v}"))
-                .collect();
-            url.push('#');
-            url.push_str(&pairs.join("&"));
-            return (StatusCode::FOUND, [("location", url)]).into_response();
+            .await;
         }
         let mut url = build_callback_url(
             &params.redirect_uri,
@@ -4352,6 +4481,9 @@ pub async fn authorize(
                 "acr_values": params.acr,
                 // Same iat stamp as every other code record (§9a.11).
                 "iat": chrono::Utc::now().timestamp(),
+                // The session the silent issuance runs against (9a.26 -
+                // id_token sid at exchange time).
+                "session_token": sess.token_id.clone(),
             });
             if let Ok(valkey_conn) =
                 sentin8::middleware::valkey_client(&state.config.valkey_url, "sentin8:auth").await
@@ -4364,6 +4496,23 @@ pub async fn authorize(
                     .set_ex(&code_key, code_data.to_string(), 600)
                     .await;
                 if set_result.is_ok() {
+                    // The session-RP binding (design 9a.26; Back-Channel
+                    // Logout 1.0 §2.3) - recorded at code mint,
+                    // best-effort.
+                    record_session_client(&state, env_id, &sess.token_id, &params.client_id).await;
+                    // DESIGN §9a.13 - the fragment cells: the fresh-session
+                    // silent issuance answers on the FRAGMENT channel
+                    // (the id_token/token members - the max-age pair's
+                    // second request lands here after the first
+                    // request's sign-in; RejectAuthCodeInUrlQuery
+                    // rejects a query-channel code for them).
+                    if crate::oauth::is_fragment_response(&params.response_type) {
+                        return fragment_cell_response(
+                            &state, &headers, &params, &profile, user_id, env_id, &code,
+                            Some(sess.created_at.timestamp()), Some(sess.token_id.as_str()), true,
+                        )
+                        .await;
+                    }
                     let mut url = build_callback_url(
                         &params.redirect_uri,
                         &format!("code={}", urlencode(&code)),
@@ -4424,9 +4573,21 @@ pub async fn authorize(
     } else {
         "/sign-in"
     };
+    // DESIGN §9a.13 - the CELL's response_type rides the SPA base (the
+    // hardcoded `code` default made a fragment cell's relayed context
+    // carry TWO response_type occurrences - the SPA parsed the first
+    // (`code`) and authorize/continue minted a query-channel code
+    // response for an id_token request; the suite's
+    // RejectAuthCodeInUrlQuery caught the wrong channel).
+    let cell_response_type = if params.response_type.is_empty() {
+        "code".to_string()
+    } else {
+        params.response_type.clone()
+    };
     let mut ui_url = format!(
-        "{}?response_type=code&client_id={}&redirect_uri={}&scope={}&state={}&code_challenge={}&code_challenge_method=S256{}",
+        "{}?response_type={}&client_id={}&redirect_uri={}&scope={}&state={}&code_challenge={}&code_challenge_method=S256{}",
         ui_page,
+        urlencode(&cell_response_type),
         urlencode(&params.client_id),
         urlencode(&params.redirect_uri),
         urlencode(&params.scope),
@@ -4475,13 +4636,9 @@ pub async fn authorize(
     }
     // Forward the response mode so authorize/continue can honor a JARM
     // (`response_mode=jwt`) request.
-    // DESIGN §9a.13 - forward the CELL's response_type so the continue
-    // request serves the fragment cells (the id_token/token members)
-    // and stamps the record.
-    ui_url.push_str(&format!(
-        "&response_type={}",
-        urlencode(&params.response_type)
-    ));
+    // DESIGN §9a.13 - the CELL's response_type already rides the SPA
+    // base above (once - the duplicated append carried two values and
+    // the SPA parsed the FIRST).
     if let Some(rm) = params.response_mode.as_deref().filter(|s| !s.is_empty()) {
         ui_url.push_str(&format!("&response_mode={}", urlencode(rm)));
     }
@@ -4778,8 +4935,10 @@ pub async fn authorize_continue(
     // DESIGN §9a.13 - the CELL's response_type: the fragment response
     // cells deliver id_token/token members + the exchange validates.
            "response_type": req.response_type.clone().unwrap_or_else(|| "code".to_string()),
+           // The approving session's OP Session ID (design 9a.26 - the
+           // token exchange stamps id_token["sid"] from it).
+           "session_token": req.session_token.clone(),
        });
-
     let conn = state
         .pool
         .acquire()
@@ -4806,6 +4965,11 @@ pub async fn authorize_continue(
         .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
     drop(conn);
+
+    // The session-RP binding (design 9a.26; Back-Channel Logout 1.0
+    // §2.3) - recorded at code mint, best-effort (the interactive
+    // path's authoritative session is the approving session).
+    record_session_client(&state, session.env_id, &req.session_token, &req.client_id).await;
 
     // Build the redirect URL with code + state.
     // (RFC 9207) - include `iss` parameter when require_iss is true.
@@ -4935,6 +5099,21 @@ pub async fn authorize_continue(
             );
             let _ = merged;
             access_claims.token_tp = "access".into();
+            // OIDC Core 5.4/5.5 (DESIGN 9a.11): the claims request's
+            // USERINFO selection stamps onto the access token (same
+            // mint contract as the token endpoint) - userinfo serves a
+            // selected claim without the scope family granting it.
+            {
+                let selection = req
+                    .claims
+                    .as_ref()
+                    .and_then(|c| c.get("userinfo"))
+                    .and_then(|v| v.as_object());
+                if let Some(sel) = selection.filter(|o| !o.is_empty()) {
+                    access_claims.userinfo_claims =
+                        Some(sel.keys().cloned().collect::<Vec<_>>());
+                }
+            }
             match state.keys.sign_value_alg(
                 &serde_json::to_value(&access_claims).unwrap_or(serde_json::json!({})),
                 &profile.signing_alg,
@@ -4948,7 +5127,30 @@ pub async fn authorize_continue(
             String::new()
         };
         // The id_token mint (c_hash binds the CODE when the cell carries
-        // one; at_hash binds the access token when present).
+        // one; at_hash binds the access token when present). OIDC Core
+        // §5.4 (design §9a.13/§9a.25): the authorization-endpoint
+        // id_token carries the scope-mapped standard claims (the
+        // fragment cell's only token - the scope IS the claims request;
+        // the OPPOSITE of the token-endpoint id_token's §5.5-conservative
+        // surface). A non-empty §5.5 `claims.id_token` selection
+        // additionally admits selected members without the scope.
+        let id_selection = req
+            .claims
+            .as_ref()
+            .and_then(|c| c.get("id_token"))
+            .and_then(|v| v.as_object());
+        let scope_has = |s: &str| req.scope.split_whitespace().any(|x| x == s);
+        let profile_overlay = scope_has("profile")
+            .then(|| {
+                user_row.as_ref().map(|r| {
+                    crate::jwt::build_profile_claims(
+                        name.as_deref(),
+                        &r.oidc_profile,
+                        Some(r.updated_at.timestamp()),
+                    )
+                })
+            })
+            .flatten();
         let id_claims = crate::jwt::AuthClaims::id_token_with_details(
             &issuer,
             req.user_id,
@@ -4957,17 +5159,27 @@ pub async fn authorize_continue(
             session.created_at.timestamp(),
             &access_token_for_hash,
             email.as_deref(),
-            req.scope.split_whitespace().any(|s| s == "email"),
+            // The suite's RESPONSE-TYPE-DEPENDENT email rule: the
+            // id_token-only cell carries email (no access token
+            // exists for userinfo); the token-bearing cells keep email
+            // in userinfo.
+            !wants_token && scope_has("email")
+                || id_selection.map(|o| o.contains_key("email")).unwrap_or(false),
             name.as_deref(),
-            req.scope.split_whitespace().any(|s| s == "profile"),
+            scope_has("profile")
+                || id_selection.map(|o| o.contains_key("name")).unwrap_or(false),
             phone.as_deref(),
-            req.scope.split_whitespace().any(|s| s == "phone"),
+            scope_has("phone")
+                || id_selection.map(|o| o.contains_key("phone_number")).unwrap_or(false),
             address.as_ref(),
-            req.scope.split_whitespace().any(|s| s == "address"),
+            scope_has("address")
+                || id_selection.map(|o| o.contains_key("address")).unwrap_or(false),
             Duration::seconds(state.config.access_token_ttl_secs as i64),
             req.authorization_details.as_ref(),
-            None,
-            req.acr_values.as_deref(),
+            profile_overlay.as_ref(),
+            // OIDC Core §3.1.2.1 (the acr echo): ONE of the requested
+            // acr_values (the suite's AcrValues membership check).
+            req.acr_values.as_deref().and_then(|raw| raw.split_whitespace().next()),
         );
         let mut id_claims = id_claims;
         if wants_code {
@@ -5780,6 +5992,9 @@ async fn handle_code_exchange(
         Some(client.id),
         scope,
         authorization_details.as_ref(),
+        // OIDC Core §5.5 (design §9a.11): the claims request rides the
+        // grant so userinfo honors the userinfo-member selection.
+        claims_request.as_ref(),
     )
     .await
     {
@@ -5950,6 +6165,15 @@ async fn handle_code_exchange(
         id_claims["c_hash"] = serde_json::json!(crate::jwt::c_hash(&code));
         if let Some(st) = state_value.as_deref().filter(|s| !s.is_empty()) {
             id_claims["s_hash"] = serde_json::json!(crate::jwt::s_hash(st));
+        }
+        // OIDC Back-Channel Logout / Session Management (design 9a.26):
+        // the id_token carries `sid` = the OP Session ID the authorize
+        // path resolved (the code record's `session_token` - the SAME
+        // identifier the Logout Token's sid carries at fanout time, so
+        // the RP's equality check matches, Back-Channel Logout 1.0
+        // §2.6 step 11).
+        if let Some(sid) = code_data["session_token"].as_str().filter(|s| !s.is_empty()) {
+            id_claims["sid"] = serde_json::json!(sid);
         }
         // OIDC Core §5.5 claims request (DESIGN §9a.3) - apply the
         // client's `id_token` claim SELECTION. This only narrows: the
@@ -8183,6 +8407,74 @@ pub async fn userinfo(
 
 // ── Logout ──────────────────────────────────────────────────────────────
 
+/// The RP-initiated logout's backchannel fanout resolver (design
+/// 9a.26): one transaction - SYSTEM-context resolve of the session
+/// row (its user id + token id + env id in a single SELECT), re-set
+/// the session's OWN tenant context, then select the remembered
+/// logged-in RPs: every client bound to THIS session
+/// (`session_clients` - the Back-Channel Logout 1.0 §2.3 tracking)
+/// that is ACTIVE and carries a `backchannel_logout_uri`. An
+/// unrelated bc-registered client is NOT notified of a session it
+/// never saw. `oauth_clients` and `session_clients` are FORCE-RLS:
+/// without the session's env context the SELECTs return 0 rows and
+/// the fanout silently notifies nobody.
+/// Returns None when the browser session is already gone.
+async fn resolve_backchannel_fanout(
+    state: &AppState,
+    session_token: &str,
+) -> Result<
+    Option<(uuid::Uuid, String, Vec<crate::backchannel_logout::BackchannelClientRow>)>,
+    String,
+> {
+    let mut tx = state
+        .pool
+        .begin()
+        .await
+        .map_err(|e| format!("fanout tx: {e}"))?;
+    let _ = sqlx::query("SELECT sentin8_set_tenant_context($1)")
+        .bind(crate::config::SYSTEM_ENV_ID)
+        .execute(&mut *tx)
+        .await;
+    let row: Option<(uuid::Uuid, String, uuid::Uuid)> = sqlx::query_as(
+        "SELECT user_id, token_id, env_id FROM sessions WHERE token_id = $1 AND status = 'active'",
+    )
+    .bind(session_token)
+    .fetch_optional(&mut *tx)
+    .await
+    .map_err(|e| format!("fanout session read: {e}"))?;
+    let Some((user_id, token_id, env_id)) = row else {
+        tx.rollback().await.ok();
+        return Ok(None);
+    };
+    let _ = sqlx::query("SELECT sentin8_set_tenant_context($1)")
+        .bind(env_id)
+        .execute(&mut *tx)
+        .await;
+    let rows = sqlx::query_as(
+        "SELECT c.client_id, c.backchannel_logout_uri \
+         FROM oauth_clients c \
+         JOIN session_clients sc ON sc.client_id = c.client_id AND sc.env_id = c.env_id \
+         WHERE sc.session_token_id = $1 \
+         AND c.backchannel_logout_uri IS NOT NULL AND c.backchannel_logout_uri != '' \
+         AND c.status = 'active'",
+    )
+    .bind(&token_id)
+    .fetch_all(&mut *tx)
+    .await
+    .map_err(|e| format!("fanout client read: {e}"))?;
+    let _ = tx.commit().await;
+    Ok(Some((
+        user_id,
+        token_id,
+        rows.into_iter()
+            .map(|(client_id, uri)| crate::backchannel_logout::BackchannelClientRow {
+                client_id,
+                backchannel_logout_uri: uri,
+            })
+            .collect(),
+    )))
+}
+
 /// Handle logout.
 #[utoipa::path(
     get,
@@ -8349,39 +8641,47 @@ pub async fn logout(
             {
                 let browser_session =
                     crate::handlers::extract_session_token(&headers).map(|t| t.to_string());
-                let logout_user = match browser_session.as_deref() {
-                    Some(tok) => crate::sessions::Session::find_by_token(&state.pool, tok)
-                        .await
-                        .ok()
-                        .flatten(),
-                    None => None,
-                };
-                if let Some(sess) = logout_user {
-                    let rows = sqlx::query!(
-                        r#"SELECT client_id, backchannel_logout_uri
-                           FROM oauth_clients
-                           WHERE backchannel_logout_uri IS NOT NULL
-                             AND backchannel_logout_uri != ''
-                             AND status = 'active'"#,
-                    )
-                    .fetch_all(&state.pool)
-                    .await
-                    .unwrap_or_default();
-                    let rows: Vec<crate::backchannel_logout::BackchannelClientRow> = rows
-                        .into_iter()
-                        .map(|r| crate::backchannel_logout::BackchannelClientRow {
-                            client_id: r.client_id,
-                            backchannel_logout_uri: r.backchannel_logout_uri.unwrap_or_default(),
-                        })
-                        .collect();
-                    let _ = crate::backchannel_logout::fanout_backchannel_logout(
-                        &state,
-                        sess.user_id,
-                        Some(sess.token_id.clone()),
-                        None,
-                        &rows,
-                    )
-                    .await;
+                // RP-Initiated Logout / OIDCSM-3.1: the session the
+                // RP observed via session_state ENDS here - the row is
+                // REVOKED (not just the cookie cleared) so the next
+                // check_session_iframe poll sees no ACTIVE hash for
+                // the client = 'changed'. Best-effort: the redirect
+                // and the cookie clear are the user-facing contract.
+                if let Some(tok) = browser_session.clone() {
+                    // Resolvers run BEFORE the revocation: the fanout's
+                    // session read requires the row still ACTIVE (the
+                    // revoke below flips it - the fanout then carries
+                    // the session's id + tenant context honestly).
+                    match resolve_backchannel_fanout(&state, &tok).await {
+                        Ok(Some((user_id, sid, rows))) => {
+                            let _ = crate::sessions::Session::revoke(&state.pool, &sid).await;
+                            // The REQUEST-RESOLVED issuer rides the
+                            // Logout Token (the tenant's auth host -
+                            // the RP's iss check compares it to the
+                            // id_token's iss it validated).
+                            let issuer = resolve_issuer(&state.config, &headers);
+                            let (sent, failed, _details) =
+                                crate::backchannel_logout::fanout_backchannel_logout(
+                                    &state, &issuer, user_id, Some(sid), None, &rows,
+                                )
+                                .await;
+                            tracing::info!(
+                                sent = sent,
+                                failed = failed,
+                                "logout: backchannel fanout completed"
+                            );
+                        }
+                        Ok(None) => {
+                            // No ACTIVE browser session (an
+                            // rp-logout WITHOUT a session cookie -
+                            // e.g. a logout landing check) - the
+                            // cookie clear alone is the contract.
+                        }
+                        Err(e) => tracing::warn!(
+                            error = %e,
+                            "logout: backchannel fanout resolve failed"
+                        ),
+                    }
                 }
                 let _ = bc_client_id;
             }
@@ -8486,6 +8786,21 @@ pub fn authorize_error_redirect(
     description: &str,
     state: Option<&str>,
 ) -> Response {
+    authorize_error_redirect_channel(redirect_uri, error, description, state, false)
+}
+
+/// The channel-aware error redirect (design §9a.25): the implicit/hybrid
+/// FRAGMENT cells receive EVERY authorization-response parameter - errors
+/// included - in the URL FRAGMENT (OAuth Response Modes §2.1 / OIDC Core
+/// §3.2.2.1 - the suite's RejectErrorInUrlQuery); the query stays the
+/// `code`-only default channel.
+pub fn authorize_error_redirect_channel(
+    redirect_uri: &str,
+    error: &str,
+    description: &str,
+    state: Option<&str>,
+    fragment: bool,
+) -> Response {
     let mut extra: Vec<(String, String)> = vec![
         ("state".to_string(), urlencode(state.unwrap_or(""))),
     ];
@@ -8494,18 +8809,73 @@ pub fn authorize_error_redirect(
         "error_description",
         urlencode(description),
     )];
-    let mut url = build_callback_url(
-        redirect_uri,
-        &format!("error={}", urlencode(error)),
-        &pairs,
-    );
+    let mut url = if fragment {
+        let mut u = format!("{}#error={}", redirect_uri, urlencode(error));
+        for (k, v) in &pairs {
+            u.push('&');
+            u.push_str(k);
+            u.push('=');
+            u.push_str(v);
+        }
+        u
+    } else {
+        build_callback_url(
+            redirect_uri,
+            &format!("error={}", urlencode(error)),
+            &pairs,
+        )
+    };
     for (k, v) in extra {
-        url.push('&');
+        url.push(if fragment && url.contains('#') { '&' } else { '&' });
         url.push_str(&k);
         url.push('=');
         url.push_str(&v);
     }
     (StatusCode::FOUND, [("location", url)]).into_response()
+}
+
+/// Record the session-RP binding (design 9a.26; OIDC Back-Channel
+/// Logout 1.0 §2.3 - the OP remembers which RPs the user logged into):
+/// one row per (session, client) at authorization-code mint time, the
+/// moment the RP obtains tokens for the session's user. The
+/// RP-initiated logout fanout notifies ONLY the bc-registered clients
+/// bound to the destroyed session - best-effort (a failed recording
+/// never blocks issuance; the fanout then simply skips the client).
+pub async fn record_session_client(
+    state: &AppState,
+    env_id: uuid::Uuid,
+    session_token_id: &str,
+    client_id: &str,
+) {
+    if session_token_id.is_empty() || client_id.is_empty() {
+        return;
+    }
+    // RLS: the binding is a tenant row - the SAME context the caller's
+    // transaction runs under does not exist here (the code mint runs on
+    // the pool), so the two-step SYSTEM-resolve idiom is used: the
+    // insert targets a KNOWN env (the session's own env), set on the
+    // SAME connection as the INSERT.
+    let mut tx = match state.pool.begin().await {
+        Ok(t) => t,
+        Err(_) => return,
+    };
+    let _ = sqlx::query("SELECT sentin8_set_tenant_context($1)")
+        .bind(env_id)
+        .execute(&mut *tx)
+        .await;
+    let res = sqlx::query(
+        "INSERT INTO session_clients (env_id, session_token_id, client_id) \
+         VALUES ($1, $2, $3) ON CONFLICT (session_token_id, client_id) DO NOTHING",
+    )
+    .bind(env_id)
+    .bind(session_token_id)
+    .bind(client_id)
+    .execute(&mut *tx)
+    .await;
+    if res.is_err() {
+        tracing::debug!("session-client binding insert failed (best-effort)");
+    }
+    let _ = tx.commit().await;
 }
 
 /// The OIDC Session Management `session_state` (design §9a.26): a
@@ -8613,15 +8983,46 @@ pub async fn check_session_status(
     let issuer = resolve_issuer(&state.config, &headers);
     let salt = session_salt_from_issuer(&issuer);
     // Any ACTIVE session for this client still hashing to the
-    // presented value = unchanged.
-    let rows = sqlx::query!(r#"SELECT token_id FROM sessions WHERE status = 'active'"#)
-        .fetch_all(&state.pool)
+    // presented value = unchanged. `sessions` is FORCE-RLS: the scan
+    // needs a tenant context set on the SAME connection BEFORE the
+    // query - the SYSTEM context (the idiom Session::find_by_token
+    // uses: a token id is a random secret, the SYSTEM step leaks
+    // nothing the caller does not already hold - the presented
+    // session_state), and the hash compare filters any session the
+    // caller could NOT have legitimately presented.
+    let mut tx = match state.pool.begin().await {
+        Ok(t) => t,
+        Err(e) => {
+            tracing::error!(error = %e, "check_session_status: tx open failed");
+            return (StatusCode::OK, "error").into_response();
+        }
+    };
+    if let Err(e) = sqlx::query("SELECT sentin8_set_tenant_context($1)")
+        .bind(SYSTEM_ENV_ID)
+        .execute(&mut *tx)
         .await
-        .unwrap_or_default();
-    let alive = rows.iter().any(|r| {
-        session_state_value(&client_id, &r.token_id, &salt) == presented
-    });
+    {
+        tracing::error!(error = %e, "check_session_status: set_tenant_context failed");
+        return (StatusCode::OK, "error").into_response();
+    }
+    let rows = sqlx::query_as!(
+        CheckSessionRow,
+        r#"SELECT token_id FROM sessions WHERE status = 'active'"#
+    )
+    .fetch_all(&mut *tx)
+    .await
+    .unwrap_or_default();
+    let alive = rows
+        .iter()
+        .any(|r| session_state_value(&client_id, &r.token_id, &salt) == presented);
     (StatusCode::OK, if alive { "unchanged" } else { "changed" }).into_response()
+}
+
+#[derive(sqlx::FromRow)]
+/// One active-session token id (the check-session hash-scan row).
+struct CheckSessionRow {
+    /// The session's token identifier.
+    token_id: String,
 }
 
 /// `GET /oauth/check-session/iframe` - the OIDC Session Management

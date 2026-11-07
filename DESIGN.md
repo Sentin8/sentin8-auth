@@ -290,6 +290,8 @@ erDiagram
     OAUTH_CLIENTS ||--o{ CLIENT_ROLES : "assigned"
     OAUTH_CLIENTS ||--o{ FEDERATED_CREDENTIALS : "federates"
     OAUTH_CLIENTS ||--o{ GRANTS : "consented"
+    SESSIONS ||--o{ SESSION_CLIENTS : "logged-in RP (BCL 2.3)"
+    OAUTH_CLIENTS ||--o{ SESSION_CLIENTS : "bound"
     USERS ||--o{ CREDENTIALS : "wallet"
     USERS ||--o{ ENTERPRISE_CONNECTIONS : "SSO"
     WEBHOOK_ENDPOINTS ||--o{ WEBHOOK_OUTBOX : "queues"
@@ -304,6 +306,10 @@ erDiagram
         string token_id UK
         string status "pending_mfa|active|revoked|expired"
         timestamptz expires_at
+    }
+    SESSION_CLIENTS {
+        string session_token_id "the OP Session ID (BCL 2.3)"
+        string client_id "the logged-in RP"
     }
     OAUTH_CLIENTS {
         string client_id UK
@@ -1392,6 +1398,18 @@ was reconciling the init.sql policy to the provisioned DB - not
 tolerating warnings. Every future WARNING is triaged the same way: find
 the root defect the suite observed, fix it, re-run.
 
+The §5.5 claims request rides TWO surfaces (the implicit family's
+essential-claim modules): (a) the id_token members honor the
+`claims.id_token` SELECTION (email/phone/address ride only when
+selected - scope alone is the userinfo grant, OIDC Core §5.5); (b) the
+`claims.userinfo` selection stamps onto the ACCESS TOKEN
+(`userinfo_claims`) at BOTH mint sites (the token endpoint and the
+fragment cells' `token` member) so userinfo serves a selected claim
+without the scope family granting it - the login-time selection is the
+client's explicit consent signal. The request itself also persists on
+the grant row (`claims_request`) as the standing authorization's
+context.
+
 ### 9a.12 mTLS client authentication + sender constraint (FAPI2-SP mtls cell)
 
 `tls_client_auth` (RFC 8705 §2) binds the client to its certificate's
@@ -2197,9 +2215,19 @@ secret at the browser). Served by the §9a.13 fragment cells: the
 authorize response encodes `id_token`/`access_token` + `state` (+
 `code`/`iss` when present) in the URL FRAGMENT over the registered
 redirect_uri. Module demands beyond basic: `nonce` is MANDATORY for
-both types (`AuthorizeRequestWithoutNonceMustBeRejected`), `at_hash`
-rides every token-bearing id_token (the mint's `id_token_with_details`
-carries it unconditionally), and the fragment error channel mirrors
+both types (OIDC Core §3.2.1.1 - the authorize gate rejects a no-nonce
+request with the error redirect `invalid_request`),
+`at_hash` rides the id_token ONLY when an access token was issued
+with it (OIDC Core §3.3.2.11 - the id_token-only cell issues no
+access token and a hash of nothing is a placeholder the suite's
+ValidateAtHash setup rejects), the authorization-endpoint id_token
+carries the §5.4 SCOPE-mapped standard claims (profile → name, email
+→ email: the fragment cell's id_token is the only token the client
+receives, so the scope IS the claims request - the OPPOSITE of the
+token-endpoint id_token's §5.5-conservative surface, and the reason
+the implicit family needs NO dedicated security profile: the
+distinction keys on `response_type`, not a flag matrix), and the
+fragment error channel mirrors
 the success channel (§9a.22's error-fragment branch). Suite-side the
 browser reads `location.hash` and POSTs it to the suite's
 `implicit_submit` path - the OP only performs the standard 302.
@@ -2209,7 +2237,9 @@ response-type entries (`code id_token`, `code token`,
 `code id_token token`), each run over fragment + the token endpoint's
 code exchange with `client_secret_basic` (one `client_secret_post`
 module). Demands: `c_hash` alongside `at_hash` on fragment id_tokens
-(the mint adds `c_hash` when the record carries a code), auth-code
+(the mint adds `c_hash` when the record carries a code), the
+authorization-endpoint id_token carries the §5.4 scope-mapped
+standard claims (the implicit family's fragment posture), auth-code
 single-use (`invalid_grant` on reuse - the burned-code cascade §9a.11)
 and the 30s-reuse module's access-token revocation cascade,
 PKCE-bearing code requests MUST succeed, userinfo (GET + POST both
@@ -2257,19 +2287,30 @@ The three additional certifiable OP plans that ride the logout stack
 
 **Session management (`oidcc-session-management-certification-test-plan`).**
 (a) discovery advertises `check_session_iframe` =
-`{issuer}/oauth/check-session` - the endpoint serves the OIDC Session
-Management 3.3 postMessage listener (HTML shim hashing
-`{client_id} {session_state} {salt}`/`op` values, answering
-`changed|unchanged|error` via postMessage); (b) every interactive
-(authorization-code) authorize mints a `session_state` for the
-triple `(client_id, user session, issuer salt)` and the authorize
-response carries it (query + fragment channels alike); (c)
-RP-initiated logout destroys the server session (§9a.23) so the
-iframe's next poll answers `changed`; (d) the suite's final
-`prompt=none` re-auth answers the logged-out error (session
-independence proven). The salt is a Valkey-stored per-issuer random,
-and `session_state` = HS256 over `client_id + ' ' + user session id +
-salt` (truncated base64url, opaque to the client).
+`{issuer}/oauth/check-session/iframe` - the endpoint serves the OIDC
+Session Management 3.3 postMessage listener: the embedded OP iframe
+answers the RP iframe's message with the plain string
+`unchanged | changed` posted with the ASKER's origin as the
+targetOrigin (the reply's receiver-side restriction - the RP
+holder validates the message's SENDER origin = the OP's issuer
+origin); the message format is
+`client_id WS session_state WS [salt] WS` (the spec's trailing
+space ALWAYS closes the value; a saltless sender omits the salt but
+keeps the trailing space, e.g. `id state `; the suite's holder sends
+`id state` without the trailing space - the shim split accepts both
+two- and three-token forms); the LIVE state check is an XHR GET to
+`{issuer}/oauth/check-session?client_id=..&session_state=..[&salt=..]`
+(the browser cannot hold the HS256 secret); (b) every interactive
+authorize mints `session_state` = HS256 over
+`client_id + ' ' + session token id`, SHA-256-folded with the salt,
+base64url-truncated to 24 bytes (the salt derives from the issuer:
+`base64url(SHA256(issuer))` - deterministic, stable across
+instances, opaque to clients since it rides INSIDE the hash
+derivation), and the authorize response carries it (query +
+fragment channels alike); (c) RP-initiated logout REVOKES the
+session row (§9a.23) so the iframe's next poll answers `changed`;
+(d) the suite's final `prompt=none` re-auth answers the logged-out
+error (session independence proven).
 
 **Third-party-initiated login (`oidcc-3rdparty-init-login-certification-test-plan`).**
 DCR metadata round: (a) an https `initiate_login_uri` (OAuth-R) is
@@ -2282,19 +2323,63 @@ the third-party initiation itself (the suite asserts the metadata
 contract).
 
 **Backchannel + RP-initiated logout (`oidcc-backchannel-rp-initiated-logout-certification-test-plan`).**
-(a) id_tokens mint `sid` = the user's session id (a stable session
-identifier distinct from the session-cookie token value - the
-JWT's `jti`-shaped session binding): the id_token mint sites stamp it
-on every interactive issuance; (b) the RP-initiated logout handler
-FANS OUT the backchannel logout (the registered clients with
-`backchannel_logout_uri` receive the `logout_token` JWT - `iss`,
-`aud`, `events`
-`http://schemas.openid.net/event/backchannel-logout`, `sid`,
-optionally `sub`, NO `nonce` - the pre-existing sender surface becomes
-the §9a.23 handler's side effect); (c) discovery keeps
-`backchannel_logout_supported: true` + adds
-`backchannel_logout_session_supported: true`; (d) after logout the
+(a) id_tokens mint `sid` = the OP session's id (the `sessions.token_id`
+the browser cookie holds - the OP's Session ID per Back-Channel
+Logout 1.0 §2.1; its contents are opaque to the RP). EVERY mint
+site stamps it: the interactive/hybrid/implicit fragment id_tokens
+(the authorize paths that resolved the session cookie) AND the
+authorization-code exchange at the token endpoint - the code record
+carries `session_token` (the code is minted only for a signed-in
+user, so a session id always exists there) and `id_token["sid"]`
+= that value. The logout token's `sid` MUST equal the id_token's
+(Back-Channel Logout 1.0 §2.6 step 11 - the suite's
+`CheckIdTokenSidMatchesLogoutToken`), and both ride the SAME
+session identifier: the sid mint sites and the fanout derive it
+from the destroyed session row (never from an unrelated mint-time
+session).
+(b) the Logout Token itself (Back-Channel Logout 1.0 §2.4):
+`iss`, `aud` = the client, `iat`, `exp` (REQUIRED - short: 2
+minutes, the spec's anti-replay posture), `jti`, `events`
+`http://schemas.openid.net/event/backchannel-logout: {}`, `sub`
+(the logged-out user - present when the session row is known),
+`sid`, NO `nonce`, and the JOSE header `typ: logout+jwt` (the
+spec's explicit-typing recommendation - a Logout Token MUST NOT be
+usable as an id_token).
+(c) the RP-initiated logout handler FANS OUT the backchannel
+logout as its side effect (the registered clients with
+`backchannel_logout_uri` receive the Logout Token - §2.5's
+`application/x-www-form-urlencoded` POST with a single
+`logout_token` parameter). The fanout's client set resolves
+INSIDE the session's own tenant context (`sentin8_set_tenant_context`
+on the SAME transaction that selected the revoked session's
+`env_id`): `oauth_clients` is FORCE-RLS and every
+context-less SELECT returns 0 rows - a fanout under the SYSTEM
+context (or worse, no context) would silently notify nobody.
+Back-Channel Logout 1.0 §2.3 ("remembering logged-in RPs") binds
+the set to RPs that actually logged in through THIS session: the
+`session_clients` table records one row per (session, client) at
+authorization-code mint (the moment the RP obtains tokens for the
+session's user), and the fanout notifies ONLY the bc-registered
+clients bound to the destroyed session - so an unrelated
+bc-registered client is NOT notified of a session it never saw
+(the recording is best-effort: a failed insert never blocks
+issuance). The fanout runs best-effort (never blocks the
+redirect - §2.5's no-retransmit posture), single attempt per
+client.
+(d) discovery keeps `backchannel_logout_supported: true` +
+`backchannel_logout_session_supported: true`; (e) after logout the
 suite's `prompt=none` re-auth fails (the session is destroyed).
+
+The RP metadata contract (§2.2): DCR (RFC 7591) accepts + echoes
+`backchannel_logout_uri` (absolute URI, no fragment) and
+`backchannel_logout_session_required` (boolean - the RP's demand
+that the Logout Token carry `sid`); the RFC 7592 client-config
+endpoint (GET/PUT `/oauth/register/{client_id}`) serves the same
+two fields. A STATIC client's `backchannel_logout_uri` is
+registered through the SAME RFC 7592 surface - the certification
+harness (which owns the client) PUTs the field with the client's
+registration_access_token before the module runs, exactly like a
+RP operator would; there is no test-only registration path.
 
 ```mermaid
 flowchart LR

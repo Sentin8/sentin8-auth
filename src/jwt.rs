@@ -399,10 +399,17 @@ impl AuthClaims {
                    "iat": now.timestamp(),
                    "exp": (now + ttl).timestamp(),
                    "auth_time": auth_time,
-        // at_hash - OIDC Core : base64url of the left half of
-        // SHA-256(access_token ASCII bytes).
-                   "at_hash": at_hash(access_token),
                });
+        // at_hash - OIDC Core : base64url of the left half of
+        // SHA-256(access_token ASCII bytes). Present ONLY when an
+        // access token was issued with the ID token (the implicit
+        // id_token-only cell issues none - a garbage hash of an
+        // empty string fails the suite's ValidateAtHash setup and
+        // OIDCC-3.3.2.11 demands the claim match a REAL access
+        // token, never a placeholder).
+        if !access_token.is_empty() {
+            claims["at_hash"] = serde_json::json!(at_hash(access_token));
+        }
         if let Some(n) = nonce {
             claims["nonce"] = serde_json::json!(n);
         }
@@ -506,8 +513,10 @@ pub fn derive_profile_name(
 /// (the §5.5 standard-mapped set): every member the userinfo response /
 /// ID token can mint. `name` and `updated_at` are derived (§9a.11);
 /// the rest come from the users table's `oidc_profile` JSONB verbatim.
-pub(crate) const PROFILE_FAMILY_MEMBERS: [&str; 11] = [
+pub(crate) const PROFILE_FAMILY_MEMBERS: [&str; 13] = [
     "name",
+    "given_name",
+    "family_name",
     "middle_name",
     "nickname",
     "preferred_username",
