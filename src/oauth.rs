@@ -4075,6 +4075,32 @@ pub async fn authorize(
             true,
         );
     }
+    // RFC 6749 §4.1.2.1: `response_type` is REQUIRED - the missing
+    // parameter rejects invalid_request. The form_post family receives
+    // the reject through the one-time HTML form (no error in the URL
+    // query - the suite's response-type-missing module's
+    // CheckCallbackHttpMethodIsPost); the query is the default channel.
+    if params.response_type.is_empty() {
+        if is_form_post_flow(params.response_mode.as_deref(), &profile.profile) {
+            let pairs: Vec<(&str, String)> = vec![
+                ("error", "invalid_request".to_string()),
+                ("error_description", urlencode("response_type is required")),
+                ("state", urlencode(&params.state)),
+            ];
+            if let Some(ref_id) =
+                register_form_post_ref(&state.config.valkey_url, &params.redirect_uri, &pairs).await
+            {
+                let url = format!("{}/oauth/form-post/{}", resolve_issuer(&state.config, &headers), ref_id);
+                return (StatusCode::FOUND, [("location", url)]).into_response();
+            }
+        }
+        return authorize_error_redirect(
+            &params.redirect_uri,
+            "invalid_request",
+            "response_type is required",
+            Some(params.state.as_str()),
+        );
+    }
     // DESIGN §9a.22 - the deferred PKCE-missing reject (the same
     // post-validation channel; the PAR-flow PKCE negatives read the
     // callback with an invalid_request error - in the JARM form when the
@@ -5248,6 +5274,28 @@ pub async fn authorize_continue(
         }
         url
     } else {
+        // The form_post family (design §9a.25) for the CODE-only cell:
+        // the response members (code + state + session_state) ride the
+        // one-time OP-hosted HTML form (the suite's
+        // CheckCallbackHttpMethodIsPost + CheckCallbackContentTypeIs
+        // FormUrlEncoded - no code/error in the URL query).
+        if is_form_post_flow(req.response_mode.as_deref(), &profile.profile) {
+            let redirect = req.redirect_uri.clone();
+            let pairs: Vec<(&str, String)> = vec![
+                ("code", urlencode(&code)),
+                ("state", urlencode(&req.state)),
+            ];
+            if let Some(ref_id) =
+                register_form_post_ref(&state.config.valkey_url, &redirect, &pairs).await
+            {
+                return Ok(Json(serde_json::json!({
+                    "redirect_url": format!("{}/oauth/form-post/{}", resolve_issuer(&state.config, &headers), ref_id),
+                    "code": code,
+                    "state": req.state,
+                }))
+                .into_response());
+            }
+        }
         response_url
     };
 
