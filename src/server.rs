@@ -344,6 +344,15 @@ pub fn build_router(state: AppState) -> Router {
             "/v1/auth/wallet/metadata",
             get(crate::wallet::wallet_metadata),
         )
+        // The OID4VP verifier-request creator (design 9a.27): the
+        // harness-facing entry that mints the presentation request
+        // (DCQL + signed request object + openid4vp:// deep link). The
+        // suite's verifier modules need the verifier under test to
+        // PRODUCE an authorization request - this is that producer.
+        .route(
+            "/v1/auth/verifier/request",
+            post(crate::wallet::wallet_authorize),
+        )
         // DCR client display metadata (RFC 7591 2.1 - the sign-in UI
         // renders logo_uri/policy_uri/tos_uri for the REQUESTING
         // client; the suite's oidcc-registration-logo/policy/tos-uri

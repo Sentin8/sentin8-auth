@@ -1669,14 +1669,23 @@ CREATE POLICY auth_tokens_delete ON auth.tokens
 
 -- ──────────────────────────────────────────────────────────────────────────
 -- Sentin8:Auth enterprise connections - SAML / OIDC identity providers (story 1.1.27).
+-- Recreated (DROP + CREATE): the strategy CHECK + the config column are
+-- part of the table's greenfield shape (auth DESIGN 9a.27) - connections
+-- are re-seedable metadata, never production data. CASCADE drops the
+-- sso_sessions FK (re-created by the table's own REFERENCES below).
+DROP TABLE IF EXISTS auth.enterprise_connections CASCADE;
 CREATE TABLE IF NOT EXISTS auth.enterprise_connections (
     id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
 
     env_id  UUID,                             -- NULL for org-scoped connections
     name            TEXT NOT NULL,
-    strategy        TEXT NOT NULL CHECK (strategy IN ('oidc', 'saml')),
+    strategy        TEXT NOT NULL CHECK (strategy IN ('oidc', 'saml', 'eudi_wallet')),
     status          TEXT NOT NULL DEFAULT 'active'
                     CHECK (status IN ('active', 'disabled')),
+    -- The strategy-scoped config (the eudi_wallet strategy carries the
+    -- trusted issuers + verifier display metadata - auth DESIGN 9a.27;
+    -- the oidc/saml strategies keep their typed columns below).
+    config          JSONB NOT NULL DEFAULT '{}',
     -- OIDC fields.
     issuer_url      TEXT,                             -- OIDC issuer (for discovery)
     discovery_url   TEXT,                             -- .well-known URL override
@@ -1762,6 +1771,16 @@ CREATE TABLE IF NOT EXISTS auth.sso_sessions (
 );
 
 CREATE INDEX IF NOT EXISTS idx_auth_sso_sessions_state ON auth.sso_sessions (state);
+
+-- The FK rides inline in the fresh-DB create above; a re-apply on an
+-- existing sso_sessions table (the enterprise_connections drop+create
+-- path) loses the constraint - re-declare it idempotently (the drop
+-- guard makes the statement a no-op when the constraint exists).
+ALTER TABLE auth.sso_sessions DROP CONSTRAINT IF EXISTS sso_sessions_connection_id_fkey;
+ALTER TABLE auth.sso_sessions
+    ADD CONSTRAINT sso_sessions_connection_id_fkey
+    FOREIGN KEY (connection_id)
+    REFERENCES auth.enterprise_connections(id) ON DELETE CASCADE;
 
 ALTER TABLE auth.sso_sessions ENABLE ROW LEVEL SECURITY;
 
@@ -2833,6 +2852,9 @@ GRANT SELECT, INSERT, UPDATE, DELETE ON auth.outbox TO sentin8_auth_service;
 GRANT SELECT ON auth.m2m_scope_grants TO sentin8_auth_service;
 GRANT SELECT, INSERT, UPDATE, DELETE ON
     auth.app_passwords, auth.credentials, auth.grants, auth.regulatory_overlays
+    TO sentin8_auth_service;
+GRANT SELECT, INSERT, UPDATE, DELETE ON
+    auth.enterprise_connections, auth.sso_sessions
     TO sentin8_auth_service;
 GRANT SELECT, INSERT, UPDATE, DELETE ON auth.audit_journal TO sentin8_auth_service;
 GRANT SELECT, INSERT, UPDATE, DELETE ON auth.post_outbox TO sentin8_auth_service;

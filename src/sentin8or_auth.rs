@@ -573,13 +573,27 @@ fn verify_token(
 
     // Validate issuer and expiry (previously done by jsonwebtoken::Validation).
     if claims.iss != config.issuer {
-        return Err((
-            StatusCode::UNAUTHORIZED,
-            format!(
-                "token issuer mismatch: expected {}, got {}",
-                config.issuer, claims.iss
-            ),
-        ));
+        // Tenant-aware issuer (DESIGN §4 - the same rule the token
+        // endpoint's verify applies): a token minted on a tenant's auth
+        // host carries `https://auth.{env-domain}` where the env domain
+        // is OPAQUE (the platform-derived `{env}.{org}.{domain}` shape,
+        // a custom env domain, anything the env registered). The
+        // signature is the trust anchor (Auth is the single issuer -
+        // verified above); this check only admits the auth-host issuer
+        // family. Without it, a tenant user's admin token (issued on
+        // their own auth host) can never reach their env's admin
+        // endpoints - the admin API was platform-operator-only by
+        // accident.
+        let tenant_issuer_ok = claims.iss.starts_with("https://auth.");
+        if !tenant_issuer_ok {
+            return Err((
+                StatusCode::UNAUTHORIZED,
+                format!(
+                    "token issuer mismatch: expected {}, got {}",
+                    config.issuer, claims.iss
+                ),
+            ));
+        }
     }
 
     // Check expiry.

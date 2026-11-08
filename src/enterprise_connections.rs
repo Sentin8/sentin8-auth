@@ -96,6 +96,12 @@ pub struct CreateConnectionRequest {
     #[serde(default)]
     /// The name attribute.
     pub name_attribute: Option<String>,
+    /// The strategy-scoped config (the eudi_wallet strategy's trusted
+    /// issuers + verifier display metadata - auth DESIGN 9a.27). Absent
+    /// for the oidc/saml strategies (their typed columns carry all).
+    #[serde(default)]
+    /// The connection config.
+    pub config: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Serialize, ToSchema)]
@@ -131,6 +137,9 @@ pub struct ConnectionResponse {
     pub email_attribute: String,
     /// The name attribute.
     pub name_attribute: Option<String>,
+    /// The strategy-scoped config (the eudi_wallet strategy's trusted
+    /// issuers - auth DESIGN 9a.27). Empty for the oidc/saml strategies.
+    pub config: Option<serde_json::Value>,
     /// created time.
     pub created_at: chrono::DateTime<chrono::Utc>,
     /// updated time.
@@ -198,7 +207,7 @@ pub async fn list_connections(
                id, name, strategy, status, env_id,
                issuer_url, discovery_url, client_id, scopes,
                metadata_url, entity_id, acs_url, domain_hint,
-               email_attribute, name_attribute, created_at, updated_at
+               email_attribute, name_attribute, config, created_at, updated_at
            FROM enterprise_connections
            WHERE env_id = $1
            ORDER BY created_at DESC"#,
@@ -226,6 +235,7 @@ pub async fn list_connections(
             domain_hint: r.domain_hint,
             email_attribute: r.email_attribute,
             name_attribute: r.name_attribute,
+            config: Some(r.config),
             created_at: r.created_at,
             updated_at: r.updated_at,
         })
@@ -241,7 +251,7 @@ pub async fn list_connections(
     request_body = CreateConnectionRequest,
     responses(
         (status = 200, description = "Connection created", body = ConnectionResponse),
-        (status = 400, description = "strategy must be 'oidc' or 'saml'"),
+        (status = 400, description = "strategy must be 'oidc', 'saml' or 'eudi_wallet'"),
         (status = 409, description = "connection name already exists"),
     ),
     security(("sentin8:auth:admin" = [])),
@@ -262,10 +272,10 @@ pub async fn create_connection(
         teq.target_env_id.as_deref(),
     )
     .await?;
-    if req.strategy != "oidc" && req.strategy != "saml" {
+    if !["oidc", "saml", "eudi_wallet"].contains(&req.strategy.as_str()) {
         return Err((
             StatusCode::BAD_REQUEST,
-            "strategy must be 'oidc' or 'saml'".into(),
+            "strategy must be 'oidc', 'saml' or 'eudi_wallet'".into(),
         ));
     }
 
@@ -294,14 +304,14 @@ pub async fn create_connection(
              (env_id, name, strategy, status,
               issuer_url, discovery_url, client_id, client_secret_cipher, scopes,
               metadata_url, metadata_xml, entity_id, acs_url, domain_hint,
-              email_attribute, name_attribute)
+              email_attribute, name_attribute, config)
            VALUES ($1, $2, $3, 'active', $4, $5, $6, $7, $8,
-                   $9, $10, $11, $12, $13, $14, $15)
+                   $9, $10, $11, $12, $13, $14, $15, $16)
            RETURNING
               id, name, strategy, status, env_id,
               issuer_url, discovery_url, client_id, scopes,
               metadata_url, entity_id, acs_url, domain_hint,
-              email_attribute, name_attribute, created_at, updated_at"#,
+              email_attribute, name_attribute, config, created_at, updated_at"#,
         _auth.env_id,
         req.name,
         req.strategy,
@@ -317,6 +327,7 @@ pub async fn create_connection(
         req.domain_hint,
         req.email_attribute.unwrap_or_else(|| "email".to_string()),
         req.name_attribute,
+        req.config.clone().unwrap_or(serde_json::json!({})),
     )
     .fetch_one(&mut *conn)
     .await;
@@ -351,6 +362,7 @@ pub async fn create_connection(
                 domain_hint: r.domain_hint,
                 email_attribute: r.email_attribute,
                 name_attribute: r.name_attribute,
+                config: Some(r.config),
                 created_at: r.created_at,
                 updated_at: r.updated_at,
             })
@@ -403,7 +415,7 @@ pub async fn get_connection(
                id, name, strategy, status, env_id,
                issuer_url, discovery_url, client_id, scopes,
                metadata_url, entity_id, acs_url, domain_hint,
-               email_attribute, name_attribute, created_at, updated_at
+               email_attribute, name_attribute, config, created_at, updated_at
            FROM enterprise_connections WHERE id = $1 AND env_id = $2"#,
         id,
         _auth.env_id,
@@ -429,6 +441,7 @@ pub async fn get_connection(
         domain_hint: r.domain_hint,
         email_attribute: r.email_attribute,
         name_attribute: r.name_attribute,
+        config: Some(r.config),
         created_at: r.created_at,
         updated_at: r.updated_at,
     }))
@@ -493,6 +506,7 @@ pub async fn update_connection(
              domain_hint = $12,
              email_attribute = $13,
              name_attribute = $14,
+             config = COALESCE($16, config),
              updated_at = now()
            WHERE id = $1 AND env_id = $15"#,
         id,
@@ -511,6 +525,7 @@ pub async fn update_connection(
         req.email_attribute.unwrap_or_else(|| "email".to_string()),
         req.name_attribute,
         _auth.env_id,
+        req.config.clone(),
     )
     .execute(&mut *conn)
     .await;

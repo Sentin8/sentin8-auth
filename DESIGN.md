@@ -2397,46 +2397,74 @@ both the certifiable `oid4vp-1final-verifier-haip-test-plan` and the
 alpha plain plan run against it (the suite plays the WALLET; the
 deployed verifier is exercised through its own endpoints):
 
-- **The wallet-verifier authorize surface** (`GET /oauth/authorize?prompt=wallet`
-  becomes the dedicated verifier-request creator `POST /v1/auth/verifier/request`):
+- **The verifier-request creator** `POST /v1/auth/verifier/request`
+  (query params `client_id` + `redirect_uri`, the harness/OP-UI entry):
   builds the presentation REQUEST (DCQL - the OID4VP 1.0-Final
-  credential-query form; `presentation_definition` (DIF PE) stays the
-  wallet-plan's accepted alternative), mints a fresh 128-bit request
-  `nonce` (Valkey-stored, single-use, TTL 600s), and - when the
-  request is signed - serves the request object at
+  credential-query form), mints a fresh single-use 128-bit `nonce`
+  (Valkey, TTL 600s), and serves the SIGNED request object at
   `GET/POST /oauth/vp/request/{request_id}` with `typ
   oauth-authz-req+jwt`, signed by the verifier's x5c chain
   (`x509_hash` client-id prefix: `client_id =
   x509_hash:<sha256-thumbprint of the request object's x5c[0]>` - the
-  WALLET derives and checks the equality, so the request object must
-  carry the certificate the client_id names). `request_uri_method=post`
-  echoes the posted `wallet_nonce` claim. `response_type=vp_token`,
-  `response_uri={issuer}/oauth/vp/response`, `response_mode`
-  `direct_post.jwt` (HAIP) / `direct_post` (plain), `client_metadata`
-  carrying the verifier's ephemeral `jwks` (`kid`, enc keys + `kid`
-  match) + `authorization_encrypted_response_alg/enc` when the
-  request is encrypted.
+  WALLET derives and checks the equality). The authorization request
+  URI (`qr_data`) carries `client_id` + `request_uri` +
+  `request_uri_method=post` in its QUERY (OID4VP-1final 5/5.10 - the
+  wallet cross-checks the query's client_id against the request
+  object's `claims.client_id`, 5.9.3, and the method-post cell demands
+  the query hint). The request object carries `aud =
+  https://self-issued.me/v2` (SIOPv2 6.1 - the wallet IS the
+  audience) + the closed `client_metadata` key set (OID4VP PR 233):
+  `vp_formats_supported` (`dc+sd-jwt` with sd-jwt/KB alg lists),
+  `encrypted_response_enc_values_supported` (`A128GCM` + `A256GCM` -
+  HAIP-5's mandatory encrypted responses), and `jwks` (the
+  PER-REQUEST ephemeral ECDH-ES / P-256 enc key - key reuse is a HAIP
+  failure). One shared builder (`verifier_client_metadata`) serves
+  both the creator's mint and the request_uri fetch (the served object
+  and the qr_data's object are metadata-identical). The
+  `request_uri_method=post` POST re-signs with the `wallet_nonce`
+  echo stamped.
 - **The response endpoint** (`POST /oauth/vp/response`) answers
-  OID4VP §8.2: validates the (encrypted or form) body, verifies the
-  SD-JWT/KB-JWT (the KB key derives from the credential's OWN
-  `cnf.jwk`; checks `aud` = the request's client_id, `nonce` = the
-  request's nonce, `sd_hash` over the pre-KB form, `iat` window), the
-  credential signature (connection trust anchor), status-list
-  revocation (the credential's `status` URI fetch - scheme/origin
-  checks), DCQL claim satisfaction, then answers `200
-  {"redirect_uri": "..."}` ONLY (the verifier_info/transaction data
-  path rides later plans) and consumes the stored request. Negative
-  presentations reject with the request's `error` (invalid_request)
-  status AND the stored request is consumed so the negative cannot be
-  replayed as a valid flow.
+  OID4VP §8.2: the body arrives EITHER form-encoded `vp_token=` OR
+  the direct_post.jwt form (`response=<JWE>`, the suite's form-
+  encoded envelope; a raw `application/jwt` body is also accepted).
+  The JWE decrypt (ECDH-ES, A128GCM 16-octet CEK or A256GCM
+  32-octet - the ConcatKDF rides the enc name) resolves the request
+  by the envelope's `kid`; the decrypted payload's `vp_token` is the
+  DCQL OBJECT form (a map of credential id -> token array,
+  OID4VP-1final 6.2 - the single-credential cell extracts the one
+  token). The verifier then checks the KB-JWT (the key derives from
+  the credential's `cnf.jwk`; an embedded header `jwk` is optional -
+  the signature against cnf.jwk IS the binding, SD-JWT VC 7.2;
+  `aud` = the request's client_id, `nonce` = the request's nonce,
+  `sd_hash` over the pre-KB form, `iat` window), the credential
+  signature (the connection's `trusted_issuers` JWKS), status-list
+  revocation (the credential's `status.status_list.uri` + `idx` -
+  the list is fetched ASYNC-NATIVE before the sync verify (a
+  block_on in the handler deadlocks the runtime); the OTSL JWT body
+  carries `status_list.{bits,lst}` - zlib or raw DEFLATE, LSB-first
+  bit packing, multi-bit entries, cached 5 min), then answers `200
+  {"redirect_uri": "..."}` ONLY. Error responses are JSON in ALL
+  cases (`{"error": "invalid_request"|"invalid_token",
+  "error_description": ...}` - the wallet parses any status as
+  JSON) and the stored request is consumed either way (a negative
+  cannot be replayed).
 - **The verifier metadata** (`/.well-known/openid-credential-verifier`)
-  becomes honest: the SINGLE client_id form used by the requests
+  stays honest: the SINGLE client_id form used by the requests
   (`x509_hash` prefix under HAIP), the vp formats +
   `sd-jwt_alg_values`/`kb-jwt_alg_values`, the response modes +
   encryption metadata actually used, `client_name`.
-- Status lists gain the `time` query semantics (the current list +
-  the fetcher's media-type negotiation is the issuer-side behavior
-  kept).
+- **The eudi_wallet enterprise connection** (`enterprise_connections`
+  row, strategy `eudi_wallet`, `config` JSONB): the verifier's
+  trusted-issuer set + `min_level_of_assurance` (the conformance env
+  pins `low` - the suite's PID credential carries no `acr` claim).
+  The connection gates the request creator (404 without one) and its
+  JWKS set verifies the presented credential's signature. The admin
+  surface (create/update/list/get) carries the `config` column; the
+  admin API's token verify is TENANT-AWARE (a token minted on a
+  tenant auth host carries `https://auth.{env-domain}` - the same
+  issuer family rule the token endpoint applies, DESIGN §4; without
+  it a tenant user's own admin grant can never reach their env's
+  admin endpoints).
 
 ```mermaid
 sequenceDiagram
@@ -2458,3 +2486,12 @@ machinery); the suite's `vp_profile=haip` + `sd_jwt_vc` +
 `direct_post.jwt` cell is the certifiable path driven. The wallet
 plan's alpha cells (`oid4vci-1_0-wallet-test-plan`) keep their
 existing discovery-entry run.
+
+**Campaign verdict (OID4VP-1, wire-verified).** Both plans (the
+certifiable HAIP verifier plan + the alpha plain plan) run every
+module to terminal: 16 PASSED + 10 REVIEW, zero
+FAILED/SKIPPED/INTERRUPTED, zero WARNINGs - the happy flow, the
+minimal-cnf-jwk, the request-uri (POST-method + fetched-twice) cells,
+the full negative battery (invalid KB-JWT signature/nonce/aud, the
+credential signature, the sd-hash, the iat windows, the revoked
+credential), and the present-without-status cell.

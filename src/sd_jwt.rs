@@ -274,14 +274,20 @@ pub fn verify_presentation(
                 ));
             }
         };
-        // The KB-JWT's embedded jwk must match the expected key.
+        // The KB-JWT's key binding (SD-JWT VC 7.2): the signature MUST
+        // verify against the expected key (the credential's cnf.jwk -
+        // the wallet signs the KB with the credential's bound key). An
+        // EMBEDDED header jwk is OPTIONAL: when present it must match
+        // the expected key (a mismatched embedded key cannot be the
+        // holder proof); when absent the signature against cnf.jwk IS
+        // the binding check (the suite's KB carries only alg+typ).
         let kb_header = sentin8::auth::jwt::decode_header(&kb)
             .map_err(|e| SdJwtError::KeyBindingJwt(format!("header: {e}")))?;
         let kb_jwk = kb_header
             .get("jwk")
             .cloned()
             .unwrap_or(serde_json::Value::Null);
-        if !kb_jwk_matches(&kb_jwk, expected_key) {
+        if !kb_jwk.is_null() && !kb_jwk_matches(&kb_jwk, expected_key) {
             return Err(SdJwtError::KeyBindingJwt(
                 "embedded jwk ≠ the credential's cnf.jwk".into(),
             ));
@@ -352,15 +358,15 @@ pub fn verify_presentation(
     }
 
     // ── 4. Status (Status List 2021) ───────────────────────────────────
+    // The status claim's shape: {"status_list": {"uri": ..., "idx": N}}
+    // - the pointer paths are RELATIVE to the status object.
     if let Some(status) = payload.get("status") {
         if let (Some(uri), Some(entry)) = (
             status
-                .pointer("/status/status_list/uri")
+                .pointer("/status_list/uri")
                 .and_then(|v| v.as_str()),
-            payload
-                .get("status")
-                .and_then(|s| s.get("status_list"))
-                .and_then(|s| s.get("idx"))
+            status
+                .pointer("/status_list/idx")
                 .and_then(|v| v.as_u64()),
         ) {
             if let Some(check) = status_list_check {
@@ -437,23 +443,48 @@ use base64::Engine as _;
 /// for `entry`. The bitstring is deflate-compressed, base64url-encoded.
 /// Cached in Valkey (5 min) by the caller wrapper - this fn is pure.
 /// Handle status list bit.
-pub fn status_list_bit(status_list_b64: &str, entry: u32) -> Result<bool, String> {
+/// Read one entry from a status list (RFC 9393's single-bit form +
+/// draft-ietf-oauth-status-list's multi-bit form). The entries pack
+/// MSB-first: entry i occupies bits `[i*bits, (i+1)*bits)` of the
+/// inflated byte stream. A NON-ZERO value = revoked (the suite's
+/// TokenStatusList packs the status value - 0 valid, >0 revoked).
+pub fn status_list_bit(status_list_b64: &str, bits_per_entry: u32, entry: u32) -> Result<bool, String> {
     let raw = base64::engine::general_purpose::URL_SAFE_NO_PAD
         .decode(status_list_b64.trim())
         .map_err(|e| format!("status list decode: {e}"))?;
-    let mut decoder = flate2::read::ZlibDecoder::new(&raw[..]);
+    // Two compression forms: Status List 2021 (RFC 9393 - zlib) and
+    // the OTSL JWT (draft-ietf-oauth-status-list-jwt 3.1 - raw
+    // DEFLATE). Try zlib first, fall back to the raw form.
     use std::io::Read as _;
     let mut out = Vec::new();
-    decoder
-        .read_to_end(&mut out)
-        .map_err(|e| format!("status list inflate: {e}"))?;
-    let idx = entry as usize;
-    if idx >= out.len() * 8 {
+    let mut zlib = flate2::read::ZlibDecoder::new(&raw[..]);
+    let mut tried = Vec::new();
+    match zlib.read_to_end(&mut tried) {
+        Ok(_) => out = tried,
+        Err(_) => {
+            let mut deflate = flate2::read::DeflateDecoder::new(&raw[..]);
+            deflate
+                .read_to_end(&mut out)
+                .map_err(|e| format!("status list inflate: {e}"))?;
+        }
+    }
+    let bits = bits_per_entry.max(1) as usize;
+    let bit_offset = entry as usize * bits;
+    if bit_offset + bits > out.len() * 8 {
         return Err(format!("status list entry {entry} out of range"));
     }
-    let byte = out[idx / 8];
-    let bit = (byte >> (7 - (idx % 8))) & 1; // MSB-first per Status List 2021
-    Ok(bit == 1)
+    // The OTSL bit packing (the suite's TokenStatusList.getPackedValue
+    // semantics): the byte stream is a little-endian bit array - bit p
+    // of the stream is bit (p & 7) FROM THE LSB of byte (p >> 3); the
+    // entry's bits run LSB-first from its offset.
+    let mut value: u64 = 0;
+    for i in 0..bits {
+        let pos = bit_offset + i;
+        let byte = out[pos / 8];
+        let bit = (byte >> (pos % 8)) & 1;
+        value |= (bit as u64) << i;
+    }
+    Ok(value != 0)
 }
 
 #[cfg(test)]
@@ -474,14 +505,39 @@ mod tests {
     fn status_list_bit_read() {
         use base64::Engine as _;
         use std::io::Write as _;
-        // Build a small status list: bit 5 set.
-        let mut bits = vec![0u8; 4];
-        bits[0] = 0b0100_0000; // MSB-first: entry 1 set
+        // A small status list (LSB-first packing): stream bit 1 set -
+        // byte 0 bit 1 (the LSB-first bit array).
+        let mut bytes = vec![0u8; 4];
+        bytes[0] = 0b0000_0010; // bit 1 set
         let mut enc = flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::default());
-        enc.write_all(&bits).unwrap();
+        enc.write_all(&bytes).unwrap();
         let compressed = enc.finish().unwrap();
         let b64 = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(&compressed);
-        assert!(!status_list_bit(&b64, 0).unwrap());
-        assert!(status_list_bit(&b64, 1).unwrap());
+        assert!(!status_list_bit(&b64, 1, 0).unwrap());
+        assert!(status_list_bit(&b64, 1, 1).unwrap());
+    }
+
+    #[test]
+    fn status_list_bit_multibit_read() {
+        use base64::Engine as _;
+        use std::io::Write as _;
+        // A 2-bit-per-entry list (LSB-first): entry 0 = 0b01, entry 1 =
+        // 0b10, entry 2 = 0b00 - the bits pack across the LSB-first
+        // stream: 01 10 00 -> byte 0 = 0b00_01_10 | (0b01 << 6)? Build
+        // by hand: entry0 bits 0-1 = 0b01, entry1 bits 2-3 = 0b10,
+        // entry2 bits 4-5 = 0b00 -> byte0 = 0b0110_0100? Compute
+        // directly: bit0=1, bit1=0, bit2=0, bit3=1, bit4=0, bit5=0.
+        let mut bytes = vec![0u8; 1];
+        bytes[0] = 0b0000_1001; // bits 0 and 3 set
+        let mut enc = flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::default());
+        enc.write_all(&bytes).unwrap();
+        let compressed = enc.finish().unwrap();
+        let b64 = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(&compressed);
+        // entry0 = bits 0,1 = 1,0 -> value 0b01 = revoked
+        assert!(status_list_bit(&b64, 2, 0).unwrap());
+        // entry1 = bits 2,3 = 0,1 -> value 0b10 = revoked
+        assert!(status_list_bit(&b64, 2, 1).unwrap());
+        // entry2 = bits 4,5 = 0,0 -> value 0 = valid
+        assert!(!status_list_bit(&b64, 2, 2).unwrap());
     }
 }

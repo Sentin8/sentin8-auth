@@ -22,7 +22,7 @@
 //!   FailOnUnsupportedEncryptionAlgorithm).
 
 use aes_gcm::aead::{Aead, KeyInit, Payload};
-use aes_gcm::{Aes256Gcm, Nonce};
+use aes_gcm::{Aes128Gcm, Aes256Gcm, Nonce};
 use base64::Engine as _;
 use p256::elliptic_curve::ecdh::EphemeralSecret;
 use p256::elliptic_curve::sec1::ToEncodedPoint as _;
@@ -32,7 +32,12 @@ use serde::Deserialize;
 /// addendum): ECDH-ES (single-use ephemeral key agreement, direct CEK).
 pub const SUPPORTED_ALGS: [&str; 1] = ["ECDH-ES"];
 /// The content-encryption algorithms the credential response supports.
-pub const SUPPORTED_ENCS: [&str; 1] = ["A256GCM"];
+/// Content-encryption algorithms: `A256GCM` (the OID4VCI issuer
+/// surface's advertised enc) and `A128GCM` (the OID4VP verifier's
+/// `encrypted_response_enc_values_supported` - HAIP-5 requires both
+/// AEAD sizes; the suite's wallet defaults to A128GCM when the client
+/// metadata carries no explicit choice).
+pub const SUPPORTED_ENCS: [&str; 2] = ["A256GCM", "A128GCM"];
 
 /// The wallet's credential-response key (an EC JWK: `kty/crv/x/y`).
 #[derive(Debug, Deserialize)]
@@ -350,8 +355,10 @@ pub fn decrypt_credential_request(
         &our_sk.to_nonzero_scalar(),
         sender_pub.as_affine(),
     );
-    let cek = concat_cek(shared.raw_secret_bytes(), enc_name, &apu, &apv, 32);
-    let cek: [u8; 32] = cek.try_into().map_err(|_| EncryptionError::InvalidKey)?;
+    // The CEK length rides the enc algorithm (RFC 7518 5.2): A256GCM
+    // = 32 octets, A128GCM = 16.
+    let cek_len = if enc_name == "A128GCM" { 16 } else { 32 };
+    let cek = concat_cek(shared.raw_secret_bytes(), enc_name, &apu, &apv, cek_len);
     let iv = b64u_decode(parts[2]).map_err(|_| EncryptionError::InvalidKey)?;
     let (ct, tag) = if merged_tag {
         // 4-part form: ciphertext with the GCM tag APPENDED.
@@ -367,18 +374,35 @@ pub fn decrypt_credential_request(
             b64u_decode(parts[4]).map_err(|_| EncryptionError::InvalidKey)?,
         )
     };
-    let cipher = Aes256Gcm::new((&cek).into());
+    // The AEAD open: A128GCM (16-octet CEK) or A256GCM (32-octet CEK)
+    // - the two encs the decrypt path supports. The branches share the
+    // sealed blob + the AAD (the protected header segment).
     let mut sealed = ct.clone();
     sealed.extend_from_slice(&tag);
-    let plaintext = cipher
-        .decrypt(
-            Nonce::from_slice(&iv),
-            Payload {
-                msg: &sealed,
-                aad: parts[0].as_bytes(),
-            },
-        )
-        .map_err(|_| EncryptionError::InvalidKey)?;
+    let aad = parts[0].as_bytes();
+    let plaintext = if enc_name == "A128GCM" {
+        let cek: [u8; 16] = cek.try_into().map_err(|_| EncryptionError::InvalidKey)?;
+        Aes128Gcm::new((&cek).into())
+            .decrypt(
+                Nonce::from_slice(&iv),
+                Payload {
+                    msg: &sealed,
+                    aad,
+                },
+            )
+            .map_err(|_| EncryptionError::InvalidKey)?
+    } else {
+        let cek: [u8; 32] = cek.try_into().map_err(|_| EncryptionError::InvalidKey)?;
+        Aes256Gcm::new((&cek).into())
+            .decrypt(
+                Nonce::from_slice(&iv),
+                Payload {
+                    msg: &sealed,
+                    aad,
+                },
+            )
+            .map_err(|_| EncryptionError::InvalidKey)?
+    };
     Ok(plaintext)
 }
 

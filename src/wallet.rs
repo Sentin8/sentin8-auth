@@ -85,15 +85,30 @@ async fn load_wallet_connection(
     state: &AppState,
     env_id: Uuid,
 ) -> Result<Option<WalletConnectionConfig>, (StatusCode, String)> {
+    // RLS context in a TRANSACTION on the same connection as the read:
+    // sentin8_set_tenant_context runs set_config(..., true) - the
+    // setting is transaction-local, so a bare acquire() loses it at
+    // the first query's implicit commit (the standard pattern, auth
+    // DESIGN §6.3).
+    let mut tx = state
+        .pool
+        .begin()
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    let _ = sqlx::query("SELECT sentin8_set_tenant_context($1)")
+        .bind(env_id)
+        .execute(&mut *tx)
+        .await;
     let row = sqlx::query(
         r#"SELECT config FROM enterprise_connections
             WHERE env_id = $1 AND strategy = 'eudi_wallet' AND status = 'active'
             ORDER BY created_at DESC LIMIT 1"#,
     )
     .bind(env_id)
-    .fetch_optional(&state.pool)
+    .fetch_optional(&mut *tx)
     .await
     .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    let _ = tx.commit().await;
     let Some(row) = row else { return Ok(None) };
     use sqlx::Row as _;
     let config: Option<serde_json::Value> = row
@@ -152,8 +167,8 @@ pub struct WalletAuthorizeQuery {
 /// request as a signed request object + `openid4vp://` deep link.
 /// Handle wallet authorize.
 #[utoipa::path(
-    get,
-    path = "/oauth/authorize",
+    post,
+    path = "/v1/auth/verifier/request",
     params(WalletAuthorizeQuery),
     responses(
         (status = 200, description = "OID4VP authorization request (signed request object + openid4vp:// deep link)", body = crate::dtos::WalletAuthorizeResponse),
@@ -168,6 +183,38 @@ pub async fn wallet_authorize(
     Query(q): Query<WalletAuthorizeQuery>,
 ) -> Result<Json<WalletAuthorizeResponse>, (StatusCode, String)> {
     create_verifier_request(state, headers, q.client_id, q.redirect_uri).await
+}
+
+/// The verifier request's `client_metadata` (OID4VP-1final 5.5 +
+/// HAIP-5) - the ONE builder both the creator and the request_uri
+/// fetch serve (the served object and the qr_data's object stay
+/// byte-identical in their metadata surface). The closed key set
+/// (OID4VP PR 233): `vp_formats_supported` (the dc+sd-jwt DCQL
+/// format - the mdoc/iso_mdl cells stay out of scope, DESIGN 9a.27),
+/// `encrypted_response_enc_values_supported` (HAIP-5's mandatory
+/// encrypted responses - both AEAD sizes), and `jwks` (the ephemeral
+/// ECDH-ES / P-256 enc key; `enc_jwk` is the key to embed - a Null
+/// placeholder lets the caller push it in-place).
+fn verifier_client_metadata(enc_jwk: serde_json::Value) -> serde_json::Value {
+    let mut metadata = serde_json::json!({
+        "vp_formats_supported": {
+            "dc+sd-jwt": {
+                "sd-jwt_alg_values": ["ES256"],
+                "kb-jwt_alg_values": ["ES256"],
+            },
+        },
+        "encrypted_response_enc_values_supported": ["A128GCM", "A256GCM"],
+        "jwks": { "keys": [] },
+    });
+    if !enc_jwk.is_null() {
+        if let Some(keys) = metadata
+            .pointer_mut("/jwks/keys")
+            .and_then(|k| k.as_array_mut())
+        {
+            keys.push(enc_jwk);
+        }
+    }
+    metadata
 }
 
 /// The OID4VP VERIFIER REQUEST creator (design §9a.27): the DCQL
@@ -207,15 +254,15 @@ async fn create_verifier_request(
         "response_uri": format!("{issuer}/oauth/vp/response"),
         "client_id": "", // stamped below (x509_hash prefix)
         "nonce": nonce,
-        "client_metadata": {
-            "client_name": "Sentin8 Auth Verifier",
-            "vp_formats_supported": {
-                "sd-jwt": { "sd-jwt_alg_values": ["ES256"], "kb-jwt_alg_values": ["ES256"] }
-            },
-            "authorization_encrypted_response_alg": "ECDH-ES",
-            "authorization_encrypted_response_enc": "A128GCM",
-            "jwks": { "keys": [] },
-        },
+        // OID4VP-1final 5.7: the wallet fetches the request_uri via
+        // POST (the wallet_nonce anti-replay ride the request_uri POST
+        // surface - the request_uri_method-post module's contract).
+        "request_uri_method": "post",
+        // SIOPv2 6.1 (OID4VP-1final 5.1): the request object's
+        // audience is the WALLET - the self-issued issuer identifier
+        // (the suite's ValidateRequestObjectAudForVP requires it).
+        "aud": "https://self-issued.me/v2",
+        "client_metadata": verifier_client_metadata(serde_json::Value::Null),
         "dcql_query": {
             "credentials": [ {
                 "id": "pid-credential",
@@ -313,7 +360,19 @@ async fn create_verifier_request(
         nonce: nonce.clone(),
         request_uri: format!("{issuer}/oauth/vp/request/{request_id}"),
         request_object: serde_json::Value::String(request_object.clone()),
-        qr_data: format!("openid4vp://?request_uri={issuer}%2Foauth%2Fvp%2Frequest%2F{request_id}"),
+        // The authorization request URI (OID4VP-1final 5): the query
+        // carries the request object's binding pair - client_id (the
+        // x509_hash form under HAIP; the redirect_uri form on the plain
+        // plan) + request_uri - and the fetch contract (5.10: the
+        // wallet POSTs the request_uri with its wallet_nonce). The
+        // wallet cross-checks the query's client_id against the
+        // request object's claims.client_id (OID4VP-1final 5.9.3 -
+        // both must name the SAME verifier).
+        qr_data: format!(
+            "openid4vp://?client_id={}&request_uri={}&request_uri_method=post",
+            urlencode(client_id_final.as_str()),
+            urlencode(format!("{issuer}/oauth/vp/request/{request_id}").as_str())
+        ),
         expires_in: VP_PENDING_TTL_SECS as i64,
     }))
 }
@@ -396,15 +455,17 @@ pub async fn vp_request_object(
         "response_uri": format!("{issuer}/oauth/vp/response"),
         "client_id": pending["client_id"],
         "nonce": nonce,
-        "client_metadata": {
-            "client_name": "Sentin8 Auth Verifier",
-            "vp_formats_supported": {
-                "sd-jwt": { "sd-jwt_alg_values": ["ES256"], "kb-jwt_alg_values": ["ES256"] }
-            },
-            "authorization_encrypted_response_alg": "ECDH-ES",
-            "authorization_encrypted_response_enc": "A128GCM",
-            "jwks": { "keys": [ pending["enc_pub_jwk"] ] },
-        },
+        // OID4VP-1final 5.7: the wallet fetches the request_uri via
+        // POST (the wallet_nonce anti-replay ride the request_uri POST
+        // surface).
+        "request_uri_method": "post",
+        // SIOPv2 6.1 (OID4VP-1final 5.1): the request object's
+        // audience is the WALLET - the self-issued issuer identifier.
+        "aud": "https://self-issued.me/v2",
+        // The SAME client_metadata the creator minted (the shared
+        // builder below - the served object and the qr_data object are
+        // byte-identical in their metadata surface).
+        "client_metadata": verifier_client_metadata(pending["enc_pub_jwk"].clone()),
         "dcql_query": {
             "credentials": [ {
                 "id": "pid-credential",
@@ -477,6 +538,30 @@ pub async fn vp_response(
     State(state): State<AppState>,
     headers: HeaderMap,
     body: axum::body::Bytes,
+) -> Result<axum::response::Response, axum::response::Response> {
+    // OID4VP-1final 8.2: the direct_post response body is JSON in ALL
+    // cases - the error form carries {"error": "..."} (the wallet's
+    // parser rejects non-JSON on any status). The internal tuple error
+    // maps to the JSON error envelope here; the tuple's text rides the
+    // error_description member.
+    vp_response_inner(state, headers, body)
+        .await
+        .map_err(|(status, desc)| {
+            let mut resp = axum::Json(serde_json::json!({
+                "error": if status == StatusCode::UNAUTHORIZED { "invalid_token" } else { "invalid_request" },
+                "error_description": desc,
+            }))
+            .into_response();
+            *resp.status_mut() = status;
+            resp
+        })
+}
+
+/// The vp_response body (the JSON-error mapping above wraps it).
+async fn vp_response_inner(
+    state: AppState,
+    headers: HeaderMap,
+    body: axum::body::Bytes,
 ) -> Result<axum::response::Response, (StatusCode, String)> {
     // OID4VP §8.2 + design §9a.27: the direct_post body is
     // application/x-www-form-urlencoded (vp_token=...); the
@@ -497,33 +582,49 @@ pub async fn vp_response(
         let decrypted = decrypt_vp_jwe(&state, &body_str).await?;
         vp_token = decrypted;
     } else {
-        // Form: parse vp_token / (legacy: nonce).
+        // Form: the direct_post body is application/x-www-form-urlencoded
+        // (vp_token=...); the direct_post.jwt form carries the JWE in the
+        // `response` parameter (OID4VP-1final 8.2: the parameter name for
+        // the encrypted response - the suite posts the JWE this way).
         let text = String::from_utf8(body.to_vec())
             .map_err(|_| (StatusCode::BAD_REQUEST, "form body not utf-8".to_string()))?;
+        // URL-decode a value (percent + '+').
+        let urldecode = |v: &str| -> String {
+            let decoded: String = v.chars().map(|c| if c == '+' { ' ' } else { c }).collect();
+            let mut out = String::new();
+            let bytes = decoded.as_bytes();
+            let mut i = 0;
+            while i < bytes.len() {
+                if bytes[i] == b'%' && i + 2 < bytes.len() {
+                    let hex = &decoded[i + 1..i + 3];
+                    if let Ok(b) = u8::from_str_radix(hex, 16) {
+                        out.push(b as char);
+                        i += 3;
+                        continue;
+                    }
+                }
+                out.push(decoded.as_bytes()[i] as char);
+                i += 1;
+            }
+            out
+        };
         let mut got: Option<String> = None;
         for pair in text.split('&') {
             let mut kv = pair.splitn(2, '=');
             let k = kv.next().unwrap_or("");
             let v = kv.next().unwrap_or("");
             if k == "vp_token" {
-                // URL-decode (percent + '+').
-                let decoded: String = v.chars().map(|c| if c == '+' { ' ' } else { c }).collect();
-                let mut out = String::new();
-                let bytes = decoded.as_bytes();
-                let mut i = 0;
-                while i < bytes.len() {
-                    if bytes[i] == b'%' && i + 2 < bytes.len() {
-                        let hex = &decoded[i + 1..i + 3];
-                        if let Ok(b) = u8::from_str_radix(hex, 16) {
-                            out.push(b as char);
-                            i += 3;
-                            continue;
-                        }
-                    }
-                    out.push(decoded.as_bytes()[i] as char);
-                    i += 1;
-                }
-                got = Some(out);
+                got = Some(urldecode(v));
+                break;
+            }
+            // direct_post.jwt: the JWE rides the `response` parameter
+            // (both content types parse the same form - the JWE body
+            // arrives EITHER as the raw application/jwt body or the
+            // form-encoded response= parameter; the suite uses the form).
+            if k == "response" {
+                let jwe = urldecode(v);
+                let decrypted = decrypt_vp_jwe(&state, &jwe).await?;
+                got = Some(decrypted);
                 break;
             }
         }
@@ -597,16 +698,35 @@ pub async fn vp_response(
         nonce: Some(kb_nonce.clone()),
         iat_window_secs: Some(60),
     };
+    // The status-list revocation check: the credential's status claim
+    // is decoded + the list fetched + the bit read ASYNC-NATIVE (a
+    // block_on inside the handler would deadlock the runtime - the
+    // fetch and the verify share the tokio worker). The verify's
+    // sync callback answers from the PRE-FETCHED result.
+    let status_prefetch = {
+        let compact_parts: Vec<&str> = vp_token.split('~').collect();
+        let issuer_jwt = compact_parts.first().copied().unwrap_or_default();
+        let payload = sentin8::auth::jwt::decode_payload(issuer_jwt).ok();
+        let status = payload.as_ref().and_then(|p| p.get("status")).cloned();
+        match status {
+            Some(st) => {
+                let uri = st.pointer("/status_list/uri").and_then(|v| v.as_str());
+                let idx = st.pointer("/status_list/idx").and_then(|v| v.as_u64());
+                match (uri, idx) {
+                    (Some(u), Some(i)) => Some(fetch_status_bit(&state.config.valkey_url, u, i as u32).await),
+                    _ => None,
+                }
+            }
+            None => None,
+        }
+    };
+    let status_prefetch = status_prefetch.unwrap_or(Ok(false));
     let verified = crate::sd_jwt::verify_presentation(
         &vp_token,
         &issuer_keys,
         None, // the KB key derives from the credential's cnf.jwk (§9a.27)
         Some(&expectation),
-        Some(&|uri, entry| {
-            tokio::runtime::Handle::try_current()
-                .map(|rt| rt.block_on(fetch_status_bit(&state.config.valkey_url, uri, entry)))
-                .map_err(|_| "no async runtime".to_string())?
-        }),
+        Some(&|_uri, _entry| status_prefetch.clone()),
     )
     .map_err(|e| {
         (
@@ -647,10 +767,21 @@ pub async fn vp_response(
     // sign-in's outcome). The OID4VP response contract wants the
     // redirect_uri of the verifier's OWN flow; the sign-in session/code
     // ride the pending request's oauth fields (a sign-in-driven
-    // verification) or an OP-hosted verifier landing.
+    // verification) or an OP-hosted verifier landing. The session
+    // INSERT is FORCE-RLS'd - the write rides a TRANSACTION with the
+    // tenant context set (the standard pattern, auth DESIGN §6.3).
     let session_token = Uuid::new_v4().to_string();
+    let mut sess_tx = state
+        .pool
+        .begin()
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    let _ = sqlx::query("SELECT sentin8_set_tenant_context($1)")
+        .bind(pending_env)
+        .execute(&mut *sess_tx)
+        .await;
     let _session = crate::sessions::Session::create(
-        &state.pool,
+        &mut *sess_tx,
         user.id,
         pending_env,
         &session_token,
@@ -659,6 +790,7 @@ pub async fn vp_response(
     )
     .await
     .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    let _ = sess_tx.commit().await;
     let code = Uuid::new_v4().to_string();
     let code_data = serde_json::json!({
            "client_id": pending.get("oauth_client_id"),
@@ -765,9 +897,32 @@ async fn decrypt_vp_jwe(
         .map_err(|e| (StatusCode::BAD_REQUEST, format!("jwe payload: {e}")))?;
     claims
         .get("vp_token")
-        .and_then(|v| v.as_str())
-        .map(|s| s.to_string())
-        .ok_or_else(|| (StatusCode::BAD_REQUEST, "jwe payload vp_token missing".into()))
+        .map(|vp| match vp {
+            // The DCQL form (OID4VP-1final 6.2): vp_token is a JSON
+            // object mapping credential ids to token strings - the
+            // single-credential cell presents one entry; extract it.
+            serde_json::Value::Object(map) => map
+                .values()
+                .find_map(|v| {
+                    // The per-credential value is a JSON ARRAY of
+                    // compact tokens (the sd-jwt + its disclosures as
+                    // one string, or a multi-document set).
+                    match v {
+                        serde_json::Value::Array(arr) => arr
+                            .iter()
+                            .find_map(|e| e.as_str().map(str::to_string)),
+                        serde_json::Value::String(s) => Some(s.clone()),
+                        _ => None,
+                    }
+                })
+                .ok_or_else(|| {
+                    (StatusCode::BAD_REQUEST, "jwe payload vp_token empty".into())
+                }),
+            // The single-token form (the legacy presentation flow).
+            serde_json::Value::String(s) => Ok(s.clone()),
+            _ => Err((StatusCode::BAD_REQUEST, "jwe payload vp_token missing".into())),
+        })
+        .ok_or_else(|| (StatusCode::BAD_REQUEST, "jwe payload vp_token missing".into()))?
 }
 
 /// The KB-JWT's `nonce` claim (the presentation request binding) -
@@ -814,17 +969,31 @@ async fn find_or_create_wallet_user(
     env_id: Uuid,
     verified: &crate::sd_jwt::VerifiedPresentation,
 ) -> Result<WalletUser, (StatusCode, String)> {
-    // PID claims: `sub` (wallet/issuer subject), email, names.
+    // PID claims: `sub` (wallet/issuer subject) when present - SD-JWT
+    // VC leaves it optional (HAIP: the holder's `cnf.jwk` IS the
+    // identifier); the cnf thumbprint substitutes (a stable per-key
+    // subject for the same holder across presentations).
     let external_sub = verified
         .claims
         .get("sub")
         .and_then(|v| v.as_str())
-        .ok_or_else(|| {
-            (
-                StatusCode::UNAUTHORIZED,
-                "credential missing sub claim".into(),
+        .map(str::to_string)
+        .unwrap_or_else(|| {
+            use base64::Engine as _;
+            use sha2::{Digest, Sha256};
+            let cnf = verified
+                .claims
+                .get("cnf")
+                .and_then(|c| c.get("jwk"))
+                .and_then(|j| j.as_object())
+                .map(|obj| serde_json::to_string(obj).unwrap_or_default())
+                .unwrap_or_default();
+            let digest = Sha256::digest(cnf.as_bytes());
+            format!(
+                "eudi-key:{}",
+                base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(digest.as_slice())
             )
-        })?;
+        });
     let email = verified
         .claims
         .get("email")
@@ -846,14 +1015,27 @@ async fn find_or_create_wallet_user(
 
     // keys the user on (env_id, email); the dedicated external-id
     // table is the wallet roadmap. Returns the plain user row.
+    // RLS context in a TRANSACTION on the same connection (the users
+    // INSERT is FORCE-RLS'd - a bare-pool write is context-less and
+    // rejected).
+    let mut tx = state
+        .pool
+        .begin()
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    let _ = sqlx::query("SELECT sentin8_set_tenant_context($1)")
+        .bind(env_id)
+        .execute(&mut *tx)
+        .await;
     let row: Option<(Uuid, String)> =
         sqlx::query_as("SELECT id, first_name FROM users WHERE env_id = $1 AND email = $2")
             .bind(env_id)
             .bind(&email)
-            .fetch_optional(&state.pool)
+            .fetch_optional(&mut *tx)
             .await
             .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
     if let Some((id, _name)) = row {
+        let _ = tx.commit().await;
         return Ok(WalletUser { id, email });
     }
     let _ = first_name;
@@ -865,7 +1047,7 @@ async fn find_or_create_wallet_user(
     )
     .bind(env_id)
     .bind(&email)
-    .fetch_one(&state.pool)
+    .fetch_one(&mut *tx)
     .await
     .map_err(|e| {
         (
@@ -873,12 +1055,18 @@ async fn find_or_create_wallet_user(
             format!("wallet user create: {e}"),
         )
     })?;
+    let _ = tx.commit().await;
     Ok(WalletUser { id, email })
 }
 
 // ── Status List 2021 (shared with revocation) ────────────────
 
-/// Fetch a Status List document (10s timeout).
+/// Fetch a Status List document (10s timeout). Two wire forms
+/// (draft-ietf-oauth-status-list-jwt 3.1): the plain-JSON document and
+/// the JWT form (a signed status list token - `application/jwt`; the
+/// payload carries the same `status_list` member; the verifier's
+/// trust in the signer rides the credential's issuer set, the token
+/// body itself is the transport).
 async fn fetch_status_list_doc(_valkey_url: &str, uri: &str) -> Result<serde_json::Value, String> {
     let http = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(10))
@@ -889,11 +1077,23 @@ async fn fetch_status_list_doc(_valkey_url: &str, uri: &str) -> Result<serde_jso
         .send()
         .await
         .map_err(|e| format!("status list fetch: {e}"))?;
-    let doc: serde_json::Value = resp
-        .json()
+    let text = resp
+        .text()
         .await
-        .map_err(|e| format!("status list parse: {e}"))?;
-    Ok(doc)
+        .map_err(|e| format!("status list read: {e}"))?;
+    // The JSON document form first (the plain status-list shape).
+    if let Ok(doc) = serde_json::from_str::<serde_json::Value>(&text) {
+        return Ok(doc);
+    }
+    // The JWT form: decode the payload segment (three-part compact).
+    let payload_b64 = text
+        .split('.')
+        .nth(1)
+        .ok_or_else(|| "status list body is neither JSON nor a JWT".to_string())?;
+    let payload = sentin8::auth::jwt::decode_payload(&text)
+        .map_err(|e| format!("status list jwt payload: {e}"))?;
+    let _ = payload_b64;
+    Ok(payload)
 }
 
 /// Fetch (Valkey-cached 5 min) + read the revocation bit for `entry`.
@@ -901,23 +1101,34 @@ async fn fetch_status_list_doc(_valkey_url: &str, uri: &str) -> Result<serde_jso
 pub async fn fetch_status_bit(valkey_url: &str, uri: &str, entry: u32) -> Result<bool, String> {
     let cache_key = format!("auth:statuslist:{}", sha_hex(uri));
     // GLIDE: the factory returns the connected client - a cache read is
-    // one typed GET.
+    // one typed GET (the cached form: "<bits>:<lst>"; the bits ride the
+    // cache so the multi-bit indexing survives the TTL window).
     if let Ok(conn) = sentin8::middleware::valkey_client(valkey_url, "sentin8:auth").await {
         use glide::AsyncCommands as _;
         if let Ok(Some(cached)) = conn.get::<_, Option<String>>(&cache_key).await {
-            return crate::sd_jwt::status_list_bit(&cached, entry);
+            let (bits, lst) = cached.split_once(':').unwrap_or(("1", cached.as_str()));
+            return crate::sd_jwt::status_list_bit(lst, bits.parse().unwrap_or(1), entry);
         }
     }
     let doc = fetch_status_list_doc(valkey_url, uri).await?;
-    let lst = doc
-        .pointer("/status_list/list")
+    // The list member: OTSL (draft-ietf-oauth-status-list-jwt 3.1) uses
+    // `lst`; Status List 2021 (RFC 9393) uses `list`. Accept both. The
+    // `bits` member (the OTSL multi-bit status) defaults to 1 (the
+    // single-bit 2021 form).
+    let sl = doc.pointer("/status_list").cloned().unwrap_or(serde_json::Value::Null);
+    let lst = sl
+        .get("lst")
+        .or_else(|| sl.get("list"))
         .and_then(|v| v.as_str())
-        .ok_or("status list document missing /status_list/list")?;
+        .ok_or("status list document missing /status_list/lst")?
+        .to_string();
+    let bits = sl.get("bits").and_then(|v| v.as_u64()).unwrap_or(1) as u32;
+    let revoked = crate::sd_jwt::status_list_bit(&lst, bits, entry)?;
     if let Ok(conn) = sentin8::middleware::valkey_client(valkey_url, "sentin8:auth").await {
         use glide::AsyncCommands as _;
-        let _: Result<(), _> = conn.set_ex(&cache_key, lst, 300u64).await;
+        let _: Result<(), _> = conn.set_ex(&cache_key, format!("{bits}:{lst}"), 300u64).await;
     }
-    crate::sd_jwt::status_list_bit(lst, entry)
+    Ok(revoked)
 }
 
 fn sha_hex(input: &str) -> String {
@@ -1519,6 +1730,22 @@ pub(crate) fn pem_profile_to_x5c(
 /// skips it. The check walks the DER TLVs directly (no parser dep): a
 /// certificate is self-signed when its tbsCertificate's subject Name TLV
 /// byte-spans equal the issuer Name TLV byte-for-byte.
+/// RFC 3986 unreserved-character percent-encoding (the query-string
+/// form of the OID4VP authorization request - client_id's x509_hash
+/// prefix and the request_uri both ride it).
+fn urlencode(s: &str) -> String {
+    let mut out = String::with_capacity(s.len() * 3);
+    for byte in s.bytes() {
+        match byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'.' | b'_' | b'~' => {
+                out.push(byte as char);
+            }
+            _ => out.push_str(&format!("%{:02X}", byte)),
+        }
+    }
+    out
+}
+
 fn is_self_signed_certificate(cert_der: &[u8]) -> bool {
     fn read_tlv(buf: &[u8]) -> Option<(u8, &[u8], &[u8])> {
         if buf.len() < 2 {

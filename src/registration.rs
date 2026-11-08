@@ -285,7 +285,7 @@ pub fn print(section: Option<String>) -> anyhow::Result<()> {
             // convergence re-applies it (every statement is CREATE IF
             // NOT EXISTS / ON CONFLICT guarded - a re-apply is a no-op
             // except the new DDL).
-            version: 5,
+            version: 6,
             name: "init",
             sql: SQL_1_INIT,
         }],
