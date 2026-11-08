@@ -4105,11 +4105,29 @@ pub async fn authorize(
     // id_token in the fragment - a missing nonce answers the OAuth error
     // redirect (the suite's ensure-request-without-nonce-fails reads the
     // callback's error=invalid_request), encoded in the FRAGMENT for
-    // the fragment cells (OIDC Core §3.2.2.1 - RejectErrorInUrlQuery).
+    // the fragment cells (OIDC Core §3.2.2.1 - RejectErrorInUrlQuery)
+    // or through the one-time HTML form for the form_post family (no
+    // error in the URL query - CheckCallbackHttpMethodIsPost).
     if crate::oauth::is_fragment_response(&params.response_type)
         && params.response_type.split_whitespace().any(|p| p == "id_token")
         && params.nonce.as_deref().map(str::trim).unwrap_or("").is_empty()
     {
+        if is_form_post_flow(params.response_mode.as_deref(), &profile.profile) {
+            let pairs: Vec<(&str, String)> = vec![
+                ("error", "invalid_request".to_string()),
+                (
+                    "error_description",
+                    urlencode("nonce is required for response types that return an id_token from the authorization endpoint"),
+                ),
+                ("state", urlencode(&params.state)),
+            ];
+            if let Some(ref_id) =
+                register_form_post_ref(&state.config.valkey_url, &params.redirect_uri, &pairs).await
+            {
+                let url = format!("{}/oauth/form-post/{}", resolve_issuer(&state.config, &headers), ref_id);
+                return (StatusCode::FOUND, [("location", url)]).into_response();
+            }
+        }
         return authorize_error_redirect_channel(
             &params.redirect_uri,
             "invalid_request",
