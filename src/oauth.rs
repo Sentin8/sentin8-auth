@@ -3343,13 +3343,17 @@ async fn fragment_cell_response(
         &access_token_for_hash,
         email.as_deref(),
         // OIDC Core §5.4 + the suite's RESPONSE-TYPE-DEPENDENT email
-        // rule: the id_token-only cell carries email/email_verified
-        // (the id_token is the ONLY claim carrier - no access token
-        // exists for userinfo); the token-bearing cells keep email in
-        // userinfo (EnsureIdTokenDoesNotContainEmailForScopeEmail).
-        // The profile/phone/address families always ride per scope
-        // (VerifyScopesReturnedInAuthorizationEndpointIdToken).
-        !wants_token && scope_has("email")
+        // rule: email rides the fragment id_token ONLY in the pure
+        // id_token cell (NO code and NO token member - no other
+        // delivery channel exists; the hybrid cells exchange the
+        // code at the token endpoint, so email stays in userinfo per
+        // EnsureIdTokenDoesNotContainEmailForScopeEmail). The
+        // profile/phone/address families always ride per scope.
+        scope_has("email")
+            && params
+                .response_type
+                .split_whitespace()
+                .all(|p| p == "id_token")
             || id_selection.map(|o| o.contains_key("email")).unwrap_or(false),
         name.as_deref(),
         scope_has("profile")
@@ -5159,11 +5163,14 @@ pub async fn authorize_continue(
             session.created_at.timestamp(),
             &access_token_for_hash,
             email.as_deref(),
-            // The suite's RESPONSE-TYPE-DEPENDENT email rule: the
-            // id_token-only cell carries email (no access token
-            // exists for userinfo); the token-bearing cells keep email
-            // in userinfo.
-            !wants_token && scope_has("email")
+            // The suite's RESPONSE-TYPE-DEPENDENT email rule: ONLY the
+            // pure id_token cell carries email (no code/token member
+            // - no other delivery channel); the hybrid/token cells
+            // keep email in userinfo.
+            cell_response_type
+                .split_whitespace()
+                .all(|p| p == "id_token")
+                && scope_has("email")
                 || id_selection.map(|o| o.contains_key("email")).unwrap_or(false),
             name.as_deref(),
             scope_has("profile")
@@ -9451,6 +9458,13 @@ pub fn is_supported_response_type(rt: &str) -> bool {
             | "code id_token"
             | "id_token token"
             | "code id_token token"
+            // The OAuth2 `code token` combination (no id_token): not an
+            // OIDC Core flow, but a legal OAuth2 Response Type (RFC 6749
+            // §3.1.1 permits any registered combination) the hybrid
+            // family's second cell certifies - the members each ride
+            // their supported channel (code on the fragment, the
+            // access token member at the authorize endpoint).
+            | "code token"
     )
 }
 
