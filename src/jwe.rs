@@ -540,5 +540,88 @@ mod tests {
             .unwrap();
         assert!(decrypt_credential_request(&jwe, other_pem.as_str()).is_err());
     }
+
+    /// A128GCM (RFC 7518 §5.2 - the 16-octet CEK) round-trips the
+    /// request-side decrypt: the OID4VP verifier's
+    /// `encrypted_response_enc_values_supported` advertises BOTH AEAD
+    /// sizes and the suite's wallet defaults to A128GCM when the
+    /// client metadata carries no explicit choice. The ENCRYPT side
+    /// is the sender's mirror (the suite's nimbus wallet) - built
+    /// here by hand: ECDH-ES direct (empty encrypted-key segment),
+    /// ConcatKDF keyed on the enc name, AAD = the protected header.
+    #[test]
+    fn request_jwe_a128gcm_decrypts_with_the_recipient_key() {
+        use p256::elliptic_curve::pkcs8::EncodePrivateKey;
+        use rand::RngCore;
+        let mut seed = [0u8; 32];
+        rand::rngs::OsRng.fill_bytes(&mut seed);
+        let verifier_sk = p256::SecretKey::from_slice(&seed).expect("verifier key");
+        let pkcs8 = verifier_sk
+            .to_pkcs8_pem(p256::pkcs8::LineEnding::LF)
+            .expect("pkcs8");
+        // Sender side: a fresh ephemeral agrees with the verifier's
+        // PUBLIC point; the CEK derives via ConcatKDF (A128GCM = 16
+        // octets; the enc name is the AlgorithmID).
+        let mut eseed = [0u8; 32];
+        rand::rngs::OsRng.fill_bytes(&mut eseed);
+        let epk_sk = p256::SecretKey::from_slice(&eseed).expect("epk key");
+        let epk_point = epk_sk.public_key().to_encoded_point(false);
+        let verifier_point = verifier_sk.public_key().to_encoded_point(false);
+        let shared = p256::elliptic_curve::ecdh::diffie_hellman(
+            &epk_sk.to_nonzero_scalar(),
+            jwk_to_p256(&serde_json::json!({
+                "kty": "EC", "crv": "P-256",
+                "x": b64u(&verifier_point.as_ref()[1..33]),
+                "y": b64u(&verifier_point.as_ref()[33..65]),
+            }))
+            .expect("verifier pub")
+            .as_affine(),
+        );
+        let apu: Vec<u8> = Vec::new();
+        let apv: Vec<u8> = Vec::new();
+        let cek = concat_cek(
+            shared.raw_secret_bytes(),
+            "A128GCM",
+            &apu,
+            &apv,
+            16,
+        );
+        let cek: [u8; 16] = cek.try_into().expect("16");
+        let protected = serde_json::json!({
+            "alg": "ECDH-ES",
+            "enc": "A128GCM",
+            "epk": {
+                "kty": "EC", "crv": "P-256",
+                "x": b64u(&epk_point.as_ref()[1..33]),
+                "y": b64u(&epk_point.as_ref()[33..65]),
+            },
+            "apu": b64u(&apu),
+            "apv": b64u(&apv),
+        });
+        let protected_b64 = b64u(protected.to_string().as_bytes());
+        let cipher = Aes128Gcm::new((&cek).into());
+        let iv: [u8; 12] = rand::random();
+        let plaintext = br#"{"vp_token":{"pid-credential":["e30.e30.e30"]}}"#;
+        let sealed = cipher
+            .encrypt(
+                Nonce::from_slice(&iv),
+                Payload {
+                    msg: plaintext,
+                    aad: protected_b64.as_bytes(),
+                },
+            )
+            .expect("seal");
+        let (ct, tag) = sealed.split_at(sealed.len() - 16);
+        let jwe = format!(
+            "{protected_b64}..{}.{}.{}",
+            b64u(&iv),
+            b64u(ct),
+            b64u(tag),
+        );
+        // Verifier-side decrypt with the SAME private PEM (A128GCM arm).
+        let got =
+            decrypt_credential_request(&jwe, pkcs8.as_str()).expect("decrypt");
+        assert_eq!(got, plaintext);
+    }
 }
 

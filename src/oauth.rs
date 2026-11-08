@@ -9173,6 +9173,15 @@ struct CheckSessionRow {
 /// `GET /oauth/check-session/iframe` - the OIDC Session Management
 /// postMessage shim page (design §9a.26) - discovery's
 /// `check_session_iframe` target.
+#[utoipa::path(
+    get,
+    path = "/oauth/check-session/iframe",
+    responses(
+        (status = 200, description = "The OP iframe page: posts the session-state triple back to the RP's frame (OIDC Session Management 3.2.2 - the postMessage shim)", content_type = "text/html"),
+    ),
+    security(),
+    tag = "oauth",
+)]
 pub async fn check_session_iframe(
     State(state): State<AppState>,
     headers: HeaderMap,

@@ -355,6 +355,7 @@ mod tests {
     fn mk_client() -> AuthenticatedClient {
         use uuid::Uuid;
         AuthenticatedClient {
+            backchannel_logout_uri: None,
             id: Uuid::new_v4(),
             client_id: "test".into(),
             env_id: Uuid::new_v4(),

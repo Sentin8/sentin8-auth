@@ -422,6 +422,23 @@ fn generate_ephemeral_enc_keypair(
 /// carries `wallet_nonce` - the request object must echo it; the served
 /// object is re-signed with the wallet nonce stamped. Single-use both
 /// ways (the response consumes the same pending payload).
+#[utoipa::path(
+    get,
+    path = "/oauth/vp/request/{request_id}",
+    params(
+        ("request_id" = String, Path, description = "The pending verifier request's identifier (the request_uri's final path segment)"),
+    ),
+    request_body(
+        content = String,
+        description = "A POST body carries the `wallet_nonce` form parameter (OID4VP-1final 5.10 - the request object echoes it)",
+    ),
+    responses(
+        (status = 200, description = "The signed request object (typ oauth-authz-req+jwt; x5c chain, dcql_query, nonce, response_uri, client_metadata)", content_type = "application/oauth-authz-req+jwt"),
+        (status = 404, description = "Unknown or expired request id"),
+    ),
+    security(),
+    tag = "wallet",
+)]
 pub async fn vp_request_object(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -1964,5 +1981,67 @@ mod anchor_tests {
             !is_self_signed_certificate(leaf.der().as_ref()),
             "signed leaf is not an anchor"
         );
+    }
+}
+
+#[cfg(test)]
+mod verifier_surface_tests {
+    use super::verifier_client_metadata;
+
+    /// The OID4VP-1final client_metadata is the CLOSED key set (PR 233):
+    /// exactly vp_formats_supported (dc+sd-jwt with sd-jwt/KB alg
+    /// lists), encrypted_response_enc_values_supported (BOTH AEAD
+    /// sizes - HAIP-5), and jwks (the ephemeral key pushed in-place).
+    #[test]
+    fn verifier_client_metadata_closed_key_set() {
+        let metadata = verifier_client_metadata(serde_json::Value::Null);
+        let obj = metadata.as_object().expect("object");
+        assert_eq!(obj.len(), 3, "exactly three keys (PR 233's closed set)");
+        assert!(
+            obj.contains_key("vp_formats_supported")
+                && obj.contains_key("encrypted_response_enc_values_supported")
+                && obj.contains_key("jwks"),
+            "the three members"
+        );
+        // The dc+sd-jwt DCQL format key (HAIP-5.5).
+        let fmts = &metadata["vp_formats_supported"];
+        assert!(fmts.get("dc+sd-jwt").is_some(), "dc+sd-jwt key");
+        assert_eq!(
+            fmts["dc+sd-jwt"]["sd-jwt_alg_values"][0], "ES256",
+            "sd-jwt alg"
+        );
+        assert_eq!(
+            fmts["dc+sd-jwt"]["kb-jwt_alg_values"][0], "ES256",
+            "kb-jwt alg"
+        );
+        // Both AEAD enc sizes.
+        let encs = metadata["encrypted_response_enc_values_supported"].as_array().unwrap();
+        assert!(encs.iter().any(|v| v == "A128GCM"), "A128GCM listed");
+        assert!(encs.iter().any(|v| v == "A256GCM"), "A256GCM listed");
+        // The ephemeral enc key rides jwks.keys when provided.
+        let jwk = serde_json::json!({
+            "kty": "EC", "crv": "P-256", "alg": "ECDH-ES",
+            "x": "AA", "y": "BB", "kid": "test-enc-kid", "use": "enc",
+        });
+        let with_key = verifier_client_metadata(jwk.clone());
+        let keys = with_key["jwks"]["keys"].as_array().expect("keys");
+        assert_eq!(keys.len(), 1, "the ephemeral key landed");
+        assert_eq!(keys[0]["kid"], "test-enc-kid");
+        // No client_name: the closed set admits no display name.
+        assert!(with_key.get("client_name").is_none());
+    }
+
+    /// urlencode (RFC 3986 unreserved set): the x509_hash prefix and
+    /// the request_uri both ride the openid4vp:// query - the colon
+    /// and slash must percent-encode while unreserved chars stay.
+    #[test]
+    fn urlencode_encodes_the_openid4vp_query() {
+        assert_eq!(super::urlencode("x509_hash:abc123"), "x509_hash%3Aabc123");
+        assert_eq!(
+            super::urlencode("https://auth.example/oauth/vp/request/id"),
+            "https%3A%2F%2Fauth.example%2Foauth%2Fvp%2Frequest%2Fid"
+        );
+        // Unreserved stay literal.
+        assert_eq!(super::urlencode("abc-123_.~"), "abc-123_.~");
     }
 }

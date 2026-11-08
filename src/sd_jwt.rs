@@ -540,4 +540,25 @@ mod tests {
         // entry2 = bits 4,5 = 0,0 -> value 0 = valid
         assert!(!status_list_bit(&b64, 2, 2).unwrap());
     }
+
+    /// The OTSL JWT body's `lst` member (draft-ietf-oauth-status-list-jwt
+    /// 3.1 - the suite's TokenStatusList emits raw DEFLATE, not zlib):
+    /// the reader falls back from zlib to the raw-DEFLATE form.
+    #[test]
+    fn status_list_bit_raw_deflate_read() {
+        use base64::Engine as _;
+        use std::io::Write as _;
+        // bit 1 set - byte 0 bit 1 (the LSB-first bit array).
+        let mut bytes = vec![0u8; 2];
+        bytes[0] = 0b0000_0010;
+        let mut enc =
+            flate2::write::DeflateEncoder::new(Vec::new(), flate2::Compression::default());
+        enc.write_all(&bytes).unwrap();
+        let compressed = enc.finish().unwrap();
+        let b64 = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(&compressed);
+        assert!(!status_list_bit(&b64, 1, 0).unwrap());
+        assert!(status_list_bit(&b64, 1, 1).unwrap());
+        // An out-of-range entry errors (the list is 2 bytes = 16 bits).
+        assert!(status_list_bit(&b64, 1, 16).is_err());
+    }
 }
