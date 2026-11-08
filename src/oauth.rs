@@ -143,6 +143,13 @@ pub struct AuthenticatedClient {
     /// Registered post-logout redirect URIs.
     /// The post logout redirect uris.
     pub post_logout_redirect_uris: Vec<String>,
+    /// The client's registered Back-Channel Logout URI (the
+    /// session-management surface). Present ONLY for clients that
+    /// registered `backchannel_logout_uri` (BCL 1.0 2.2: the id_token's
+    /// `sid` claim is meaningful only to session-managing RPs - the
+    /// mint gates the claim on this field).
+    /// The backchannel logout uri.
+    pub backchannel_logout_uri: Option<String>,
     /// Registered scopes (TEXT[]).
     /// The scopes.
     pub scopes: Vec<String>,
@@ -714,7 +721,7 @@ pub async fn authenticate_client(
                   tls_client_auth_subject_dn, self_signed_tls_client_auth_thumbprint,
                   post_logout_redirect_uris, dpop_exempt, authorization_details_types,
                   id_token_signed_response_alg, userinfo_signed_response_alg,
-                  subject_type, sector_identifier_uri
+                  subject_type, sector_identifier_uri, backchannel_logout_uri
              FROM oauth_clients
             WHERE client_id = $1 AND status = 'active'"#,
     )
@@ -779,6 +786,14 @@ pub async fn authenticate_client(
     let subject_type: Option<String> = row.try_get("subject_type").ok().flatten();
     let sector_identifier_uri: Option<String> =
         row.try_get("sector_identifier_uri").ok().flatten();
+    // The client's session-management surface (the id_token sid gate,
+    // DESIGN 9a.26: sid rides only for backchannel-logout-registered
+    // clients).
+    let backchannel_logout_uri: Option<String> = row
+        .try_get::<Option<String>, _>("backchannel_logout_uri")
+        .ok()
+        .flatten()
+        .filter(|s: &String| !s.is_empty());
 
     let is_confidential = secret_hash.is_some()
         || mtls_dn.is_some()
@@ -820,6 +835,7 @@ pub async fn authenticate_client(
             userinfo_signed_response_alg: userinfo_signed_response_alg.clone(),
             subject_type: subject_type.clone(),
             sector_identifier_uri: sector_identifier_uri.clone(),
+            backchannel_logout_uri: backchannel_logout_uri.clone(),
         },
         software_id.as_deref(),
         software_statement.as_deref(),
@@ -1033,6 +1049,7 @@ pub async fn authenticate_client(
         userinfo_signed_response_alg,
         subject_type,
         sector_identifier_uri,
+        backchannel_logout_uri,
     })
 }
 
@@ -3398,9 +3415,12 @@ async fn fragment_cell_response(
         id_claims["c_hash"] = serde_json::json!(crate::jwt::c_hash(code));
     }
     // OIDC Back-Channel Logout / Session Management (design 9a.26):
-    // the id_token carries `sid` = the session's persistent id.
-    if let Some(tok) = session_token.filter(|t| session_present && !t.is_empty()) {
-        id_claims["sid"] = serde_json::json!(tok);
+    // the id_token carries `sid` = the session's persistent id - ONLY
+    // for clients that registered the logout surface (BCL 1.0 §2.2).
+    if client_uses_backchannel_logout(&state, env_id, &params.client_id).await {
+        if let Some(tok) = session_token.filter(|t| session_present && !t.is_empty()) {
+            id_claims["sid"] = serde_json::json!(tok);
+        }
     }
     let id_token = match state.keys.sign_value_alg(&id_claims, &profile.signing_alg) {
         Ok(t) => t,
@@ -5279,8 +5299,11 @@ pub async fn authorize_continue(
         if wants_code {
             id_claims["c_hash"] = serde_json::json!(crate::jwt::c_hash(&code));
         }
-        // OIDC Back-Channel Logout / Session Management (design 9a.26).
-        id_claims["sid"] = serde_json::json!(&req.session_token);
+        // OIDC Back-Channel Logout / Session Management (design 9a.26) -
+        // gated on the client's registered logout surface (BCL 1.0 §2.2).
+        if client_uses_backchannel_logout(&state, session.env_id, &req.client_id).await {
+            id_claims["sid"] = serde_json::json!(&req.session_token);
+        }
         let id_token = state
             .keys
             .sign_value_alg(&id_claims, &profile.signing_alg)
@@ -6287,9 +6310,15 @@ async fn handle_code_exchange(
         // path resolved (the code record's `session_token` - the SAME
         // identifier the Logout Token's sid carries at fanout time, so
         // the RP's equality check matches, Back-Channel Logout 1.0
-        // §2.6 step 11).
-        if let Some(sid) = code_data["session_token"].as_str().filter(|s| !s.is_empty()) {
-            id_claims["sid"] = serde_json::json!(sid);
+        // §2.6 step 11). Gated on the client's REGISTERED logout
+        // surface (BCL 1.0 §2.2: sid is meaningful only to a
+        // session-managing RP - an unrequested sid rides as an
+        // unexpected claim in every other family's id_token profile
+        // checks, e.g. the FAPI2 known-claims whitelist).
+        if client.backchannel_logout_uri.is_some() {
+            if let Some(sid) = code_data["session_token"].as_str().filter(|s| !s.is_empty()) {
+                id_claims["sid"] = serde_json::json!(sid);
+            }
         }
         // OIDC Core §5.5 claims request (DESIGN §9a.3) - apply the
         // client's `id_token` claim SELECTION. This only narrows: the
@@ -9326,6 +9355,36 @@ fn redirect_uri_query_extension(registered_uri: &str, uri: &str) -> bool {
 /// a pre-authentication endpoint - there is no session env yet; clients
 /// are created in the env the DCR/admin call resolved, and test/dev
 /// deployments default to the system env).
+/// Whether the client registered a Back-Channel Logout URI (its
+/// session-management surface). The id_token's `sid` claim rides ONLY
+/// for such clients (BCL 1.0 §2.2 - sid is meaningful to a
+/// session-managing RP; unrequested it rides as an unexpected claim in
+/// the other families' id_token profile checks, e.g. the FAPI2
+/// known-claims whitelist).
+async fn client_uses_backchannel_logout(
+    state: &AppState,
+    env_id: uuid::Uuid,
+    client_id: &str,
+) -> bool {
+    let mut tx = match state.pool.begin().await {
+        Ok(t) => t,
+        Err(_) => return false,
+    };
+    let _ = sqlx::query("SELECT sentin8_set_tenant_context($1)")
+        .bind(env_id)
+        .execute(&mut *tx)
+        .await;
+    let row: Option<(Option<String>,)> = sqlx::query_as(
+        "SELECT backchannel_logout_uri FROM oauth_clients WHERE client_id = $1",
+    )
+    .bind(client_id)
+    .fetch_optional(&mut *tx)
+    .await
+    .ok()
+    .flatten();
+    row.and_then(|(uri,)| uri).is_some_and(|u| !u.is_empty())
+}
+
 async fn with_client_env(
     state: &AppState,
     client_id: String,
