@@ -3570,6 +3570,11 @@ pub async fn authorize(
     // The deferred PKCE-missing reject (same post-validation channel -
     // the PAR-flow PKCE negatives read the callback).
     let mut deferred_pkce_reject: Option<String> = None;
+    // The deferred JAR reject (RFC 6749 4.1.2.1: the error redirect
+    // targets a VALIDATED redirect_uri - the by-value request-object
+    // parse failure defers to the same site; the form_post family's
+    // delivery rides the same gate).
+    let mut deferred_jar_reject: Option<String> = None;
 
     // PAR urns resolve from Valkey (single-use). Anything else is a JAR
     // request-object reference (RFC 9101 §5.2.1, DESIGN §9a.7) and falls
@@ -3758,6 +3763,13 @@ pub async fn authorize(
                 if !jar.response_type.is_empty() {
                     params.response_type = jar.response_type.clone();
                 }
+                // The request object's response_mode (RFC 9101 4 - the
+                // object is the authoritative parameter set; the form_post
+                // family rides its cells' objects - dropping it left the
+                // form_post responses on the query channel).
+                if let Some(rm) = jar.response_mode.as_deref().filter(|m| !m.is_empty()) {
+                    params.response_mode = Some(rm.to_string());
+                }
                 params.scope = jar.scope.clone();
                 params.state = jar.state.clone();
                 if let Some(cc) = jar.code_challenge.clone() {
@@ -3789,14 +3801,14 @@ pub async fn authorize(
                     }
                     _ => ("invalid_request".to_string(), e.clone()),
                 };
-                return (
-                    StatusCode::BAD_REQUEST,
-                    Json(serde_json::json!({
-                        "error": code,
-                        "error_description": format!("JAR request rejected: {desc}")
-                    })),
-                )
-                    .into_response();
+                // RFC 6749 4.1.2.1: the error redirect targets a
+                // VALIDATED redirect_uri - the reject is DEFERRED to
+                // the post-(client,redirect_uri)-validation site (the
+                // same deferred channel as the PAR/PKCE rejects; the
+                // form_post family's HTML-form delivery rides the same
+                // gate - the suite's unsigned-request-object module
+                // reads the error from the callback).
+                deferred_jar_reject = Some(format!("{code}: JAR request rejected: {desc}"));
             }
         }
     }
@@ -4053,6 +4065,37 @@ pub async fn authorize(
         return authorize_error_redirect(
             &params.redirect_uri,
             "invalid_request_uri",
+            &desc,
+            Some(params.state.as_str()),
+        );
+    }
+    // The deferred JAR reject (RFC 6749 4.1.2.1 + JAR 6.2): the
+    // by-value request-object parse failure - delivered now that the
+    // client + redirect_uri are validated. The form_post family
+    // (design 9a.25) receives it through the one-time HTML form (no
+    // error in the URL query - CheckCallbackHttpMethodIsPost); the
+    // plain error redirect serves the query channel.
+    if let Some(reject) = deferred_jar_reject {
+        let (code, desc) = reject
+            .split_once(": ")
+            .map(|(c, d)| (c.to_string(), d.to_string()))
+            .unwrap_or_else(|| ("invalid_request_object".to_string(), reject.clone()));
+        if is_form_post_flow(params.response_mode.as_deref(), &profile.profile) {
+            let pairs: Vec<(&str, String)> = vec![
+                ("error", code.clone()),
+                ("error_description", urlencode(&desc)),
+                ("state", urlencode(&params.state)),
+            ];
+            if let Some(ref_id) =
+                register_form_post_ref(&state.config.valkey_url, &params.redirect_uri, &pairs).await
+            {
+                let url = format!("{}/oauth/form-post/{}", resolve_issuer(&state.config, &headers), ref_id);
+                return (StatusCode::FOUND, [("location", url)]).into_response();
+            }
+        }
+        return authorize_error_redirect(
+            &params.redirect_uri,
+            &code,
             &desc,
             Some(params.state.as_str()),
         );
