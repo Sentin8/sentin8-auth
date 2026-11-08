@@ -2495,3 +2495,19 @@ minimal-cnf-jwk, the request-uri (POST-method + fetched-twice) cells,
 the full negative battery (invalid KB-JWT signature/nonce/aud, the
 credential signature, the sd-hash, the iat windows, the revoked
 credential), and the present-without-status cell.
+
+**RICAL (ISO/IEC 18013-5 Annex F.3.2).** The conformance rig publishes
+a Reader Issuer CA List - a COSE_Sign1 (ES256, x5chain label 33) over
+a CBOR map whose `certificateInfos` list the issuance CA as a reader
+CA (`isTrustAnchor=true`, SKI + serialNumber, no trust constraints).
+The suite's `RicalTrustManager` resolves the request object's x5c
+chain BY THE LEAF'S AKI against the RICAL entries' SKI - so the
+issuance chain carries SKI (CA) + AKI (leaf) + KeyUsage
+(`digitalSignature` on BOTH - the chain walker rejects a signer
+without it; the CA also carries `keyCertSign`/`cRLSign`), and the
+RICAL REPLACES the single `request_object_trust_anchor_pem` (the
+suite rejects a config carrying both). With the RICAL pinned the full
+validation chain evaluates: register, parse, COSE signature, signer
+certificate, structure (the Annex F.3.2 shape), the request object
+chain against the reader CA, and the matched entry's trust
+constraints.
