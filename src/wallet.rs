@@ -254,10 +254,14 @@ async fn create_verifier_request(
         "response_uri": format!("{issuer}/oauth/vp/response"),
         "client_id": "", // stamped below (x509_hash prefix)
         "nonce": nonce,
-        // OID4VP-1final 5.7: the wallet fetches the request_uri via
-        // POST (the wallet_nonce anti-replay ride the request_uri POST
-        // surface - the request_uri_method-post module's contract).
-        "request_uri_method": "post",
+        // JAR 5.1 (RFC 9101 5): the signed request object's lifetime -
+        // iat now + exp at the pending request's TTL horizon (a fresh
+        // mint per request; the object dies with the stored request).
+        "iat": chrono::Utc::now().timestamp(),
+        "exp": chrono::Utc::now().timestamp() + VP_PENDING_TTL_SECS as i64,
+        // NOTE: NO request_uri_method here - it is a URL QUERY parameter
+        // (the wallet reads it BEFORE fetching the request_uri; OpenID4VP
+        // issue 733 - the qr_data query carries it).
         // SIOPv2 6.1 (OID4VP-1final 5.1): the request object's
         // audience is the WALLET - the self-issued issuer identifier
         // (the suite's ValidateRequestObjectAudForVP requires it).
@@ -455,10 +459,13 @@ pub async fn vp_request_object(
         "response_uri": format!("{issuer}/oauth/vp/response"),
         "client_id": pending["client_id"],
         "nonce": nonce,
-        // OID4VP-1final 5.7: the wallet fetches the request_uri via
-        // POST (the wallet_nonce anti-replay ride the request_uri POST
-        // surface).
-        "request_uri_method": "post",
+        // JAR 5.1: the re-signed object's lifetime (the wallet_nonce
+        // POST re-sign refreshes it).
+        "iat": chrono::Utc::now().timestamp(),
+        "exp": chrono::Utc::now().timestamp() + VP_PENDING_TTL_SECS as i64,
+        // NOTE: NO request_uri_method here - it is a URL QUERY parameter
+        // (the wallet reads it BEFORE fetching the request_uri; OpenID4VP
+        // issue 733).
         // SIOPv2 6.1 (OID4VP-1final 5.1): the request object's
         // audience is the WALLET - the self-issued issuer identifier.
         "aud": "https://self-issued.me/v2",
