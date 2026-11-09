@@ -60,16 +60,21 @@ register with per-mechanism anchors is `DESIGN.md` §12.
   approximations - the platform targets regulated verticals.
 - **OIDF certification is a program, not an event.** The OIDF
   conformance suite runs locally against a dedicated rig as the gate
-  before any certification submission. Scope: OIDC Basic/Config/Dynamic
-  + RP-Initiated/Back-Channel Logout, FAPI 2 (Security Profile +
-  Message Signing), FAPI 1 Advanced, FAPI-CIBA (poll + ping), OID4VCI
+  before any certification submission. Scope: OIDC Basic/Config/Dynamic,
+  RP-Initiated/Back-Channel Logout, Session Management
+  ([openid-connect-session-1_0](https://openid.net/specs/openid-connect-session-1_0.html)),
+  Third-Party-Initiated Login, the joint Back-Channel + RP-Initiated
+  Logout plan, the Implicit + Hybrid + Form-Post OP families
+  ([Form Post Response Mode](https://openid.net/specs/oauth-v2-form-post-response-mode-1_0.html)),
+  FAPI 2 (Security Profile + Message Signing), FAPI 1 Advanced,
+  FAPI-CIBA (poll + ping), OID4VCI
   ([Issuer](https://openid.net/specs/openid-4-verifiable-credential-issuance-1_0.html)),
   OID4VP
   ([Verifier](https://openid.net/specs/openid-4-verifiable-presentations-1_0.html)),
   and eKYC-IDA
   ([§5](https://openid.net/specs/openid-connect-ida-1_0.html)). Excluded
-  by design: Implicit and Hybrid OP (deprecated response types),
-  Front-Channel Logout (tracking surface). See `DESIGN.md` §9a.
+  by design: Front-Channel Logout (tracking surface). See `DESIGN.md`
+  §9a.
 
 ## 3. Architecture & High-Level Design
 
@@ -100,7 +105,7 @@ graph TD
     end
     subgraph PLAT["Platform"]
         T["JWKS (RFC 7517) - rotation, PQ keys"] --> D
-        U["Back-Channel Logout (OIDC BCN) + webhooks"] --> V["Sentin8:Bus outbox"]
+        U["Back-Channel Logout + session mgmt (OIDC BCN/SM) + webhooks"] --> V["Sentin8:Bus outbox"]
         W["Admin API + RFW UI + Shield gate"] --> X["Users/roles/groups/clients/keys"]
     end
 ```
@@ -132,11 +137,25 @@ graph TD
   (issuer/signature/expiry/audience/token type) → resolve tenant →
   feature gate → authorize via Shield → set RLS context → execute →
   audit. Requests that cannot resolve a tenant context are rejected.
+- **Session surface** - OIDC Session Management: `check_session_iframe`
+  (the postMessage shim, sender-origin validated) + `session_state`
+  minted on every interactive authorize; RP-initiated logout revokes
+  the OP session (the next poll answers `changed`), id_tokens carry
+  `sid`, and the Back-Channel Logout fan-out notifies exactly the RPs
+  the destroyed session logged in (`session_clients`, §9a.26 of
+  `DESIGN.md`). DCR accepts `backchannel_logout_uri`/
+  `backchannel_logout_session_required` and an https
+  `initiate_login_uri`.
 - **Wallet surface** - OID4VCI issuer (§9a.7 of `DESIGN.md`): issuer
   metadata, `/oauth/credential`, §7.2.1 identifier form, issuance nonce
   (§8.1), batch issuance (§7.3), deferred polling, notifications, and
-  signed status lists; OID4VP verifier (§11); SD-JWT verification with
-  key binding and status enforcement.
+  signed status lists; OID4VP verifier (§9a.27): DCQL signed request
+  objects (`x509_hash` client identity, per-request ephemeral enc
+  keys), `direct_post` / `direct_post.jwt` response verification
+  (Key Binding JWT from the credential's `cnf.jwk`, credential
+  signature, status-list revocation, SIOPv2 wallet audience) with the
+  ISO/IEC 18013-5 Annex F.3.2 RICAL reader-CA trust anchor; SD-JWT
+  verification with key binding and status enforcement.
 - **Admin surface** - full CRUD over users, roles (with nesting),
   groups, OAuth clients, API keys, sessions, memberships, and
   invitations; every mutation emits a domain event through the local

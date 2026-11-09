@@ -546,9 +546,16 @@ graph LR
 - **Introspection honesty**: `none`-auth clients hard-rejected;
   `application/token-introspection+jwt` signed responses (RFC 9701)
   per profile; plain JSON (RFC 7662) otherwise.
-- **Back-channel logout** (OIDC Back-Channel Logout): logout tokens
-  carry `events`/`sid`, NO `nonce` (per spec), fan-out to registered
-  `backchannel_logout_uri`.
+- **Back-channel logout + live session state** (OIDC Back-Channel
+  Logout + Session Management): logout tokens carry `events`/`sid`, NO
+  `nonce` (per spec), fan-out exactly to the registered
+  `backchannel_logout_uri` clients the destroyed session logged in
+  (`session_clients`); `session_state` is minted on every interactive
+  authorize, served live through the `check_session` endpoint + iframe
+  shim, and RP-initiated logout revokes the OP session so the next poll
+  answers `changed`. DCR + client management accept and echo
+  `backchannel_logout_uri`, `backchannel_logout_session_required`, and
+  an https `initiate_login_uri` (§9a.26).
 - **No-store on token endpoints** (RFC 6749 §5.1, RFC 7662 §4,
   RFC 8705 §5): middleware enforces `no-store`/`no-cache` on
   `/oauth/{token,introspect,revoke}` + `/mtls/*`.
@@ -849,153 +856,6 @@ graph TD
 - Deliberately not covered in-service: real IdP SSO round-trips, PQ TLS
   transport (platform-level).
 
-## 9b. In-process rig mirror - the Rust coverage map
-
-`sentin8-auth-oidf` (the §9a.2 harness) is the truth for what the OIDF
-certification campaigns exercise; every profile plan's module families map
-to the in-process tests below. Campaign rules carried into Rust:
-**no-skip** (every capability the discovery document advertises must
-behave - §9a.10) and **warning-zero** semantics (each assertion asserts
-the ROOT behavior a suite WARNING would surface - §9a.11).
-
-| Profile plan (suite) | Module family / rule | Rust test layer (`tests/`) |
-|---|---|---|
-| `oidcc-basic-certification-test-plan` | prompt=none/login, max_age, scope→claims, userinfo GET/POST both, session-less authorize | `oidf_flows.rs` + `conformance.rs` (`conf_prompt_none_silent_authentication`) |
-| - (Basic, §9a.11/) | ID-token claims ride the §5.5 claims SELECTION only; `acr_values` echo; code 60s lifetime + burned-code revocation cascade | `oidf_flows.rs` |
-| - (§9a.4 honesty) | discovery ↔ behavior parity (advertised algs/methods ARE verifiable; S256-only; claims/scope families served) | `oidf_flows.rs` + `conformance.rs` (`conf_discovery_advertisement_matches_behavior`) |
-| `oidcc-config-certification-test-plan` | discovery completeness block (CIBA + backchannel-logout + claims params) | `oidf_flows.rs` (`oidf_config_discovery_completeness`) |
-| `oidcc-dynamic-certification-test-plan` | RFC 7591 DCR: `invalid_redirect_uri` (fragment), `invalid_client_metadata` (bad sector), metadata persistence (id/userinfo alg, subject_type pairwise), RFC 7592 COALESCE update + delete 204; WebFinger | `oidf_flows.rs` + `conformance_profiles.rs` |
-| `oidcc-rp-initiated-logout-certification-test-plan` | state echo on registered landing; unregistered → the error PAGE (§9a.23); id_token_hint verification; no-hint fallback | `oidf_logout.rs` + `sec_auth2.rs` (`sec_auth2_logout_redirect_allowlist`) |
-| (Back-Channel Logout) | logout token shape: `events`+`sid`, no `nonce`; fan-out POST | `backchannel_logout.rs` unit tests + `oidf_logout.rs` |
-| `fapi2-security-profile-final-test-plan` (dpop/mtls cells) | PAR+DPoP pre-binding (§9a.21), jkt mismatch → `invalid_dpop_proof` (§9a.22), require-DPoP gate + cert substitute, userinfo exactly-one-proof (§9a.22), hybrid response-type rejects, JARM-wrapped vs plain-query error channels (§9a.16(h)/9a.22), FAPI response_mode=query reject, refresh unconditional (OC-27b) | `oidf_fapi.rs` (fapi_2 profile row + `required_flags`) |
-| `fapi1-advanced-final-test-plan` | request-object mandates exp/nbf/nonce + alg-none forbidden (§9a.14), code↔jwt pairing, permissive assertion-aud forms (alias/PAR/token/issuer array), presented-cert cnf binding (§9a.12), `s_hash` | `oidf_fapi.rs` (fapi_1_advanced) + `conformance.rs` |
-| `fapi2-message-signing-final-test-plan` | strict-aud (issuer-exact assertion, §9a.16(b)), PAR unsigned-push reject (§9a.16(g)), JAR freshness mandates (§9a.16(f)), PS256 accepted (§9a.16(d)), RS256 request-object reject | `oidf_fapi.rs` (fapi_2_message_signing) |
-| `fapi-ciba-id1-test-plan` (poll/ping cells) | signed request object mandatory + claim validation (CIBA §7.1 §9a.15), exactly-one-hint, poll auth_req_id single-use/expiry, binding_message enforce, ping notification contract | `oidf_fapi.rs` (fapi_ciba row) + `ciba.rs` unit tests |
-| `oid4vci-1_0-issuer-test-plan` | metadata (`credential_configurations_supported` + nonce/batch), §8.1 nonce first-proof GETDEL, unknown config/identifier errors (§7.4 shape), batch N→N, invalid proof | `oidf_vci.rs` + `oid4vci.rs` unit tests |
-| `oid4vci-1_0-issuer-haip-test-plan` | `OAuth-Client-Attestation`(+PoP) auth: trust-anchor pin, iss/sub/expiry checks, PoP jti replay, discovery attestation advertisement (§9a.19), credential-response ECDH-ES encryption, HAIP refresh-token module (OC-27b posture + ATCA §10.3 instance-key binding, §9a.19), two-line DPoP negative on the credential surface (§9a.19 wire path) | `oidf_vci_haip.rs` + `client_attestation.rs`/`jwe.rs` unit tests |
-| `oid4vci-1_0-wallet-test-plan` | credential-offer landing → authorize redirect state echo (`VCIVerifyIssuerStateInAuthorizationRequest`, §9a.20) | `oidf_vci.rs` |
-| Cross-plan | the alias-serialization/no-state-change rules and suite-driver specifics stay HARNESS-ONLY (fixtures/runner.ts) - not server behavior. | (deliberately not mirrored) |
-
-Deliberate suite-side sanctions the mirror does NOT reproduce (client /
-rig artifacts, not server behavior - the rig spec files document them):
-the two-visit/review screenshot placeholder mechanics. The SERVER-side
-negative each of those hides IS mirrored (`ensure_signed_request_object
-*`, userinfo multiple-DPoP 400, FAPI unconditional refresh). The three
-FORMER sanctions are CLOSED: the sentin8-tls middleware preserves the
-two-line DPoP shape so the reject is observable at the wire (the
-collapse was SDK-side, not JVM-side); the vci_haip posture rides the
-OC-27b unconditional-refresh rule - the suite runs the refresh module
-to green with no bless; and the CIBA RS256-negative cells RUN (the
-seed's CIBA clients are RSA-PS256-keyed so the suite's keys[0].alg gate
-no longer skips - §9a.15's alg mandate covers the poll assertion).
-
-## 10. Route Inventory (protocol-family grouped, spec-anchored)
-
-The authoritative, machine-checked list is the router (`src/server.rs`) +
-the drift guard. This table adds the RFC/spec anchor per family - each
-link resolves in §12.
-
-| Family | Routes | Spec anchors |
-|---|---|---|
-| Discovery | `/.well-known/openid-configuration`, `/.well-known/oauth-authorization-server`, `/.well-known/jwks.json`, `/.well-known/webfinger`, `/.well-known/openid-credential-issuer`, `/.well-known/openid-credential-verifier`, `/openapi.json` | OIDC Discovery §2/§3, RFC 8414, RFC 7517, RFC 7033, OID4VCI §11.2, OID4VP §11 |
-| Authorization | `/oauth/authorize` (GET), `/oauth/authorize/continue`, `/oauth/login` (GET+POST), `/oauth/par` (POST), `/oauth/vp/response` (POST), `/v1/auth/wallet/metadata` (GET) | RFC 6749 §4.1, RFC 7636, RFC 9126, RFC 9101, JARM, OID4VP §5, OID4VCI §13.3 |
-| Token / introspection / revocation | `/oauth/token`, `/oauth/introspect`, `/oauth/revoke`, `/mtls/oauth/token`, `/mtls/oauth/revoke` | RFC 6749 §3.2/§6, RFC 7662 + RFC 9701, RFC 7009, RFC 8705, RFC 8693, RFC 8628 (incl. `/oauth/device`+`/device/verify`), CIBA poll grant |
-| Userinfo / logout | `/oauth/userinfo` (GET+POST), `/oauth/logout`, `/oauth/backchannel-logout` | OIDC Core §5.3.1, OIDC RP-Initiated Logout, OIDC Back-Channel Logout |
-| CIBA | `/oauth/bc-authorize`, `/v1/ciba/{approve,assisted/*}` | CIBA §4-§7, RFC 7523 |
-| Grants | `/oauth/grants`, `/oauth/grants/{id}` (GET/PATCH/DELETE) | FAPI 2.0 Grant Management |
-| DCR | `/oauth/register`, `/oauth/register/{client_id}` (GET/PUT/DELETE) | RFC 7591, RFC 7592 |
-| OID4VCI | `/oauth/credential`, `/oauth/deferred_credential`, `/oauth/nonce` (GET+POST), `/oauth/notifications`, `/oauth/credentials`, `/oauth/credentials/issue`, `/oauth/credentials/status/{id}`, `/oauth/credentials/revoke/{id}` | OID4VCI §7-§13, Status List, SD-JWT VC §5 |
-| Identity | `/v1/sign-in\|up\|out`, `/v1/session`, `/v1/branding`, `/v1/password/reset(+confirm)`, `/v1/email/verify(+confirm)`, `/v1/mfa/*`, `/v1/passkey/*`, `/v1/me/app-passwords` | RFC 6238, RFC 4648, WebAuthn |
-| SSO federation | `/v1/sso/{id}/authorize\|callback`, `/v1/saml/metadata\|acs/{id}` | OIDC Core (federation), SAML 2.0 |
-| SCIM | `/scim/v2/Users[/{id}]`, `/scim/v2/Bulk`, `/scim/v2/Groups`, `/scim/v2/ServiceProviderConfig`, `/scim/v2/ResourceTypes` | RFC 7643 + RFC 7644 (Bulk §3.7) |
-| Admin / Shield / security | `/v1/admin/*` (+RFW UI), `/v1/admin/policy-sets[...]`, `/v1/admin/{relations,attributes}`, `/v1/security-profile`, `/v1/admin/security[...]` | Shield policy plane; RFW (platform §4.15) |
-| Internal | `POST /v1/internal/keys/rotate` | cron proxy-back, §8 |
-| Edge middleware | `route_guard` (admin backstop), `token_no_store_middleware` | RFC 6749 §5.1, RFC 7662 §4, RFC 8705 §5 |
-
-## 11. Key & Signature Strategy (per-profile)
-
-| Concern | Rule | Spec anchor |
-|---|---|---|
-| Key families | `["MLDSA65","RS256","ES256"]`; signing = ML-DSA-65 (PQ `exclusive` default) or RS256 (`classical`); ES256 verification-only | RFC 7518, ML-DSA (COSE/JOSE drafts) |
-| Rotation | insert-new-key overlap; daily timer 30-day staleness gate + cron proxy-back `force` bypass | RFC 7517 (all keys in the set during overlap) |
-| At-rest encryption | AES-256-GCM under the platform master key; wrong key refuses boot | secret-references-only rule |
-| Per-tenant publication | JWKS endpoint is env-FAMILY filtered via the resolved security profile | OIDC Core §3.1.3.7 |
-| Proof types | ES256 JWS for wallet proofs (raw r‖s), RS256 for client assertions, PS256 (RSASSA-PSS) supported verify side | RFC 7515, RFC 7518 §3.5, RFC 7638 |
-
-## 12. Standards Reference Register
-
-Every standard the service implements, with links. §-numbers in the
-sections above refer to these documents.
-
-### Core OAuth 2.0 family (IETF)
-
-| Spec | Title | Anchor | Where in auth |
-|---|---|---|---|
-| [RFC 6749](https://datatracker.ietf.org/doc/html/rfc6749) | The OAuth 2.0 Authorization Framework | §3-§6 (endpoints/grants), §5.1 (no-store), §5.2 (auth errors), §10.4 (stuffing) | everything under `/oauth/*` |
-| [RFC 6750](https://datatracker.ietf.org/doc/html/rfc6750) | Bearer Token Usage | §2.2 (verification) | bearer extraction and verification |
-| [RFC 7009](https://datatracker.ietf.org/doc/html/rfc7009) | Token Revocation | §2.1 | `/oauth/revoke` + grant cascade |
-| [RFC 7636](https://datatracker.ietf.org/doc/html/rfc7636) | PKCE | §4.1-§4.6 | S256-only code challenges |
-| [RFC 8628](https://datatracker.ietf.org/doc/html/rfc8628) | Device Authorization Grant | §3.1-§3.5 | `/oauth/device`, `/device/verify` |
-| [RFC 8693](https://datatracker.ietf.org/doc/html/rfc8693) | Token Exchange | §2.1/§4.1 | `grant_type=token-exchange`, `delegation.rs` |
-| [RFC 9126](https://datatracker.ietf.org/doc/html/rfc9126) | Pushed Authorization Requests | §2-§4 | `/oauth/par` |
-| [RFC 9101](https://datatracker.ietf.org/doc/html/rfc9101) | JWT Secured Authorization Request (JAR) | §4-§5 | `jar.rs` request objects |
-| [RFC 9207](https://datatracker.ietf.org/doc/html/rfc9207) | Authorization Server Issuer Identification | §2-§3 | `iss` response parameter |
-| [RFC 9396](https://datatracker.ietf.org/doc/html/rfc9396) | Rich Authorization Requests | §2 | `authorization_details` |
-| [RFC 8707](https://datatracker.ietf.org/doc/html/rfc8707) | Resource Indicators | §2/§3 | `resource` → `audience` |
-| [RFC 9449](https://datatracker.ietf.org/doc/html/rfc9449) | DPoP | §4-§7.2 | `dpop.rs`; `DPoP` scheme on userinfo/credential |
-| [RFC 8705](https://datatracker.ietf.org/doc/html/rfc8705) | mTLS Client Auth + Certificate-Bound Tokens | §2-§5 | `mtls.rs`, `/mtls/*` aliases, `cnf.x5t#S256` |
-| [RFC 9421](https://datatracker.ietf.org/doc/html/rfc9421) | HTTP Message Signatures | §2 | `http_signatures.rs` (FAPI2-MS) |
-| [RFC 9530](https://datatracker.ietf.org/doc/html/rfc9530) | HTTP Message Digest Fields | §2 | content digests for signatures |
-| [RFC 9701](https://datatracker.ietf.org/doc/html/rfc9701) | JWT Introspection Response | §3-§4 | signed introspection |
-| [RFC 7662](https://datatracker.ietf.org/doc/html/rfc7662) | Token Introspection | §2.1-§4 | JSON introspection + no-store |
-| [RFC 7515](https://datatracker.ietf.org/doc/html/rfc7515) | JWS | §4/§5 | all token signing |
-| [RFC 7517](https://datatracker.ietf.org/doc/html/rfc7517) | JWK / JWK Set | §4 | `/.well-known/jwks.json` |
-| [RFC 7518](https://datatracker.ietf.org/doc/html/rfc7518) | JWA | §3.4/§3.5 | RS256 + PS256 |
-| [RFC 7523](https://datatracker.ietf.org/doc/html/rfc7523) | JWT Client Authentication | §2-§3 | `private_key_jwt` client assertions |
-| [RFC 7638](https://datatracker.ietf.org/doc/html/rfc7638) | JWK Thumbprint | §3 | `cnf.jkt` (DPoP) |
-| [RFC 8414](https://datatracker.ietf.org/doc/html/rfc8414) | AS Metadata | §2-§3 | `/.well-known/oauth-authorization-server` |
-| [RFC 7033](https://datatracker.ietf.org/doc/html/rfc7033) | WebFinger | §4-§10 | `webfinger.rs` |
-| [RFC 8252](https://datatracker.ietf.org/doc/html/rfc8252) | OAuth for Native Apps | §2.1/§7/§8.1 | loopback + custom-scheme redirects |
-| [RFC 7591](https://datatracker.ietf.org/doc/html/rfc7591) | Dynamic Client Registration | §2-§3/§5 | `dcr.rs` register |
-| [RFC 7592](https://datatracker.ietf.org/doc/html/rfc7592) | DCR Management | §2-§5 | `dcr.rs` manage |
-| [RFC 6819](https://datatracker.ietf.org/doc/html/rfc6819) | OAuth 2.0 Threat Model | §4.1.6/§4.4/§4.5.2 | request injection, credential theft, stuffing |
-| [RFC 9436](https://datatracker.ietf.org/doc/html/rfc9436) | Identity Chaining | reference | delegated-identity framing |
-| [RFC 5280](https://datatracker.ietf.org/doc/html/rfc5280) | X.509 PKI | §4.1 | x5c leaf cert walk (key attestation) |
-| [RFC 6238](https://datatracker.ietf.org/doc/html/rfc6238) | TOTP | §4/§5.1 | `mfa.rs` |
-| [RFC 4648](https://datatracker.ietf.org/doc/html/rfc4648) | Base32/64 | §6 | TOTP secret encoding |
-
-### OpenID Foundation specs
-
-| Spec | Link | Where in auth |
-|---|---|---|
-| OIDC Core | [openid.net/specs/openid-connect-core-1_0.html](https://openid.net/specs/openid-connect-core-1_0.html) | authorize/token/userinfo/id_token/claims |
-| OIDC Discovery | [openid.net/specs/openid-connect-discovery-1_0.html](https://openid.net/specs/openid-connect-discovery-1_0.html) | `/.well-known/openid-configuration` |
-| OIDC RP-Initiated Logout | [openid.net/specs/openid-connect-rpinitiated-1_0.html](https://openid.net/specs/openid-connect-rpinitiated-1_0.html) | `/oauth/logout` |
-| OIDC Back-Channel Logout | [openid.net/specs/openid-connect-backchannel-1_0.html](https://openid.net/specs/openid-connect-backchannel-1_0.html) | logout tokens + fan-out |
-| JARM | [openid.net/specs/oauth-v2-jarm.html](https://openid.net/specs/oauth-v2-jarm.html) | signed response modes |
-| CIBA | [openid.net/specs/openid-client-initiated-backchannel-authentication-core-1_0.html](https://openid.net/specs/openid-client-initiated-backchannel-authentication-core-1_0.html) | `/oauth/bc-authorize` poll/ping |
-| FAPI 2.0 Security Profile | [openid.net/specs/fapi-2_0-security-profile.html](https://openid.net/specs/fapi-2_0-security-profile.html) | platform default posture |
-| FAPI 2.0 Message Signing | [openid.net/specs/fapi-2_0-message-signing.html](https://openid.net/specs/fapi-2_0-message-signing.html) | RFC 9421 + RFC 9701 posture |
-| FAPI 1.0 Advanced | [openid.net/specs/openid-financial-api-part-2.html](https://openid.net/specs/openid-financial-api-part-2.html) | `fapi_1_advanced` profile |
-| FAPI 2.0 Grant Management | [openid.net/specs/fapi-grant-management.html](https://openid.net/specs/fapi-grant-management.html) | `/oauth/grants` + `grant_id` |
-| OID4VCI | [openid.net/specs/openid-4-verifiable-credential-issuance-1_0.html](https://openid.net/specs/openid-4-verifiable-credential-issuance-1_0.html) | `oid4vci.rs` issuer surface |
-| OID4VP | [openid.net/specs/openid-4-verifiable-presentations-1_0.html](https://openid.net/specs/openid-4-verifiable-presentations-1_0.html) | `wallet.rs` verifier surface |
-| SD-JWT VC | [draft-ietf-oauth-sd-jwt-vc](https://www.ietf.org/archive/id/draft-ietf-oauth-sd-jwt-vc-05.html) | credential format (`vct`) |
-| SD-JWT | [draft-ietf-oauth-selective-disclosure-jwt](https://www.ietf.org/archive/id/draft-ietf-oauth-selective-disclosure-jwt-14.html) | `sd_jwt.rs` |
-| OAuth Status List | [draft-ietf-oauth-status-list](https://www.ietf.org/archive/id/draft-ietf-oauth-status-list-14.html) | credential status lists |
-| eKYC-IDA | [openid.net/specs/openid-connect-ida-1_0.html](https://openid.net/specs/openid-connect-ida-1_0.html) | `verified_claims` |
-| OID4VCI linkability (RFC 9901) | [rfc-editor.org/rfc/rfc9901.html](https://www.rfc-editor.org/info/rfc9901) | hour-rounded iat/exp |
-| CIMD (experimental) | [draft-ietf-oauth-client-id-metadata-document](https://www.ietf.org/archive/id/draft-ietf-oauth-client-id-metadata-document-00.html) | `experimental.rs` |
-| WebAuthn | [www.w3.org/TR/webauthn-3](https://www.w3.org/TR/webauthn-3/) | passkeys |
-
-### Workforce / enterprise
-
-| Spec | Link | Where in auth |
-|---|---|---|
-| SCIM 2.0 Core Schema | [RFC 7643](https://datatracker.ietf.org/doc/html/rfc7643) | user/group schema |
-| SCIM 2.0 Protocol | [RFC 7644](https://datatracker.ietf.org/doc/html/rfc7644) | `/scim/v2/*` incl. Bulk §3.7 |
-| SAML 2.0 (metadata/ACS) | [OASIS SAML v2.0](https://docs.oasis-open.org/security/saml/v2.0/) | enterprise connections |
-
 ## 9a. OIDF Certification Program (conformance rig)
 
 Sentin8:Auth is certified through the OpenID Foundation conformance
@@ -1008,8 +868,10 @@ every profile the platform implements except two deliberate exclusions.
 
 | Profile family | Certifiable profiles | Suite posture |
 |---|---|---|
-| OIDC Core | Basic OP, Config OP, Dynamic OP | code flow + discovery + DCR; the deprecated response types are excluded (below) |
-| OIDC Logout | RP-Initiated Logout, Back-Channel Logout | both endpoints implemented; Front-Channel Logout is an exclusion |
+| OIDC Core | Basic OP, Config OP, Dynamic OP | code flow + discovery + DCR; the further response types live in their own certification families (below) |
+| OIDC Logout | RP-Initiated Logout, Back-Channel Logout, Back-Channel + RP-Initiated (joint) | both endpoints implemented + the sid-bound fan-out (§9a.26); Front-Channel Logout is an exclusion |
+| OIDC Session Management | Session Management OP, Third-Party-Initiated Login OP | `check_session_iframe` + `session_state` + `initiate_login_uri` (§9a.26) |
+| OIDC Response modes | Implicit OP, Hybrid OP, Form-Post OP | fragment + `form_post` channels per certification env (§9a.25) |
 | FAPI 2 | Security Profile OP, Message Signing OP | the platform-default `fapi_2` profile |
 | FAPI 1 | Advanced OP (final) | `fapi_1_advanced` profile |
 | FAPI-CIBA | Poll mode, Ping mode | `bc-authorize` + CIBA grant + ping delivery |
@@ -1019,12 +881,15 @@ every profile the platform implements except two deliberate exclusions.
 
 **Deliberate exclusions (design decisions, never to be reintroduced):**
 
-- **Implicit OP / Hybrid OP** - the implicit and hybrid response types
-  are deprecated by OAuth 2.1 and forbidden by FAPI.
-  `response_types_supported` is exactly `["code"]` and the authorize
-  handler rejects any other value.
 - **Front-Channel Logout** - third-party iframes are a tracking surface
   and silent-failure mode; logout signaling is back-channel only.
+
+**Profile-scoped response types (§9a.25).** The standard platform
+profile still serves `response_types_supported: ["code"]` only (the
+implicit/hybrid types are deprecated by OAuth 2.1 and forbidden by
+FAPI); the Implicit/Hybrid/Form-Post certification families enable the
+other types on their own profile-gated environments - per-profile
+discovery honesty, never a platform-wide default.
 
 ### 9a.2 Local conformance rig (how the tests run)
 
@@ -1133,7 +998,10 @@ graph TD
 | FAPI-CIBA poll mode | implemented | CIBA §5.2 |
 | FAPI-CIBA ping mode | implemented | CIBA §5.3 |
 | OID4VCI issuer | implemented | OID4VCI §7-§13 |
-| OID4VP verifier | implemented | OID4VP §11 + §5 |
+| OID4VP verifier (DCQL + direct_post.(jwt) + x509_hash + RICAL) | implemented | OID4VP §11 + §5 (§9a.27) |
+| Session Management OP (check_session + session_state) | implemented | OIDC Session Management §3.3 (§9a.26) |
+| Third-Party-Initiated Login OP (`initiate_login_uri`) | implemented | OAuth-R metadata (§9a.26) |
+| Implicit OP + Hybrid OP + Form-Post OP | implemented (profile-gated envs) | OIDC Core §3.2/§3.3 + Form Post Response Mode (§9a.25) |
 | eKYC-IDA (claims / verified_claims) | implemented | eKYC-IDA §5.5 + §5 |
 | JAR `request_uri` | implemented | RFC 9101 §5 |
 | CIBA signed request objects | implemented | CIBA §7.1 |
@@ -1161,6 +1029,8 @@ recommended fields (advertised only when actually supported):
 - `claims_parameter_supported: true` + `claims_supported`
 - `backchannel_logout_supported: true` +
   `backchannel_logout_session_supported`
+- OIDC Session Management: `check_session_iframe` on every interactive
+  profile; `session_state` on the authorize response (§9a.26)
 - `revocation_endpoint_auth_methods_supported`,
   `introspection_endpoint_auth_methods_supported`
 - CIBA: `backchannel_authentication_endpoint`,
@@ -1757,28 +1627,6 @@ family is zero-warning green); the non-`oid4vci` modules the HAIP
 plan template ships (FAPI2 remnants) are out of scope for this
 cell - the fapi2-security spec owns them.
 
-## 13. Open Questions
-
-- Continuous access evaluation: session/token revocations already push
-  `sentin8:auth:session:revoked` to the BFF session-reaper so cached
-  sessions die immediately; risk-signal gating of NEW token issuance is
-  the next layer on top of live authorization.
-- Hardware-backed key attestation: the WebAuthn `attestation` conveyance
-  preference is the seam; the OID4VCI App. D attestation verify accepts
-  software-key attestations today (x5c self-consistency); trust
-  anchoring beyond that is an issuer policy.
-- Handshake-level certificate revocation and Valkey ACLs
-   are platform-level follow-ups owned outside this service.
-- Multi-region active-active issuer deployment is a non-goal until
-  multi-region exists; the JWKS overlap-rotation design is region-safe.
-- SCIM `/Bulk` is live (RFC 7644 §3.7): a thin wrapper over the per-user
-  SQL paths (≤100 ops; `failOnErrors` stops the batch). The precondition
-  consumer exists - BFF's delegated SCIM proxy is the enterprise IdP
-  path.
-
----
-
-**Architecture & Design:** sentin8:auth and its underlying concepts were designed by [Hamid Jahanzad](https://www.linkedin.com/in/hamidjahanzad/).
 ### 9a.20 OID4VCI wallet-plan issuer surface - credential-offer landing
 
 The OIDF wallet plan (`oid4vci-1_0-wallet-test-plan`) exercises the WALLET
@@ -2186,6 +2034,17 @@ Shield resolvers, BFF session enrichment, and the auth→sys proxy all
 authenticate by certificate, never a DPoP proof). A browser-borne DPoP
 proof caller keeps the OIDC standard-claims surface.
 
+**Identity-channel self-heal (DPoPRS-1b).** The resolver's certificate
+client is minted once at boot - a cold start may race Acme/proxy warm-up
+and mint-fail, leaving the resolver bearer-only. The re-arm is therefore
+AVAILABLE (not pre-consumed) in that state: the first resolution that
+needs the certificate channel re-mints `{service}-tls` (Acme is up by
+then - steady-state requests are never a boot race), arms the channel,
+and every later resolution rides it. Without the self-heal, a boot-race
+mint failure locks the resolver to bearer-only for the process lifetime
+and every delegated-token evaluation fail-closes with empty live scopes
+(the invitation-403 class).
+
 ```mermaid
 sequenceDiagram
     autonumber
@@ -2511,3 +2370,180 @@ validation chain evaluates: register, parse, COSE signature, signer
 certificate, structure (the Annex F.3.2 shape), the request object
 chain against the reader CA, and the matched entry's trust
 constraints.
+
+---
+
+## 9b. In-process rig mirror - the Rust coverage map
+
+`sentin8-auth-oidf` (the §9a.2 harness) is the truth for what the OIDF
+certification campaigns exercise; every profile plan's module families map
+to the in-process tests below. Campaign rules carried into Rust:
+**no-skip** (every capability the discovery document advertises must
+behave - §9a.10) and **warning-zero** semantics (each assertion asserts
+the ROOT behavior a suite WARNING would surface - §9a.11).
+
+| Profile plan (suite) | Module family / rule | Rust test layer (`tests/`) |
+|---|---|---|
+| `oidcc-basic-certification-test-plan` | prompt=none/login, max_age, scope→claims, userinfo GET/POST both, session-less authorize | `oidf_flows.rs` + `conformance.rs` (`conf_prompt_none_silent_authentication`) |
+| - (Basic, §9a.11/) | ID-token claims ride the §5.5 claims SELECTION only; `acr_values` echo; code 60s lifetime + burned-code revocation cascade | `oidf_flows.rs` |
+| - (§9a.4 honesty) | discovery ↔ behavior parity (advertised algs/methods ARE verifiable; S256-only; claims/scope families served) | `oidf_flows.rs` + `conformance.rs` (`conf_discovery_advertisement_matches_behavior`) |
+| `oidcc-config-certification-test-plan` | discovery completeness block (CIBA + backchannel-logout + claims params) | `oidf_flows.rs` (`oidf_config_discovery_completeness`) |
+| `oidcc-dynamic-certification-test-plan` | RFC 7591 DCR: `invalid_redirect_uri` (fragment), `invalid_client_metadata` (bad sector), metadata persistence (id/userinfo alg, subject_type pairwise), RFC 7592 COALESCE update + delete 204; WebFinger | `oidf_flows.rs` + `conformance_profiles.rs` |
+| `oidcc-rp-initiated-logout-certification-test-plan` | state echo on registered landing; unregistered → the error PAGE (§9a.23); id_token_hint verification; no-hint fallback | `oidf_logout.rs` + `sec_auth2.rs` (`sec_auth2_logout_redirect_allowlist`) |
+| (Back-Channel Logout) | logout token shape: `events`+`sid`, no `nonce`; fan-out POST | `backchannel_logout.rs` unit tests + `oidf_logout.rs` |
+| `fapi2-security-profile-final-test-plan` (dpop/mtls cells) | PAR+DPoP pre-binding (§9a.21), jkt mismatch → `invalid_dpop_proof` (§9a.22), require-DPoP gate + cert substitute, userinfo exactly-one-proof (§9a.22), hybrid response-type rejects, JARM-wrapped vs plain-query error channels (§9a.16(h)/9a.22), FAPI response_mode=query reject, refresh unconditional (OC-27b) | `oidf_fapi.rs` (fapi_2 profile row + `required_flags`) |
+| `fapi1-advanced-final-test-plan` | request-object mandates exp/nbf/nonce + alg-none forbidden (§9a.14), code↔jwt pairing, permissive assertion-aud forms (alias/PAR/token/issuer array), presented-cert cnf binding (§9a.12), `s_hash` | `oidf_fapi.rs` (fapi_1_advanced) + `conformance.rs` |
+| `fapi2-message-signing-final-test-plan` | strict-aud (issuer-exact assertion, §9a.16(b)), PAR unsigned-push reject (§9a.16(g)), JAR freshness mandates (§9a.16(f)), PS256 accepted (§9a.16(d)), RS256 request-object reject | `oidf_fapi.rs` (fapi_2_message_signing) |
+| `fapi-ciba-id1-test-plan` (poll/ping cells) | signed request object mandatory + claim validation (CIBA §7.1 §9a.15), exactly-one-hint, poll auth_req_id single-use/expiry, binding_message enforce, ping notification contract | `oidf_fapi.rs` (fapi_ciba row) + `ciba.rs` unit tests |
+| `oid4vci-1_0-issuer-test-plan` | metadata (`credential_configurations_supported` + nonce/batch), §8.1 nonce first-proof GETDEL, unknown config/identifier errors (§7.4 shape), batch N→N, invalid proof | `oidf_vci.rs` + `oid4vci.rs` unit tests |
+| `oid4vci-1_0-issuer-haip-test-plan` | `OAuth-Client-Attestation`(+PoP) auth: trust-anchor pin, iss/sub/expiry checks, PoP jti replay, discovery attestation advertisement (§9a.19), credential-response ECDH-ES encryption, HAIP refresh-token module (OC-27b posture + ATCA §10.3 instance-key binding, §9a.19), two-line DPoP negative on the credential surface (§9a.19 wire path) | `oidf_vci_haip.rs` + `client_attestation.rs`/`jwe.rs` unit tests |
+| `oid4vci-1_0-wallet-test-plan` | credential-offer landing → authorize redirect state echo (`VCIVerifyIssuerStateInAuthorizationRequest`, §9a.20) | `oidf_vci.rs` |
+| Cross-plan | the alias-serialization/no-state-change rules and suite-driver specifics stay HARNESS-ONLY (fixtures/runner.ts) - not server behavior. | (deliberately not mirrored) |
+
+Deliberate suite-side sanctions the mirror does NOT reproduce (client /
+rig artifacts, not server behavior - the rig spec files document them):
+the two-visit/review screenshot placeholder mechanics. The SERVER-side
+negative each of those hides IS mirrored (`ensure_signed_request_object
+*`, userinfo multiple-DPoP 400, FAPI unconditional refresh). The three
+FORMER sanctions are CLOSED: the sentin8-tls middleware preserves the
+two-line DPoP shape so the reject is observable at the wire (the
+collapse was SDK-side, not JVM-side); the vci_haip posture rides the
+OC-27b unconditional-refresh rule - the suite runs the refresh module
+to green with no bless; and the CIBA RS256-negative cells RUN (the
+seed's CIBA clients are RSA-PS256-keyed so the suite's keys[0].alg gate
+no longer skips - §9a.15's alg mandate covers the poll assertion).
+
+## 10. Route Inventory (protocol-family grouped, spec-anchored)
+
+The authoritative, machine-checked list is the router (`src/server.rs`) +
+the drift guard. This table adds the RFC/spec anchor per family - each
+link resolves in §12.
+
+| Family | Routes | Spec anchors |
+|---|---|---|
+| Discovery | `/.well-known/openid-configuration`, `/.well-known/oauth-authorization-server`, `/.well-known/jwks.json`, `/.well-known/webfinger`, `/.well-known/openid-credential-issuer`, `/.well-known/openid-credential-verifier`, `/openapi.json` | OIDC Discovery §2/§3, RFC 8414, RFC 7517, RFC 7033, OID4VCI §11.2, OID4VP §11 |
+| Authorization | `/oauth/authorize` (GET), `/oauth/authorize/continue`, `/oauth/login` (GET+POST), `/oauth/par` (POST), `/oauth/vp/request/{id}` (GET+POST), `/oauth/vp/response` (POST), `/v1/auth/verifier/request` (POST), `/v1/auth/wallet/metadata` (GET) | RFC 6749 §4.1, RFC 7636, RFC 9126, RFC 9101, JARM, OID4VP §5, OID4VCI §13.3 |
+| Token / introspection / revocation | `/oauth/token`, `/oauth/introspect`, `/oauth/revoke`, `/mtls/oauth/token`, `/mtls/oauth/revoke` | RFC 6749 §3.2/§6, RFC 7662 + RFC 9701, RFC 7009, RFC 8705, RFC 8693, RFC 8628 (incl. `/oauth/device`+`/device/verify`), CIBA poll grant |
+| Userinfo / logout | `/oauth/userinfo` (GET+POST), `/oauth/logout`, `/oauth/backchannel-logout` | OIDC Core §5.3.1, OIDC RP-Initiated Logout, OIDC Back-Channel Logout |
+| Session | `/oauth/check-session` (GET), `/oauth/check-session/iframe` | OIDC Session Management §3.3 (§9a.26) |
+| CIBA | `/oauth/bc-authorize`, `/v1/ciba/{approve,assisted/*}` | CIBA §4-§7, RFC 7523 |
+| Grants | `/oauth/grants`, `/oauth/grants/{id}` (GET/PATCH/DELETE) | FAPI 2.0 Grant Management |
+| DCR | `/oauth/register`, `/oauth/register/{client_id}` (GET/PUT/DELETE) | RFC 7591, RFC 7592 |
+| OID4VCI | `/oauth/credential`, `/oauth/deferred_credential`, `/oauth/nonce` (GET+POST), `/oauth/notifications`, `/oauth/credentials`, `/oauth/credentials/issue`, `/oauth/credentials/status/{id}`, `/oauth/credentials/revoke/{id}` | OID4VCI §7-§13, Status List, SD-JWT VC §5 |
+| Identity | `/v1/sign-in\|up\|out`, `/v1/session`, `/v1/branding`, `/v1/password/reset(+confirm)`, `/v1/email/verify(+confirm)`, `/v1/mfa/*`, `/v1/passkey/*`, `/v1/me/app-passwords` | RFC 6238, RFC 4648, WebAuthn |
+| SSO federation | `/v1/sso/{id}/authorize\|callback`, `/v1/saml/metadata\|acs/{id}` | OIDC Core (federation), SAML 2.0 |
+| SCIM | `/scim/v2/Users[/{id}]`, `/scim/v2/Bulk`, `/scim/v2/Groups`, `/scim/v2/ServiceProviderConfig`, `/scim/v2/ResourceTypes` | RFC 7643 + RFC 7644 (Bulk §3.7) |
+| Admin / Shield / security | `/v1/admin/*` (+RFW UI), `/v1/admin/policy-sets[...]`, `/v1/admin/{relations,attributes}`, `/v1/security-profile`, `/v1/admin/security[...]` | Shield policy plane; RFW (platform §4.15) |
+| Internal | `POST /v1/internal/keys/rotate` | cron proxy-back, §8 |
+| Edge middleware | `route_guard` (admin backstop), `token_no_store_middleware` | RFC 6749 §5.1, RFC 7662 §4, RFC 8705 §5 |
+
+## 11. Key & Signature Strategy (per-profile)
+
+| Concern | Rule | Spec anchor |
+|---|---|---|
+| Key families | `["MLDSA65","RS256","ES256"]`; signing = ML-DSA-65 (PQ `exclusive` default) or RS256 (`classical`); ES256 verification-only | RFC 7518, ML-DSA (COSE/JOSE drafts) |
+| Rotation | insert-new-key overlap; daily timer 30-day staleness gate + cron proxy-back `force` bypass | RFC 7517 (all keys in the set during overlap) |
+| At-rest encryption | AES-256-GCM under the platform master key; wrong key refuses boot | secret-references-only rule |
+| Per-tenant publication | JWKS endpoint is env-FAMILY filtered via the resolved security profile | OIDC Core §3.1.3.7 |
+| Proof types | ES256 JWS for wallet proofs (raw r‖s), RS256 for client assertions, PS256 (RSASSA-PSS) supported verify side | RFC 7515, RFC 7518 §3.5, RFC 7638 |
+
+## 12. Standards Reference Register
+
+Every standard the service implements, with links. §-numbers in the
+sections above refer to these documents.
+
+### Core OAuth 2.0 family (IETF)
+
+| Spec | Title | Anchor | Where in auth |
+|---|---|---|---|
+| [RFC 6749](https://datatracker.ietf.org/doc/html/rfc6749) | The OAuth 2.0 Authorization Framework | §3-§6 (endpoints/grants), §5.1 (no-store), §5.2 (auth errors), §10.4 (stuffing) | everything under `/oauth/*` |
+| [RFC 6750](https://datatracker.ietf.org/doc/html/rfc6750) | Bearer Token Usage | §2.2 (verification) | bearer extraction and verification |
+| [RFC 7009](https://datatracker.ietf.org/doc/html/rfc7009) | Token Revocation | §2.1 | `/oauth/revoke` + grant cascade |
+| [RFC 7636](https://datatracker.ietf.org/doc/html/rfc7636) | PKCE | §4.1-§4.6 | S256-only code challenges |
+| [RFC 8628](https://datatracker.ietf.org/doc/html/rfc8628) | Device Authorization Grant | §3.1-§3.5 | `/oauth/device`, `/device/verify` |
+| [RFC 8693](https://datatracker.ietf.org/doc/html/rfc8693) | Token Exchange | §2.1/§4.1 | `grant_type=token-exchange`, `delegation.rs` |
+| [RFC 9126](https://datatracker.ietf.org/doc/html/rfc9126) | Pushed Authorization Requests | §2-§4 | `/oauth/par` |
+| [RFC 9101](https://datatracker.ietf.org/doc/html/rfc9101) | JWT Secured Authorization Request (JAR) | §4-§5 | `jar.rs` request objects |
+| [RFC 9207](https://datatracker.ietf.org/doc/html/rfc9207) | Authorization Server Issuer Identification | §2-§3 | `iss` response parameter |
+| [RFC 9396](https://datatracker.ietf.org/doc/html/rfc9396) | Rich Authorization Requests | §2 | `authorization_details` |
+| [RFC 8707](https://datatracker.ietf.org/doc/html/rfc8707) | Resource Indicators | §2/§3 | `resource` → `audience` |
+| [RFC 9449](https://datatracker.ietf.org/doc/html/rfc9449) | DPoP | §4-§7.2 | `dpop.rs`; `DPoP` scheme on userinfo/credential |
+| [RFC 8705](https://datatracker.ietf.org/doc/html/rfc8705) | mTLS Client Auth + Certificate-Bound Tokens | §2-§5 | `mtls.rs`, `/mtls/*` aliases, `cnf.x5t#S256` |
+| [RFC 9421](https://datatracker.ietf.org/doc/html/rfc9421) | HTTP Message Signatures | §2 | `http_signatures.rs` (FAPI2-MS) |
+| [RFC 9530](https://datatracker.ietf.org/doc/html/rfc9530) | HTTP Message Digest Fields | §2 | content digests for signatures |
+| [RFC 9701](https://datatracker.ietf.org/doc/html/rfc9701) | JWT Introspection Response | §3-§4 | signed introspection |
+| [RFC 7662](https://datatracker.ietf.org/doc/html/rfc7662) | Token Introspection | §2.1-§4 | JSON introspection + no-store |
+| [RFC 7515](https://datatracker.ietf.org/doc/html/rfc7515) | JWS | §4/§5 | all token signing |
+| [RFC 7517](https://datatracker.ietf.org/doc/html/rfc7517) | JWK / JWK Set | §4 | `/.well-known/jwks.json` |
+| [RFC 7518](https://datatracker.ietf.org/doc/html/rfc7518) | JWA | §3.4/§3.5 | RS256 + PS256 |
+| [RFC 7523](https://datatracker.ietf.org/doc/html/rfc7523) | JWT Client Authentication | §2-§3 | `private_key_jwt` client assertions |
+| [RFC 7638](https://datatracker.ietf.org/doc/html/rfc7638) | JWK Thumbprint | §3 | `cnf.jkt` (DPoP) |
+| [RFC 8414](https://datatracker.ietf.org/doc/html/rfc8414) | AS Metadata | §2-§3 | `/.well-known/oauth-authorization-server` |
+| [RFC 7033](https://datatracker.ietf.org/doc/html/rfc7033) | WebFinger | §4-§10 | `webfinger.rs` |
+| [RFC 8252](https://datatracker.ietf.org/doc/html/rfc8252) | OAuth for Native Apps | §2.1/§7/§8.1 | loopback + custom-scheme redirects |
+| [RFC 7591](https://datatracker.ietf.org/doc/html/rfc7591) | Dynamic Client Registration | §2-§3/§5 | `dcr.rs` register |
+| [RFC 7592](https://datatracker.ietf.org/doc/html/rfc7592) | DCR Management | §2-§5 | `dcr.rs` manage |
+| [RFC 6819](https://datatracker.ietf.org/doc/html/rfc6819) | OAuth 2.0 Threat Model | §4.1.6/§4.4/§4.5.2 | request injection, credential theft, stuffing |
+| [RFC 9436](https://datatracker.ietf.org/doc/html/rfc9436) | Identity Chaining | reference | delegated-identity framing |
+| [RFC 5280](https://datatracker.ietf.org/doc/html/rfc5280) | X.509 PKI | §4.1 | x5c leaf cert walk (key attestation) |
+| [RFC 6238](https://datatracker.ietf.org/doc/html/rfc6238) | TOTP | §4/§5.1 | `mfa.rs` |
+| [RFC 4648](https://datatracker.ietf.org/doc/html/rfc4648) | Base32/64 | §6 | TOTP secret encoding |
+
+### OpenID Foundation specs
+
+| Spec | Link | Where in auth |
+|---|---|---|
+| OIDC Core | [openid.net/specs/openid-connect-core-1_0.html](https://openid.net/specs/openid-connect-core-1_0.html) | authorize/token/userinfo/id_token/claims |
+| OIDC Discovery | [openid.net/specs/openid-connect-discovery-1_0.html](https://openid.net/specs/openid-connect-discovery-1_0.html) | `/.well-known/openid-configuration` |
+| OIDC RP-Initiated Logout | [openid.net/specs/openid-connect-rpinitiated-1_0.html](https://openid.net/specs/openid-connect-rpinitiated-1_0.html) | `/oauth/logout` |
+| OIDC Back-Channel Logout | [openid.net/specs/openid-connect-backchannel-1_0.html](https://openid.net/specs/openid-connect-backchannel-1_0.html) | logout tokens + fan-out |
+| OIDC Session Management | [openid.net/specs/openid-connect-session-1_0.html](https://openid.net/specs/openid-connect-session-1_0.html) | `check_session_iframe` + `session_state` (§9a.26) |
+| OAuth 2.0 Form Post Response Mode | [openid.net/specs/oauth-v2-form-post-response-mode-1_0.html](https://openid.net/specs/oauth-v2-form-post-response-mode-1_0.html) | `response_mode=form_post` (§9a.25) |
+| SIOPv2 (Self-Issued OP) | [openid.net/specs/openid-connect-self-issued-v2-1_0.html](https://openid.net/specs/openid-connect-self-issued-v2-1_0.html) | wallet audience `https://self-issued.me/v2` (§9a.27) |
+| JARM | [openid.net/specs/oauth-v2-jarm.html](https://openid.net/specs/oauth-v2-jarm.html) | signed response modes |
+| CIBA | [openid.net/specs/openid-client-initiated-backchannel-authentication-core-1_0.html](https://openid.net/specs/openid-client-initiated-backchannel-authentication-core-1_0.html) | `/oauth/bc-authorize` poll/ping |
+| FAPI 2.0 Security Profile | [openid.net/specs/fapi-2_0-security-profile.html](https://openid.net/specs/fapi-2_0-security-profile.html) | platform default posture |
+| FAPI 2.0 Message Signing | [openid.net/specs/fapi-2_0-message-signing.html](https://openid.net/specs/fapi-2_0-message-signing.html) | RFC 9421 + RFC 9701 posture |
+| FAPI 1.0 Advanced | [openid.net/specs/openid-financial-api-part-2.html](https://openid.net/specs/openid-financial-api-part-2.html) | `fapi_1_advanced` profile |
+| FAPI 2.0 Grant Management | [openid.net/specs/fapi-grant-management.html](https://openid.net/specs/fapi-grant-management.html) | `/oauth/grants` + `grant_id` |
+| OID4VCI | [openid.net/specs/openid-4-verifiable-credential-issuance-1_0.html](https://openid.net/specs/openid-4-verifiable-credential-issuance-1_0.html) | `oid4vci.rs` issuer surface |
+| OID4VP | [openid.net/specs/openid-4-verifiable-presentations-1_0.html](https://openid.net/specs/openid-4-verifiable-presentations-1_0.html) | `wallet.rs` verifier surface |
+| SD-JWT VC | [draft-ietf-oauth-sd-jwt-vc](https://www.ietf.org/archive/id/draft-ietf-oauth-sd-jwt-vc-05.html) | credential format (`vct`) |
+| SD-JWT | [draft-ietf-oauth-selective-disclosure-jwt](https://www.ietf.org/archive/id/draft-ietf-oauth-selective-disclosure-jwt-14.html) | `sd_jwt.rs` |
+| OAuth Status List | [draft-ietf-oauth-status-list](https://www.ietf.org/archive/id/draft-ietf-oauth-status-list-14.html) | credential status lists |
+| eKYC-IDA | [openid.net/specs/openid-connect-ida-1_0.html](https://openid.net/specs/openid-connect-ida-1_0.html) | `verified_claims` |
+| OID4VCI linkability (RFC 9901) | [rfc-editor.org/rfc/rfc9901.html](https://www.rfc-editor.org/info/rfc9901) | hour-rounded iat/exp |
+| CIMD (experimental) | [draft-ietf-oauth-client-id-metadata-document](https://www.ietf.org/archive/id/draft-ietf-oauth-client-id-metadata-document-00.html) | `experimental.rs` |
+| WebAuthn | [www.w3.org/TR/webauthn-3](https://www.w3.org/TR/webauthn-3/) | passkeys |
+
+### Workforce / enterprise
+
+| Spec | Link | Where in auth |
+|---|---|---|
+| SCIM 2.0 Core Schema | [RFC 7643](https://datatracker.ietf.org/doc/html/rfc7643) | user/group schema |
+| SCIM 2.0 Protocol | [RFC 7644](https://datatracker.ietf.org/doc/html/rfc7644) | `/scim/v2/*` incl. Bulk §3.7 |
+| SAML 2.0 (metadata/ACS) | [OASIS SAML v2.0](https://docs.oasis-open.org/security/saml/v2.0/) | enterprise connections |
+| ISO/IEC 18013-5 (RICAL) | [ISO/IEC 18013-5:2021](https://www.iso.org/standard/69084.html) Annex F.3.2 | verifier request-object chain trust (§9a.27) |
+
+## 13. Open Questions
+
+- Continuous access evaluation: session/token revocations already push
+  `sentin8:auth:session:revoked` to the BFF session-reaper so cached
+  sessions die immediately; risk-signal gating of NEW token issuance is
+  the next layer on top of live authorization.
+- Hardware-backed key attestation: the WebAuthn `attestation` conveyance
+  preference is the seam; the OID4VCI App. D attestation verify accepts
+  software-key attestations today (x5c self-consistency); trust
+  anchoring beyond that is an issuer policy.
+- Handshake-level certificate revocation and Valkey ACLs
+   are platform-level follow-ups owned outside this service.
+- Multi-region active-active issuer deployment is a non-goal until
+  multi-region exists; the JWKS overlap-rotation design is region-safe.
+- SCIM `/Bulk` is live (RFC 7644 §3.7): a thin wrapper over the per-user
+  SQL paths (≤100 ops; `failOnErrors` stops the batch). The precondition
+  consumer exists - BFF's delegated SCIM proxy is the enterprise IdP
+  path.
+
+---
+
+**Architecture & Design:** sentin8:auth and its underlying concepts were designed by [Hamid Jahanzad](https://www.linkedin.com/in/hamidjahanzad/).
