@@ -1187,10 +1187,16 @@ pub async fn consent_accounts(
 
     // Look up consent data providers from the registry.
     // Multiple domains can register providers for the same feature/data_type.
+    // Vertical-AGNOSTIC filter (the platform never names a vertical): the
+    // `feature` column is the REGISTERING vertical's own vocabulary
+    // (openfin8-ca, hotel8-pms, ...) - auth must not key on any specific
+    // value; `data_type = 'accounts'` alone identifies the capability the
+    // consent page renders, and the registry row maps to the owning
+    // vertical (the design's "proxied to owning vertical" contract).
     let providers = sqlx::query(
         r#"SELECT service_type, platform_domain_key, endpoint, scope, response_key
              FROM consent_providers
-            WHERE feature = 'fdx' AND data_type = 'accounts'"#,
+            WHERE data_type = 'accounts'"#,
     )
     .fetch_all(&state.pool)
     .await
@@ -1204,7 +1210,7 @@ pub async fn consent_accounts(
     if providers.is_empty() {
         return Err((
             StatusCode::NOT_FOUND,
-            "no consent data providers registered for fdx/accounts".into(),
+            "no consent data providers registered for accounts".into(),
         ));
     }
 
