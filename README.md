@@ -75,33 +75,33 @@ register with per-mechanism anchors is `DESIGN.md` §12.
 
 ```mermaid
 graph TD
-    subgraph Token issuance
-        A["Authorization endpoint<br/>(RFC 6749 §4.1 + PKCE RFC 7636)"] -> B["PAR push<br/>(RFC 9126)"]
-        B -> C["Token endpoint<br/>(RFC 6749 §3.2, §6)"]
-        C -> D["Access / Refresh / ID token families<br/>(RFC 7515/7518, OIDC Core §2)"]
-        C -> E["M2M client_credentials - cert-bound<br/>(RFC 8705)"]
-        C -> F["Actor tokens - time-boxed, audited<br/>(RFC 8693 delegation semantics)"]
+    subgraph ISSU["Token issuance"]
+        A["Authorization endpoint<br/>(RFC 6749 §4.1 + PKCE RFC 7636)"] --> B["PAR push<br/>(RFC 9126)"]
+        B --> C["Token endpoint<br/>(RFC 6749 §3.2, §6)"]
+        C --> D["Access / Refresh / ID token families<br/>(RFC 7515/7518, OIDC Core §2)"]
+        C --> E["M2M client_credentials - cert-bound<br/>(RFC 8705)"]
+        C --> F["Actor tokens - time-boxed, audited<br/>(RFC 8693 delegation semantics)"]
     end
-    subgraph Authentication
-        G["Password + sessions"] -> H["MFA TOTP (RFC 6238)"]
-        H -> I["Passkeys (WebAuthn)"]
-        I -> J["Enterprise connections (OIDC/SAML)"]
-        G -> K["Bot protection - rate limits + lockout<br/>(RFC 6819 §4.5.2)"]
+    subgraph AUTHN["Authentication"]
+        G["Password + sessions"] --> H["MFA TOTP (RFC 6238)"]
+        H --> I["Passkeys (WebAuthn)"]
+        I --> J["Enterprise connections (OIDC/SAML)"]
+        G --> K["Bot protection - rate limits + lockout<br/>(RFC 6819 §4.5.2)"]
     end
-    subgraph TokenBinding["Token binding"]
-        L["DPoP (RFC 9449)"] -> D
-        M["mTLS cert binding (RFC 8705)"] -> D
-        N["HTTP message signatures (RFC 9421)"] -> D
+    subgraph BIND["Token binding"]
+        L["DPoP (RFC 9449)"] --> D
+        M["mTLS cert binding (RFC 8705)"] --> D
+        N["HTTP message signatures (RFC 9421)"] --> D
     end
-    subgraph Federation & provisioning
-        O["SCIM 2.0 (RFC 7643/7644)"] -> P["Enterprise identity providers"]
-        Q["Delegation Gateway (RFC 8693)"] -> D
-        R["DCR (RFC 7591/7592)"] -> S["Client store"]
+    subgraph FED["Federation & provisioning"]
+        O["SCIM 2.0 (RFC 7643/7644)"] --> P["Enterprise identity providers"]
+        Q["Delegation Gateway (RFC 8693)"] --> D
+        R["DCR (RFC 7591/7592)"] --> S["Client store"]
     end
-    subgraph Platform
-        T["JWKS (RFC 7517) - rotation, PQ keys"] -> D
-        U["Back-Channel Logout (OIDC BCN) + webhooks"] -> V["Sentin8:Bus outbox"]
-        W["Admin API + RFW UI + Shield gate"] -> X["Users/roles/groups/clients/keys"]
+    subgraph PLAT["Platform"]
+        T["JWKS (RFC 7517) - rotation, PQ keys"] --> D
+        U["Back-Channel Logout (OIDC BCN) + webhooks"] --> V["Sentin8:Bus outbox"]
+        W["Admin API + RFW UI + Shield gate"] --> X["Users/roles/groups/clients/keys"]
     end
 ```
 
