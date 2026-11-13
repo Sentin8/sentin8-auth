@@ -23,7 +23,7 @@ use axum::{
     Json,
 };
 use bcrypt::{hash as bcrypt_hash, DEFAULT_COST};
-use chrono::{Duration, Utc};
+use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
@@ -793,7 +793,7 @@ pub async fn register(
         req.userinfo_signed_response_alg.as_deref(),
         req.subject_type.as_deref(),
         now,
-        client_secret_expires_at.map(|_| now + Duration::days(365)),
+        client_secret_expires_at.map(|_| now + chrono::Duration::days(365)),
         req.software_id.as_deref(),
         req.software_statement.as_deref(),
         req.logo_uri.as_deref(),
