@@ -334,6 +334,11 @@ pub fn build_router(state: AppState) -> Router {
         )
         // EUDI wallet - OID4VP sign-in + metadata.
         .route("/oauth/vp/response", post(crate::wallet::vp_response))
+        // The OP-hosted verifier SUCCESS page (design 9a.27): a real
+        // page displaying the verified credential's contents - the
+        // OIDF suite's ExpectVerifierSuccessfulVerificationPage
+        // screenshot surface (single-use verification token).
+        .route("/wallet-verifier/done", get(crate::wallet::wallet_verifier_done))
         // The OID4VP request_uri surface (design 9a.27): the wallet
         // fetches the signed request object (GET, or POST + wallet_nonce).
         .route(

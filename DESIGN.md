@@ -2316,6 +2316,41 @@ deployed verifier is exercised through its own endpoints):
   "error_description": ...}` - the wallet parses any status as
   JSON) and the stored request is consumed either way (a negative
   cannot be replayed).
+  The `redirect_uri` answer carries the verification OUTCOME for the
+  OP-hosted landing: the redirect target embeds a single-use
+  `verification={token}` reference (a Valkey row `auth:vp:done:{token}` ->
+  the verified presentation's display facts - issuer, vct, the disclosed
+  claims, the verification timestamp - TTL 15 min). `GET
+  /wallet-verifier/done?verification={token}` (the OP-hosted verifier
+  landing when no OAuth redirect_uri drove the request) serves a REAL
+  success page - a small server-rendered HTML document displaying the
+  verified credential's contents (the OIDF suite's
+  `ExpectVerifierSuccessfulVerificationPage` requires a screenshot of
+  exactly this: "a page displaying the credential contents"). The
+  token resolves ONCE; an unknown/expired token renders the terminal
+  "verification not found" state (never a sign-in form - the landing
+  is a verifier surface, not the auth SPA). When an OAuth client
+  drove the request the landing stays out of the path: the redirect
+  keeps going to the client's `redirect_uri` with the downstream
+  `code` (the §8.2 contract).
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant W as suite (wallet)
+    participant V as auth verifier surface
+    W->>V: GET/POST /oauth/vp/request/{id} (fetch the signed request object)
+    V-->>W: JWT typ=oauth-authz-req+jwt (x5c chain, dcql_query, nonce, response_uri)
+    W->>W: validate x509_hash(client_id) + signature + freshness
+    W->>W: mint vp_token (sd-jwt + kb-jwt, status list on suite URIs)
+    W->>V: POST response_uri (direct_post.jwt: JWE in the verifier's metadata keys)
+    V->>V: decrypt → verify kb-jwt (aud/nonce/sd_hash from cnf.jwk) + credential sig + status + DCQL
+    V->>V: store auth:vp:done:{token} -> {issuer, vct, claims, verified_at}
+    V-->>W: 200 {"redirect_uri": ".../wallet-verifier/done?verification={token}"}
+    W->>V: GET /wallet-verifier/done?verification={token} (the success page)
+    V-->>W: HTML - the verified credential contents (the suite screenshots this)
+    ```
+
 - **The verifier metadata** (`/.well-known/openid-credential-verifier`)
   stays honest: the SINGLE client_id form used by the requests
   (`x509_hash` prefix under HAIP), the vp formats +
@@ -2333,20 +2368,6 @@ deployed verifier is exercised through its own endpoints):
   issuer family rule the token endpoint applies, DESIGN §4; without
   it a tenant user's own admin grant can never reach their env's
   admin endpoints).
-
-```mermaid
-sequenceDiagram
-    autonumber
-    participant W as suite (wallet)
-    participant V as auth verifier surface
-    W->>V: GET/POST /oauth/vp/request/{id} (fetch the signed request object)
-    V-->>W: JWT typ=oauth-authz-req+jwt (x5c chain, dcql_query, nonce, response_uri)
-    W->>W: validate x509_hash(client_id) + signature + freshness
-    W->>W: mint vp_token (sd-jwt + kb-jwt, status list on suite URIs)
-    W->>V: POST response_uri (direct_post.jwt: JWE in the verifier's metadata keys)
-    V->>V: decrypt → verify kb-jwt (aud/nonce/sd_hash from cnf.jwk) + credential sig + status + DCQL
-    V-->>W: 200 {"redirect_uri": "..."} (or 4xx reject: request consumed either way)
-```
 
 **Deliberate exclusions.** The verifier's mdoc/iso_mdl cells and the
 dc_api response modes stay OUT of the battery (no iso-mdl fixture
@@ -2431,7 +2452,7 @@ link resolves in §12.
 | Family | Routes | Spec anchors |
 |---|---|---|
 | Discovery | `/.well-known/openid-configuration`, `/.well-known/oauth-authorization-server`, `/.well-known/jwks.json`, `/.well-known/webfinger`, `/.well-known/openid-credential-issuer`, `/.well-known/openid-credential-verifier`, `/openapi.json` | OIDC Discovery §2/§3, RFC 8414, RFC 7517, RFC 7033, OID4VCI §11.2, OID4VP §11 |
-| Authorization | `/oauth/authorize` (GET), `/oauth/authorize/continue`, `/oauth/login` (GET+POST), `/oauth/par` (POST), `/oauth/vp/request/{id}` (GET+POST), `/oauth/vp/response` (POST), `/v1/auth/verifier/request` (POST), `/v1/auth/wallet/metadata` (GET) | RFC 6749 §4.1, RFC 7636, RFC 9126, RFC 9101, JARM, OID4VP §5, OID4VCI §13.3 |
+| Authorization | `/oauth/authorize` (GET), `/oauth/authorize/continue`, `/oauth/login` (GET+POST), `/oauth/par` (POST), `/oauth/vp/request/{id}` (GET+POST), `/oauth/vp/response` (POST), `/wallet-verifier/done` (GET - the OP-hosted verifier success page), `/v1/auth/verifier/request` (POST), `/v1/auth/wallet/metadata` (GET) | RFC 6749 §4.1, RFC 7636, RFC 9126, RFC 9101, JARM, OID4VP §5, OID4VCI §13.3 |
 | Token / introspection / revocation | `/oauth/token`, `/oauth/introspect`, `/oauth/revoke`, `/mtls/oauth/token`, `/mtls/oauth/revoke` | RFC 6749 §3.2/§6, RFC 7662 + RFC 9701, RFC 7009, RFC 8705, RFC 8693, RFC 8628 (incl. `/oauth/device`+`/device/verify`), CIBA poll grant |
 | Userinfo / logout | `/oauth/userinfo` (GET+POST), `/oauth/logout`, `/oauth/backchannel-logout` | OIDC Core §5.3.1, OIDC RP-Initiated Logout, OIDC Back-Channel Logout |
 | Session | `/oauth/check-session` (GET), `/oauth/check-session/iframe` | OIDC Session Management §3.3 (§9a.26) |

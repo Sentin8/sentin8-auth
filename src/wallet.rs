@@ -853,7 +853,11 @@ async fn vp_response_inner(
     // the wallet visits the verifier's redirect_uri next; extra members
     // warn/fail under HAIP. The verifier's redirect target = the oauth
     // chain's callback WITH the code when a sign-in client drove the
-    // request; an OP-hosted verifier landing otherwise.
+    // request; the OP-hosted verifier landing otherwise - a REAL
+    // success page showing the verified credential's contents (the
+    // OIDF suite's ExpectVerifierSuccessfulVerificationPage
+    // screenshots it; the display facts ride a single-use
+    // `verification` token row `auth:vp:done:{token}`, TTL 15 min).
     let oauth_redirect = pending
         .get("oauth_redirect_uri")
         .and_then(|v| v.as_str())
@@ -862,13 +866,194 @@ async fn vp_response_inner(
             let sep = if u.contains('?') { '&' } else { '?' };
             format!("{u}{sep}code={code}")
         });
-    let redirect_target = oauth_redirect
-        .unwrap_or_else(|| format!("{}/wallet-verifier/done", resolve_issuer(&state.config, &headers)));
+    let redirect_target = match oauth_redirect {
+        Some(u) => u,
+        None => {
+            let verification = Uuid::new_v4().to_string();
+            let vct = verified
+                .claims
+                .get("vct")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            let done = serde_json::json!({
+                "issuer": verified.issuer,
+                "vct": vct,
+                "claims": verified.claims,
+                "verified_at": chrono::Utc::now().timestamp(),
+            });
+            let _: Result<(), _> = conn
+                .set_ex(
+                    format!("auth:vp:done:{verification}"),
+                    done.to_string(),
+                    900,
+                )
+                .await;
+            format!(
+                "{}/wallet-verifier/done?verification={verification}",
+                resolve_issuer(&state.config, &headers)
+            )
+        }
+    };
     Ok((
         StatusCode::OK,
         axum::Json(serde_json::json!({ "redirect_uri": redirect_target })),
     )
         .into_response())
+}
+
+/// `GET /wallet-verifier/done` - the OP-hosted verifier SUCCESS page
+/// (DESIGN 9a.27): a server-rendered document displaying the verified
+/// credential's contents (issuer, vct, the disclosed claims) for the
+/// single-use `verification` token the vp_response handler minted.
+/// The OIDF suite's ExpectVerifierSuccessfulVerificationPage requires
+/// a screenshot of exactly this surface. An unknown/expired token
+/// renders the terminal "not found" state - never a sign-in form
+/// (the landing is a verifier surface, not the auth SPA).
+#[utoipa::path(
+    get,
+    path = "/wallet-verifier/done",
+    params(
+        ("verification" = String, Query, description = "The single-use verification token from the vp_response redirect"),
+    ),
+    responses(
+        (status = 200, description = "The verifier success page (HTML) - the verified credential contents"),
+    ),
+    security(),
+    tag = "wallet",
+)]
+pub async fn wallet_verifier_done(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Query(q): Query<WalletVerifierDoneQuery>,
+) -> Response {
+    let token = q.verification.trim();
+    let issuer = resolve_issuer(&state.config, &headers);
+    let not_found = || {
+        (
+            StatusCode::NOT_FOUND,
+            axum::response::Html(render_verifier_done_html(
+                &issuer,
+                None,
+            )),
+        )
+            .into_response()
+    };
+    if token.is_empty() {
+        return not_found();
+    }
+    let conn = match sentin8::middleware::valkey_client(&state.config.valkey_url, "sentin8:auth").await {
+        Ok(c) => c,
+        Err(_) => return not_found(),
+    };
+    // Single-use: GETDEL consumes the row so a replay cannot re-show the
+    // credential contents.
+    let row: Option<String> = {
+        use glide::AsyncCommands as _;
+        conn.get_del(format!("auth:vp:done:{token}"))
+            .await
+            .unwrap_or(None)
+    };
+    let facts: Option<serde_json::Value> = row.and_then(|r| serde_json::from_str::<serde_json::Value>(&r).ok());
+    match facts {
+        Some(f) => (
+            StatusCode::OK,
+            axum::response::Html(render_verifier_done_html(&issuer, Some(&f))),
+        )
+            .into_response(),
+        None => not_found(),
+    }
+}
+
+/// The query params of the verifier success page.
+#[derive(Debug, Deserialize, utoipa::IntoParams)]
+pub struct WalletVerifierDoneQuery {
+    /// The single-use verification token (from the redirect_uri).
+    #[serde(default)]
+    pub verification: String,
+}
+
+/// Render the verifier success page - a minimal, dependency-free HTML
+/// document (the suite's screenshot needs CONTENT, not the SPA shell).
+/// Facts map: `{issuer, vct, claims, verified_at}`.
+fn render_verifier_done_html(issuer: &str, facts: Option<&serde_json::Value>) -> String {
+    let esc = |s: &str| -> String {
+        s.replace('&', "&amp;")
+            .replace('<', "&lt;")
+            .replace('>', "&gt;")
+            .replace('"', "&quot;")
+    };
+    let body = match facts {
+        None => String::from(
+            r#"<h1>Verification not found</h1><p>This verification link is invalid or has expired. Return to the verifier and start again.</p>"#,
+        ),
+        Some(f) => {
+            let issuer_f = f.get("issuer").and_then(|v| v.as_str()).unwrap_or("");
+            let vct = f.get("vct").and_then(|v| v.as_str()).unwrap_or("");
+            let verified_at = f.get("verified_at").and_then(|v| v.as_i64()).unwrap_or(0);
+            let when = if verified_at > 0 {
+                chrono::DateTime::from_timestamp(verified_at, 0)
+                    .map(|d| d.to_rfc3339())
+                    .unwrap_or_default()
+            } else {
+                String::new()
+            };
+            let mut rows = String::new();
+            if let Some(claims) = f.get("claims").and_then(|v| v.as_object()) {
+                for (k, v) in claims {
+                    let value = match v {
+                        serde_json::Value::String(s) => esc(s),
+                        serde_json::Value::Number(n) => esc(&n.to_string()),
+                        serde_json::Value::Bool(b) => esc(&b.to_string()),
+                        other => esc(&other.to_string()),
+                    };
+                    rows.push_str(&format!(
+                        r#"<tr><td class="k">{}</td><td>{}</td></tr>"#,
+                        esc(k),
+                        value
+                    ));
+                }
+            }
+            let vct_display = if vct.is_empty() {
+                "dc+sd-jwt".to_string()
+            } else {
+                esc(vct)
+            };
+            format!(
+                r#"<h1>Credential verified</h1>
+<p class="ok">The presented credential was successfully verified.</p>
+<table><tbody>
+<tr><td class="k">Issuer</td><td>{}</td></tr>
+<tr><td class="k">Credential type</td><td>{}</td></tr>
+<tr><td class="k">Verified at</td><td>{}</td></tr>
+{rows}
+</tbody></table>
+<p class="m">Verified by the Sentin8 verifier at {}.</p>"#,
+                esc(issuer_f),
+                vct_display,
+                esc(&when),
+                esc(issuer),
+            )
+        }
+    };
+    format!(
+        r#"<!DOCTYPE html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Wallet verification</title>
+<style>
+:root {{ color-scheme: light; }}
+body {{ font-family: system-ui, sans-serif; margin: 0; display: flex; min-height: 100vh; align-items: center; justify-content: center; background: #f6f7fa; }}
+card {{}}
+.card {{ background: #fff; border-radius: 12px; box-shadow: 0 2px 12px rgba(16,24,40,.08); padding: 32px 40px; max-width: 560px; width: 90%; }}
+h1 {{ font-size: 1.4rem; margin: 0 0 12px; color: #101828; }}
+.ok {{ color: #067647; font-weight: 600; margin: 0 0 20px; }}
+table {{ border-collapse: collapse; width: 100%; margin: 0 0 16px; }}
+td {{ border-top: 1px solid #e4e7ec; padding: 8px 10px; font-size: .92rem; color: #344054; word-break: break-word; }}
+td.k {{ color: #667085; width: 34%; font-weight: 600; }}
+.m {{ color: #98a2b3; font-size: .8rem; margin: 0; }}
+</style></head>
+<body><div class="card">{body}</div></body></html>"#
+    )
 }
 
 /// Decrypt the direct_post.jwt body (the response envelope) with the
