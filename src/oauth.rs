@@ -9115,6 +9115,17 @@ pub async fn register_form_post_ref(
 /// session's own hash for the client (an RP may present any one of its
 /// sessions' states; a mismatch = changed). Answers the protocol's
 /// three-word vocabulary in plain text (the iframe shim proxies it).
+#[utoipa::path(
+    get,
+    path = "/oauth/check-session",
+    params(("client_id" = String, Query, description = "The OAuth client id the presented state belongs to")),
+    params(("session_state" = String, Query, description = "The OP session state as presented")),
+    responses(
+        (status = 200, description = "changed|unchanged plain-text verdict"),
+    ),
+    security(),
+    tag = "auth",
+)]
 pub async fn check_session_status(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -9213,6 +9224,16 @@ pub struct CheckSessionQuery {
 /// auto-submit form. A consumed/missing ref answers a terminal error
 /// page (the browser already missed its one shot - a redirect would
 /// loop).
+#[utoipa::path(
+    get,
+    path = "/oauth/form-post/{ref_id}",
+    params(("ref_id" = String, Path, description = "The one-time form-post payload reference")),
+    responses(
+        (status = 200, description = "The HTML auto-submitting form (or the terminal error page)"),
+    ),
+    security(),
+    tag = "auth",
+)]
 pub async fn form_post_page(
     State(state): State<AppState>,
     axum::extract::Path(ref_id): axum::extract::Path<String>,
