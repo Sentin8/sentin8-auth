@@ -336,8 +336,14 @@ impl SigningKeys {
             let pk_b64 = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(point.as_bytes());
             let pem = sk.to_pkcs8_pem(p256::pkcs8::LineEnding::LF)?;
             let encoding_key = jsonwebtoken::EncodingKey::from_ec_pem(pem.as_str().as_bytes())?;
+            // Key-material encoding invariant (auth DESIGN.md secrets
+            // posture): the PEM members are STANDARD base64 - the load,
+            // persist, and inline-signing paths all use the standard
+            // engine (an URL-safe mismatch breaks the OID4VCI signed
+            // metadata and OID4VP request-object signers on boot-shaped
+            // keysets).
             let pem_b64 =
-                base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(pem.as_str().as_bytes());
+                base64::engine::general_purpose::STANDARD.encode(pem.as_str().as_bytes());
             Ok(StoredKey {
                 key_id,
                 alg: alg.to_string(),
@@ -364,8 +370,10 @@ impl SigningKeys {
             let e_b64 = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(&e);
             let pem = priv_key.to_pkcs8_pem(rsa::pkcs8::LineEnding::LF)?;
             let encoding_key = jsonwebtoken::EncodingKey::from_rsa_pem(pem.as_str().as_bytes())?;
+            // Key-material encoding invariant (auth DESIGN.md secrets
+            // posture): STANDARD base64, same as the EC branch above.
             let pem_b64 =
-                base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(pem.as_str().as_bytes());
+                base64::engine::general_purpose::STANDARD.encode(pem.as_str().as_bytes());
             Ok(StoredKey {
                 key_id,
                 alg: "RS256".into(),
@@ -634,7 +642,9 @@ impl SigningKeys {
                 .map_err(|e| anyhow::anyhow!("encrypt ML-DSA private key: {e}"))?;
             (sealed, key.ml_dsa_pk_b64.clone(), None, None)
         } else if let Some(pem_b64) = &key.rsa_pem_b64 {
-            let pem_bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD
+            // Key-material encoding invariant (auth DESIGN.md secrets
+            // posture): STANDARD base64, matching generate().
+            let pem_bytes = base64::engine::general_purpose::STANDARD
                 .decode(pem_b64)
                 .map_err(|e| anyhow::anyhow!("decode RS256 PEM for persistence: {e}"))?;
             let sealed = sentin8::crypto::seal(mk, &pem_bytes)
@@ -642,7 +652,9 @@ impl SigningKeys {
             (sealed, None, key.rsa_n_b64.clone(), key.rsa_e_b64.clone())
         } else if let Some(ec_pem_b64) = &key.ec_pem_b64 {
             // ES256 rows: sealed PKCS#8 PEM private + raw point in pub_key_b64.
-            let pem_bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD
+            // Key-material encoding invariant (auth DESIGN.md secrets
+            // posture): STANDARD base64, matching generate().
+            let pem_bytes = base64::engine::general_purpose::STANDARD
                 .decode(ec_pem_b64)
                 .map_err(|e| anyhow::anyhow!("decode ES256 PEM for persistence: {e}"))?;
             let sealed = sentin8::crypto::seal(mk, &pem_bytes)
@@ -991,14 +1003,18 @@ impl SigningKeys {
             );
             let signing_input = format!("{header_b64}.{payload_b64}");
             // Sign the signing-input (our own header, jwk member inside)
-            // directly with the rsa crate - PKCS#1 v1.5 SHA-256.
+            // directly with the rsa crate - PKCS#1 v1.5 SHA-256. The
+            // stored material is PKCS#8 PEM TEXT (standard-base64'd on
+            // the key row) - parse through the PEM path, not the DER one.
             use rsa::pkcs8::DecodePrivateKey;
-            let priv_key = rsa::RsaPrivateKey::from_pkcs8_der(
-                &base64::engine::general_purpose::STANDARD
+            let pem_text = String::from_utf8(
+                base64::engine::general_purpose::STANDARD
                     .decode(pem)
                     .map_err(|e| format!("pem decode: {e}"))?,
             )
-            .map_err(|e| format!("rsa key parse: {e}"))?;
+            .map_err(|e| format!("pem utf8: {e}"))?;
+            let priv_key = rsa::RsaPrivateKey::from_pkcs8_pem(&pem_text)
+                .map_err(|e| format!("rsa key parse: {e}"))?;
             use rsa::signature::{RandomizedSigner, SignatureEncoding};
             let signer = rsa::pkcs1v15::SigningKey::<sha2::Sha256>::new(priv_key);
             let mut rng = rand::rngs::OsRng;
@@ -1705,6 +1721,78 @@ mod tests {
         // A PQ-only keyset asked for RS256: no fallback to MLDSA.
         let keys = make_pq_keyset();
         assert!(keys.sign_value_alg(&mk_claims(), "RS256").is_err());
+    }
+
+    // OIDF-KEYENC-1 (auth DESIGN.md secrets posture - the key-material
+    // encoding invariant): a GENERATE-shaped keyset (the boot shape on a
+    // fresh platform, before any reload) must inline-sign the OID4VCI
+    // signed metadata with the classical `jwk` header member and expose
+    // the EC PEM for the OID4VP request-object signer. The old URL-safe
+    // pem members made BOTH classical inline attempts error and the
+    // signed metadata silently degraded to the ML-DSA-65 header (no jwk)
+    // while the vp request creator 500'd with "no EC PEM material".
+    #[test]
+    fn inline_signers_work_on_generate_shaped_keys() {
+        let es = SigningKeys::generate("ES256").unwrap();
+        let rsa = SigningKeys::generate("RS256").unwrap();
+        let pq = SigningKeys::generate("MLDSA65").unwrap();
+        let keys = SigningKeys {
+            active: pq.clone(),
+            all: vec![es.clone(), rsa.clone(), pq],
+        };
+        let claims = serde_json::json!({"credential_issuer": "https://auth.test"});
+
+        // The signed-metadata contract: a jwk header member on the
+        // classical family (the suite's VCIDecodeSignedCredentialIssuerMetadata
+        // hard-fails without jwk/x5c).
+        let jwt = keys
+            .sign_value_typed_inlined_jwk(&claims, "ES256", "openidvci-issuer-metadata+jwt")
+            .expect("ES256 inline sign works on generate-shaped keys");
+        let header: serde_json::Value = serde_json::from_slice(
+            &base64::engine::general_purpose::URL_SAFE_NO_PAD
+                .decode(jwt.split('.').next().unwrap())
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(header["alg"], "ES256");
+        assert!(
+            header.get("jwk").is_some(),
+            "the signed-metadata header carries the jwk member: {header}"
+        );
+
+        // The RSA fallback family inlines too.
+        let jwt = keys
+            .sign_value_typed_inlined_jwk(&claims, "RS256", "openidvci-issuer-metadata+jwt")
+            .expect("RS256 inline sign works on generate-shaped keys");
+        let header: serde_json::Value = serde_json::from_slice(
+            &base64::engine::general_purpose::URL_SAFE_NO_PAD
+                .decode(jwt.split('.').next().unwrap())
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(header["alg"], "RS256");
+        assert!(header.get("jwk").is_some());
+
+        // The OID4VP request-object signer's PEM source resolves on the
+        // generate shape (the vp request creator's x509_hash client_id
+        // path depends on it).
+        assert!(
+            keys.signing_key_for("ES256").unwrap().ec_private_pem().is_some(),
+            "ec_private_pem decodes the generate-shaped pem member"
+        );
+        let signed = keys
+            .sign_value_typed_x5c(&claims, "ES256", "oauth-authz-req+jwt", None)
+            .expect("x5c sign works on generate-shaped keys (self-issued cert)");
+        let header: serde_json::Value = serde_json::from_slice(
+            &base64::engine::general_purpose::URL_SAFE_NO_PAD
+                .decode(signed.split('.').next().unwrap())
+                .unwrap(),
+        )
+        .unwrap();
+        assert!(
+            header.get("x5c").is_some(),
+            "the vp request object carries its x5c chain: {header}"
+        );
     }
 
     #[test]

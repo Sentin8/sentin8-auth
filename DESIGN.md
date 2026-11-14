@@ -413,6 +413,15 @@ session). On token issuance both keys are deleted (single-use).
   encrypted (`secret_cipher` BYTEA / hash); signing keys persisted
   AES-sealed under the master key; **secret references only** - no
   plaintext secrets in any table (credential-theft class, RFC 6819 §4.4).
+  **Key-material encoding invariant**: the in-memory `StoredKey` PEM
+  members (`ec_pem_b64`, `rsa_pem_b64`) are ALWAYS standard-base64 of the
+  PKCS#8 PEM text - the generate, load, and persist paths agree on one
+  alphabet. The OID4VCI signed-metadata inline signer and the OID4VP
+  request-object signer decode these members with the standard engine; a
+  URL-safe mismatch at any mint path silently degrades the signed metadata
+  to the ML-DSA-65 header form (no `jwk` member - the suite's
+  `VCIDecodeSignedCredentialIssuerMetadata` hard-fails) and the verifier
+  request object to `no EC PEM material`.
 - **OIDC claim data (§9a.4)**: the `users` table carries `phone` and the
   postal-address columns (`street_address`, `locality`, `region`,
   `postal_code`, `country`) - written through the admin user surface,
