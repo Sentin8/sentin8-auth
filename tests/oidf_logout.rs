@@ -303,6 +303,7 @@ async fn oidf_backchannel_logout_contract() {
         iss: "https://auth.test.local.sentin8.dev".into(),
         aud: client.client_id.clone(),
         iat: chrono::Utc::now().timestamp(),
+        exp: chrono::Utc::now().timestamp() + 120,
         jti: uuid::Uuid::new_v4().to_string(),
         events: serde_json::json!({
             "http://schemas.openid.net/event/backchannel-logout": {}
