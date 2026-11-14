@@ -543,6 +543,24 @@ pub async fn vp_request_object(
         .into_response())
 }
 
+/// `POST /oauth/vp/request/{request_id}` alias of the GET surface - the
+/// direct_post request mode the OID4VP spec also allows; the router serves
+/// both methods through the same handler (`vp_request_object`). This
+/// spec-only twin documents the POST verb for the OpenAPI drift guard.
+#[allow(dead_code)]
+#[utoipa::path(
+    post,
+    path = "/oauth/vp/request/{request_id}",
+    request_body(content = String, description = "The `wallet_nonce` form parameter (OID4VP-1final 5.10)"),
+    responses(
+        (status = 200, description = "The signed request object", content_type = "application/oauth-authz-req+jwt"),
+        (status = 404, description = "Unknown or expired request id"),
+    ),
+    security(),
+    tag = "wallet",
+)]
+pub async fn vp_request_object_post_spec() {}
+
 /// `POST /oauth/vp/response` - the OID4VP direct_post(.jwt) response
 /// endpoint (design §9a.27): the wallet delivers the vp_token (form or
 /// JWE envelope) to the request's response_uri; the verification
