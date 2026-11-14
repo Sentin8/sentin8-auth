@@ -546,9 +546,16 @@ graph LR
 - **Introspection honesty**: `none`-auth clients hard-rejected;
   `application/token-introspection+jwt` signed responses (RFC 9701)
   per profile; plain JSON (RFC 7662) otherwise.
-- **Back-channel logout** (OIDC Back-Channel Logout): logout tokens
-  carry `events`/`sid`, NO `nonce` (per spec), fan-out to registered
-  `backchannel_logout_uri`.
+- **Back-channel logout + live session state** (OIDC Back-Channel
+  Logout + Session Management): logout tokens carry `events`/`sid`, NO
+  `nonce` (per spec), fan-out exactly to the registered
+  `backchannel_logout_uri` clients the destroyed session logged in
+  (`session_clients`); `session_state` is minted on every interactive
+  authorize, served live through the `check_session` endpoint + iframe
+  shim, and RP-initiated logout revokes the OP session so the next poll
+  answers `changed`. DCR + client management accept and echo
+  `backchannel_logout_uri`, `backchannel_logout_session_required`, and
+  an https `initiate_login_uri` (§9a.26).
 - **No-store on token endpoints** (RFC 6749 §5.1, RFC 7662 §4,
   RFC 8705 §5): middleware enforces `no-store`/`no-cache` on
   `/oauth/{token,introspect,revoke}` + `/mtls/*`.
@@ -861,8 +868,10 @@ every profile the platform implements except two deliberate exclusions.
 
 | Profile family | Certifiable profiles | Suite posture |
 |---|---|---|
-| OIDC Core | Basic OP, Config OP, Dynamic OP | code flow + discovery + DCR; the deprecated response types are excluded (below) |
-| OIDC Logout | RP-Initiated Logout, Back-Channel Logout | both endpoints implemented; Front-Channel Logout is an exclusion |
+| OIDC Core | Basic OP, Config OP, Dynamic OP | code flow + discovery + DCR; the further response types live in their own certification families (below) |
+| OIDC Logout | RP-Initiated Logout, Back-Channel Logout, Back-Channel + RP-Initiated (joint) | both endpoints implemented + the sid-bound fan-out (§9a.26); Front-Channel Logout is an exclusion |
+| OIDC Session Management | Session Management OP, Third-Party-Initiated Login OP | `check_session_iframe` + `session_state` + `initiate_login_uri` (§9a.26) |
+| OIDC Response modes | Implicit OP, Hybrid OP, Form-Post OP | fragment + `form_post` channels per certification env (§9a.25) |
 | FAPI 2 | Security Profile OP, Message Signing OP | the platform-default `fapi_2` profile |
 | FAPI 1 | Advanced OP (final) | `fapi_1_advanced` profile |
 | FAPI-CIBA | Poll mode, Ping mode | `bc-authorize` + CIBA grant + ping delivery |
@@ -872,12 +881,15 @@ every profile the platform implements except two deliberate exclusions.
 
 **Deliberate exclusions (design decisions, never to be reintroduced):**
 
-- **Implicit OP / Hybrid OP** - the implicit and hybrid response types
-  are deprecated by OAuth 2.1 and forbidden by FAPI.
-  `response_types_supported` is exactly `["code"]` and the authorize
-  handler rejects any other value.
 - **Front-Channel Logout** - third-party iframes are a tracking surface
   and silent-failure mode; logout signaling is back-channel only.
+
+**Profile-scoped response types (§9a.25).** The standard platform
+profile still serves `response_types_supported: ["code"]` only (the
+implicit/hybrid types are deprecated by OAuth 2.1 and forbidden by
+FAPI); the Implicit/Hybrid/Form-Post certification families enable the
+other types on their own profile-gated environments - per-profile
+discovery honesty, never a platform-wide default.
 
 ### 9a.2 Local conformance rig (how the tests run)
 
@@ -986,7 +998,10 @@ graph TD
 | FAPI-CIBA poll mode | implemented | CIBA §5.2 |
 | FAPI-CIBA ping mode | implemented | CIBA §5.3 |
 | OID4VCI issuer | implemented | OID4VCI §7-§13 |
-| OID4VP verifier | implemented | OID4VP §11 + §5 |
+| OID4VP verifier (DCQL + direct_post.(jwt) + x509_hash + RICAL) | implemented | OID4VP §11 + §5 (§9a.27) |
+| Session Management OP (check_session + session_state) | implemented | OIDC Session Management §3.3 (§9a.26) |
+| Third-Party-Initiated Login OP (`initiate_login_uri`) | implemented | OAuth-R metadata (§9a.26) |
+| Implicit OP + Hybrid OP + Form-Post OP | implemented (profile-gated envs) | OIDC Core §3.2/§3.3 + Form Post Response Mode (§9a.25) |
 | eKYC-IDA (claims / verified_claims) | implemented | eKYC-IDA §5.5 + §5 |
 | JAR `request_uri` | implemented | RFC 9101 §5 |
 | CIBA signed request objects | implemented | CIBA §7.1 |
@@ -1014,6 +1029,8 @@ recommended fields (advertised only when actually supported):
 - `claims_parameter_supported: true` + `claims_supported`
 - `backchannel_logout_supported: true` +
   `backchannel_logout_session_supported`
+- OIDC Session Management: `check_session_iframe` on every interactive
+  profile; `session_state` on the authorize response (§9a.26)
 - `revocation_endpoint_auth_methods_supported`,
   `introspection_endpoint_auth_methods_supported`
 - CIBA: `backchannel_authentication_endpoint`,
@@ -2405,9 +2422,10 @@ link resolves in §12.
 | Family | Routes | Spec anchors |
 |---|---|---|
 | Discovery | `/.well-known/openid-configuration`, `/.well-known/oauth-authorization-server`, `/.well-known/jwks.json`, `/.well-known/webfinger`, `/.well-known/openid-credential-issuer`, `/.well-known/openid-credential-verifier`, `/openapi.json` | OIDC Discovery §2/§3, RFC 8414, RFC 7517, RFC 7033, OID4VCI §11.2, OID4VP §11 |
-| Authorization | `/oauth/authorize` (GET), `/oauth/authorize/continue`, `/oauth/login` (GET+POST), `/oauth/par` (POST), `/oauth/vp/response` (POST), `/v1/auth/wallet/metadata` (GET) | RFC 6749 §4.1, RFC 7636, RFC 9126, RFC 9101, JARM, OID4VP §5, OID4VCI §13.3 |
+| Authorization | `/oauth/authorize` (GET), `/oauth/authorize/continue`, `/oauth/login` (GET+POST), `/oauth/par` (POST), `/oauth/vp/request/{id}` (GET+POST), `/oauth/vp/response` (POST), `/v1/auth/verifier/request` (POST), `/v1/auth/wallet/metadata` (GET) | RFC 6749 §4.1, RFC 7636, RFC 9126, RFC 9101, JARM, OID4VP §5, OID4VCI §13.3 |
 | Token / introspection / revocation | `/oauth/token`, `/oauth/introspect`, `/oauth/revoke`, `/mtls/oauth/token`, `/mtls/oauth/revoke` | RFC 6749 §3.2/§6, RFC 7662 + RFC 9701, RFC 7009, RFC 8705, RFC 8693, RFC 8628 (incl. `/oauth/device`+`/device/verify`), CIBA poll grant |
 | Userinfo / logout | `/oauth/userinfo` (GET+POST), `/oauth/logout`, `/oauth/backchannel-logout` | OIDC Core §5.3.1, OIDC RP-Initiated Logout, OIDC Back-Channel Logout |
+| Session | `/oauth/check-session` (GET), `/oauth/check-session/iframe` | OIDC Session Management §3.3 (§9a.26) |
 | CIBA | `/oauth/bc-authorize`, `/v1/ciba/{approve,assisted/*}` | CIBA §4-§7, RFC 7523 |
 | Grants | `/oauth/grants`, `/oauth/grants/{id}` (GET/PATCH/DELETE) | FAPI 2.0 Grant Management |
 | DCR | `/oauth/register`, `/oauth/register/{client_id}` (GET/PUT/DELETE) | RFC 7591, RFC 7592 |
@@ -2479,6 +2497,9 @@ sections above refer to these documents.
 | OIDC Discovery | [openid.net/specs/openid-connect-discovery-1_0.html](https://openid.net/specs/openid-connect-discovery-1_0.html) | `/.well-known/openid-configuration` |
 | OIDC RP-Initiated Logout | [openid.net/specs/openid-connect-rpinitiated-1_0.html](https://openid.net/specs/openid-connect-rpinitiated-1_0.html) | `/oauth/logout` |
 | OIDC Back-Channel Logout | [openid.net/specs/openid-connect-backchannel-1_0.html](https://openid.net/specs/openid-connect-backchannel-1_0.html) | logout tokens + fan-out |
+| OIDC Session Management | [openid.net/specs/openid-connect-session-1_0.html](https://openid.net/specs/openid-connect-session-1_0.html) | `check_session_iframe` + `session_state` (§9a.26) |
+| OAuth 2.0 Form Post Response Mode | [openid.net/specs/oauth-v2-form-post-response-mode-1_0.html](https://openid.net/specs/oauth-v2-form-post-response-mode-1_0.html) | `response_mode=form_post` (§9a.25) |
+| SIOPv2 (Self-Issued OP) | [openid.net/specs/openid-connect-self-issued-v2-1_0.html](https://openid.net/specs/openid-connect-self-issued-v2-1_0.html) | wallet audience `https://self-issued.me/v2` (§9a.27) |
 | JARM | [openid.net/specs/oauth-v2-jarm.html](https://openid.net/specs/oauth-v2-jarm.html) | signed response modes |
 | CIBA | [openid.net/specs/openid-client-initiated-backchannel-authentication-core-1_0.html](https://openid.net/specs/openid-client-initiated-backchannel-authentication-core-1_0.html) | `/oauth/bc-authorize` poll/ping |
 | FAPI 2.0 Security Profile | [openid.net/specs/fapi-2_0-security-profile.html](https://openid.net/specs/fapi-2_0-security-profile.html) | platform default posture |
@@ -2502,6 +2523,7 @@ sections above refer to these documents.
 | SCIM 2.0 Core Schema | [RFC 7643](https://datatracker.ietf.org/doc/html/rfc7643) | user/group schema |
 | SCIM 2.0 Protocol | [RFC 7644](https://datatracker.ietf.org/doc/html/rfc7644) | `/scim/v2/*` incl. Bulk §3.7 |
 | SAML 2.0 (metadata/ACS) | [OASIS SAML v2.0](https://docs.oasis-open.org/security/saml/v2.0/) | enterprise connections |
+| ISO/IEC 18013-5 (RICAL) | [ISO/IEC 18013-5:2021](https://www.iso.org/standard/69084.html) Annex F.3.2 | verifier request-object chain trust (§9a.27) |
 
 ## 13. Open Questions
 
