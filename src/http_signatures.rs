@@ -356,6 +356,8 @@ mod tests {
         use uuid::Uuid;
         AuthenticatedClient {
             backchannel_logout_uri: None,
+            frontchannel_logout_uri: None,
+            frontchannel_logout_session_required: false,
             id: Uuid::new_v4(),
             client_id: "test".into(),
             env_id: Uuid::new_v4(),

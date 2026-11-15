@@ -476,6 +476,12 @@ CREATE TABLE IF NOT EXISTS auth.oauth_clients (
     -- OIDC Back-Channel Logout 1.0 (Story 1.1.37).
     backchannel_logout_uri                  TEXT,
     backchannel_logout_session_required     BOOLEAN NOT NULL DEFAULT false,
+    -- OIDC Front-Channel Logout 1.0 (auth DESIGN 9a.28): the client's
+    -- logout-iframe URL (https, no query components - FCL 2) + the
+    -- per-client sid demand (FCL 2.2). The OP's logout-done page embeds
+    -- one iframe per registered client with iss (+ sid).
+    frontchannel_logout_uri                 TEXT,
+    frontchannel_logout_session_required    BOOLEAN NOT NULL DEFAULT false,
     -- OIDC 3rd-Party-Initiated Login (OAuth-R): the third party's
     -- login-initiation URI at the client (https-validated at DCR).
     initiate_login_uri                      TEXT,

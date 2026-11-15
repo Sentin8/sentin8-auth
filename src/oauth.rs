@@ -150,6 +150,15 @@ pub struct AuthenticatedClient {
     /// mint gates the claim on this field).
     /// The backchannel logout uri.
     pub backchannel_logout_uri: Option<String>,
+    /// The client's registered Front-Channel Logout URI (DESIGN
+    /// §9a.28) - the OP embeds one logout iframe per registered
+    /// client on its logout-done page (iss + sid per FCL 2).
+    /// The frontchannel logout uri.
+    pub frontchannel_logout_uri: Option<String>,
+    /// The client's FCL session-required demand (FCL 2.2) - the
+    /// iframe call MUST carry `sid`.
+    /// The frontchannel logout session required.
+    pub frontchannel_logout_session_required: bool,
     /// Registered scopes (TEXT[]).
     /// The scopes.
     pub scopes: Vec<String>,
@@ -794,6 +803,17 @@ pub async fn authenticate_client(
         .ok()
         .flatten()
         .filter(|s: &String| !s.is_empty());
+    // The Front-Channel Logout surface (DESIGN §9a.28).
+    let frontchannel_logout_uri: Option<String> = row
+        .try_get::<Option<String>, _>("frontchannel_logout_uri")
+        .ok()
+        .flatten()
+        .filter(|s: &String| !s.is_empty());
+    let frontchannel_logout_session_required: bool = row
+        .try_get::<Option<bool>, _>("frontchannel_logout_session_required")
+        .ok()
+        .flatten()
+        .unwrap_or(false);
 
     let is_confidential = secret_hash.is_some()
         || mtls_dn.is_some()
@@ -836,6 +856,8 @@ pub async fn authenticate_client(
             subject_type: subject_type.clone(),
             sector_identifier_uri: sector_identifier_uri.clone(),
             backchannel_logout_uri: backchannel_logout_uri.clone(),
+            frontchannel_logout_uri: frontchannel_logout_uri.clone(),
+            frontchannel_logout_session_required,
         },
         software_id.as_deref(),
         software_statement.as_deref(),
@@ -1050,6 +1072,8 @@ pub async fn authenticate_client(
         subject_type,
         sector_identifier_uri,
         backchannel_logout_uri,
+        frontchannel_logout_uri: frontchannel_logout_uri.clone(),
+        frontchannel_logout_session_required,
     })
 }
 
@@ -1364,6 +1388,15 @@ pub struct DiscoveryDocument {
     /// first-class in auth - logout tokens include the session id).
     /// The backchannel logout session supported.
     pub backchannel_logout_session_supported: bool,
+    /// OIDC Front-Channel Logout 1.0 §4 advertisement (DESIGN §9a.28):
+    /// the OP embeds per-client logout iframes on its logout-done
+    /// page, carrying `iss` (+ `sid` when the client demands it).
+    /// The frontchannel logout supported.
+    pub frontchannel_logout_supported: bool,
+    /// Whether the front-channel logout iframe calls carry `sid`
+    /// (the same session-identifier plane as back-channel).
+    /// The frontchannel logout session supported.
+    pub frontchannel_logout_session_supported: bool,
     /// Client-auth methods the revocation endpoint accepts (RFC 7009 §2;
     /// DESIGN §9a.4) - same method set as the token endpoint.
     /// The revocation endpoint auth methods supported.
@@ -1757,6 +1790,12 @@ pub async fn discovery(
         // logout tokens carry `sid` (backchannel_logout.rs).
         backchannel_logout_supported: true,
         backchannel_logout_session_supported: true,
+        // DESIGN §9a.28 - the Front-Channel Logout advertisement: the
+        // discovery carries BOTH flags (the suite's
+        // CheckDiscEndpointFrontchannelLogoutSupported + the session
+        // variant read exactly these).
+        frontchannel_logout_supported: true,
+        frontchannel_logout_session_supported: true,
         // DESIGN §9a.4 - the revocation and introspection
         // endpoints authenticate clients with the same method set as
         // the token endpoint (RFC 8705 aliases included when mTLS is
@@ -6315,7 +6354,9 @@ async fn handle_code_exchange(
         // session-managing RP - an unrequested sid rides as an
         // unexpected claim in every other family's id_token profile
         // checks, e.g. the FAPI2 known-claims whitelist).
-        if client.backchannel_logout_uri.is_some() {
+        if client.backchannel_logout_uri.is_some()
+            || client.frontchannel_logout_uri.is_some()
+        {
             if let Some(sid) = code_data["session_token"].as_str().filter(|s| !s.is_empty()) {
                 id_claims["sid"] = serde_json::json!(sid);
             }
@@ -8674,9 +8715,39 @@ pub async fn logout(
 
     // No landing target: a session-scoped logout - the confirmation
     // page (the suite's ExpectSuccessfulLogoutPage modules screenshot a
-    // "logged out" page; a /sign-in 302 shows the LOGIN page).
+    // "logged out" page; a /sign-in 302 shows the LOGIN page). The
+    // FRONT-CHANNEL logout iframes ride this page (DESIGN §9a.28): one
+    // iframe per REGISTERED client with a frontchannel_logout_uri,
+    // carrying `iss` (+ `sid` when the client demands it).
     if uri.is_none() {
-        return terminal_logout_page(None);
+        let issuer = resolve_issuer(&state.config, &headers);
+        let browser_session = crate::handlers::extract_session_token(&headers).map(|t| t.to_string());
+        let (sid, fcl_rows) = match resolve_frontchannel_rows(&state, &browser_session).await {
+            Ok(v) => v,
+            Err(_) => (None, Vec::new()),
+        };
+        // Revoke the browser session FIRST (the session ends - the
+        // iframe calls + any backchannel fanout carry its sid).
+        if let Some(s) = sid.as_deref() {
+            let _ = crate::sessions::Session::revoke(&state.pool, s).await;
+        }
+        let body = crate::login_page::logout_confirmation_page_with_fcl(
+            &issuer,
+            sid.as_deref(),
+            &fcl_rows,
+        );
+        let mut resp = (StatusCode::OK, body).into_response();
+        resp.headers_mut().insert(
+            axum::http::header::SET_COOKIE,
+            clear_cookie
+                .parse()
+                .unwrap_or(axum::http::HeaderValue::from_static("")),
+        );
+        resp.headers_mut().insert(
+            axum::http::header::CONTENT_TYPE,
+            axum::http::HeaderValue::from_static("text/html; charset=utf-8"),
+        );
+        return resp;
     }
     let uri = uri.unwrap_or_default();
 
@@ -8897,6 +8968,53 @@ pub struct LogoutQuery {
 }
 
 // ── Helpers ─────────────────────────────────────────────────────────────
+
+/// The Front-Channel Logout row resolution (DESIGN §9a.28): the
+/// browser session's `sid` + every client of the session's tenant
+/// plane carrying a `frontchannel_logout_uri` -
+/// `(uri, session_required)` pairs the logout-done page embeds as
+/// iframes. Reads go through the platform-plane transaction (the
+/// logout handler is an unauthenticated browser redirect - the same
+/// RLS pattern the backchannel fanout uses).
+async fn resolve_frontchannel_rows(
+    state: &AppState,
+    browser_session: &Option<String>,
+) -> Result<(Option<String>, Vec<(String, bool)>), String> {
+    // The session sid: only when a browser session cookie exists and
+    // is ACTIVE (a logout without a session carries no sid - the
+    // iframes then carry `iss` alone unless a client demands sid,
+    // which is its RP-side contract violation to flag, not ours).
+    let mut sid: Option<String> = None;
+    if let Some(tok) = browser_session {
+        match crate::sessions::Session::find_by_token(&state.pool, tok).await {
+            Ok(Some(s)) => sid = Some(s.id.to_string()),
+            Ok(None) => {}
+            Err(e) => {
+                tracing::warn!(error = %e, "logout: frontchannel session lookup failed")
+            }
+        }
+    }
+    let mut tx = state
+        .pool
+        .begin()
+        .await
+        .map_err(|e| format!("begin: {e}"))?;
+    let _ = sqlx::query("SELECT sentin8_set_tenant_context($1)")
+        .bind(crate::config::SYSTEM_ENV_ID)
+        .execute(&mut *tx)
+        .await;
+    let rows = sqlx::query_as::<_, (String, bool)>(
+        r#"SELECT frontchannel_logout_uri, frontchannel_logout_session_required
+           FROM oauth_clients
+           WHERE frontchannel_logout_uri IS NOT NULL
+             AND frontchannel_logout_uri <> ''"#,
+    )
+    .fetch_all(&mut *tx)
+    .await
+    .map_err(|e| format!("frontchannel rows: {e}"))?;
+    let _ = tx.commit().await;
+    Ok((sid, rows))
+}
 
 /// Is `uri` registered for the client? Exact string match, with RFC 8252
 /// loopback port equivalence for native apps.

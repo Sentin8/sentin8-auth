@@ -64,6 +64,17 @@ pub struct RegisterRequest {
     /// Token carry `sid`; stored + echoed like the URI (design §9a.26).
     #[serde(default)]
     pub backchannel_logout_session_required: Option<bool>,
+    /// OIDC Front-Channel Logout (§2, design §9a.28): the client's
+    /// logout-iframe URL - the OP embeds one iframe per registered
+    /// client on its logout-done page, carrying `iss` (+ `sid` when
+    /// demanded). https REQUIRED, no query components (FCL §2 -
+    /// a URI with a query string rejects `400 invalid_client_metadata`).
+    #[serde(default)]
+    pub frontchannel_logout_uri: Option<String>,
+    /// OIDC Front-Channel Logout (§2.2): the RP's demand that the
+    /// iframe call carry `sid` (design §9a.28).
+    #[serde(default)]
+    pub frontchannel_logout_session_required: Option<bool>,
     #[serde(default)]
     /// The grant types.
     pub grant_types: Vec<String>,
@@ -182,6 +193,13 @@ pub struct RegisterResponse {
     /// OIDC Back-Channel Logout (§2.2) - the session-required flag, echoed.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub backchannel_logout_session_required: Option<bool>,
+    /// OIDC Front-Channel Logout (§2) - echoed per FCL-2 (design §9a.28).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub frontchannel_logout_uri: Option<String>,
+    /// OIDC Front-Channel Logout (§2.2) - the session-required flag,
+    /// echoed (design §9a.28).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub frontchannel_logout_session_required: Option<bool>,
     /// The grant types.
     pub grant_types: Vec<String>,
     /// The response types.
@@ -239,6 +257,14 @@ pub struct UpdateRequest {
     /// (update form - COALESCE onto the existing value per RFC 7592).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub backchannel_logout_session_required: Option<bool>,
+    /// OIDC Front-Channel Logout (§2) (update form - COALESCE onto the
+    /// existing value per RFC 7592; design §9a.28).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub frontchannel_logout_uri: Option<String>,
+    /// OIDC Front-Channel Logout (§2.2) - the session-required flag
+    /// (update form - COALESCE; design §9a.28).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub frontchannel_logout_session_required: Option<bool>,
     #[serde(default)]
     /// The redirect uris.
     pub redirect_uris: Option<Vec<String>>,
@@ -765,12 +791,13 @@ pub async fn register(
                 tls_client_auth_subject_dn, self_signed_tls_client_auth_thumbprint,
                 consent_required, backchannel_client_notification_endpoint,
                 post_logout_redirect_uris, initiate_login_uri,
-                backchannel_logout_uri, backchannel_logout_session_required)
+                backchannel_logout_uri, backchannel_logout_session_required,
+                frontchannel_logout_uri, frontchannel_logout_session_required)
            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10,
                    $11, $12, $13, $14, $15, $16, $17, $18, $19,
                    $20, $21, $22, $23, $24, $25, $26, true,
                    $27, $28, $29, $30,
-                   $31, $32, $33, $34)
+                   $31, $32, $33, $34, $35, $36)
            RETURNING
                client_id, client_id_issued_at, client_secret_expires_at,
                client_name, redirect_uris, grant_types, response_types,
@@ -779,7 +806,8 @@ pub async fn register(
                logo_uri, client_uri, policy_uri, tos_uri, contacts,
                application_type, consent_required, post_logout_redirect_uris,
                initiate_login_uri, backchannel_logout_uri,
-               backchannel_logout_session_required"#,
+               backchannel_logout_session_required,
+               frontchannel_logout_uri, frontchannel_logout_session_required"#,
         env_id,
         &client_id,
         &client_name,
@@ -821,6 +849,11 @@ pub async fn register(
         req.backchannel_logout_uri.as_deref().filter(|u| !u.is_empty()),
         // OIDC Back-Channel Logout §2.2 - the sid-required demand.
         req.backchannel_logout_session_required.unwrap_or(false),
+        // OIDC Front-Channel Logout (§2, design §9a.28) - https required,
+        // no query components (FCL §2: the OP rejects a logout URI with
+        // a query string at registration).
+        req.frontchannel_logout_uri.as_deref().filter(|u| !u.is_empty()),
+        req.frontchannel_logout_session_required.unwrap_or(false),
     )
     .fetch_one(&mut *tx)
     .await
@@ -867,6 +900,8 @@ pub async fn register(
             initiate_login_uri: row.initiate_login_uri,
             backchannel_logout_uri: row.backchannel_logout_uri,
             backchannel_logout_session_required: Some(row.backchannel_logout_session_required),
+            frontchannel_logout_uri: row.frontchannel_logout_uri,
+            frontchannel_logout_session_required: Some(row.frontchannel_logout_session_required),
         }),
     ))
 }
@@ -921,7 +956,8 @@ pub async fn get_client(
                jwks_uri, jwks, sector_identifier_uri, application_type,
                registration_access_token_hash, consent_required,
                initiate_login_uri, backchannel_logout_uri,
-               backchannel_logout_session_required
+               backchannel_logout_session_required,
+               frontchannel_logout_uri, frontchannel_logout_session_required
            FROM oauth_clients
            WHERE client_id = $1 AND dcr_protected = true"#,
         client_id,
@@ -961,6 +997,8 @@ pub async fn get_client(
         "initiate_login_uri": row.initiate_login_uri,
         "backchannel_logout_uri": row.backchannel_logout_uri,
         "backchannel_logout_session_required": row.backchannel_logout_session_required,
+        "frontchannel_logout_uri": row.frontchannel_logout_uri,
+        "frontchannel_logout_session_required": row.frontchannel_logout_session_required,
         "application_type": row.application_type,
         "consent_required": row.consent_required,
     })))
@@ -1082,6 +1120,8 @@ pub async fn update_client(
                initiate_login_uri = COALESCE($19, initiate_login_uri),
                backchannel_logout_uri = COALESCE($20, backchannel_logout_uri),
                backchannel_logout_session_required = COALESCE($21, backchannel_logout_session_required),
+               frontchannel_logout_uri = COALESCE($22, frontchannel_logout_uri),
+               frontchannel_logout_session_required = COALESCE($23, frontchannel_logout_session_required),
                updated_at = now()
            WHERE client_id = $1
            RETURNING
@@ -1092,7 +1132,8 @@ pub async fn update_client(
                logo_uri, client_uri, policy_uri, tos_uri, contacts,
                jwks_uri, jwks, sector_identifier_uri, application_type, consent_required,
                initiate_login_uri, backchannel_logout_uri,
-               backchannel_logout_session_required"#,
+               backchannel_logout_session_required,
+               frontchannel_logout_uri, frontchannel_logout_session_required"#,
         client_id,
         req.client_name,
         &redirect_uris,
@@ -1116,6 +1157,10 @@ pub async fn update_client(
         // RFC 7592 update (the static client's bc registration path).
         req.backchannel_logout_uri.as_deref().filter(|u| !u.is_empty()),
         req.backchannel_logout_session_required,
+        // OIDC Front-Channel Logout (§2, design §9a.28) - both RP metadata
+        // fields ride the RFC 7592 update.
+        req.frontchannel_logout_uri.as_deref().filter(|u| !u.is_empty()),
+        req.frontchannel_logout_session_required,
     )
     .fetch_optional(&mut *tx)
     .await
@@ -1159,6 +1204,8 @@ pub async fn update_client(
         "initiate_login_uri": row.initiate_login_uri,
         "backchannel_logout_uri": row.backchannel_logout_uri,
         "backchannel_logout_session_required": row.backchannel_logout_session_required,
+        "frontchannel_logout_uri": row.frontchannel_logout_uri,
+        "frontchannel_logout_session_required": row.frontchannel_logout_session_required,
         "application_type": row.application_type,
         "consent_required": row.consent_required,
     })))

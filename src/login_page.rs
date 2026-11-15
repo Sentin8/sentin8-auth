@@ -281,20 +281,60 @@ a {{ color: #D4AF37; }}
 /// landing - a 302 to `/sign-in` shows the LOGIN page, not a logout
 /// confirmation. Same JS-free panel family as the error page.
 pub fn logout_confirmation_page() -> String {
-    r#"<!DOCTYPE html>
+    logout_confirmation_page_with_fcl("", None, &[])
+}
+
+/// The Front-Channel Logout confirmation page (DESIGN §9a.28): the
+/// same signed-out panel PLUS one hidden iframe per client registered
+/// with a `frontchannel_logout_uri` - the iframe URL is the client's
+/// REGISTERED URI with `iss` (+ `sid` when the client demands it or a
+/// session exists) appended per FCL 2. The iframes are the spec's
+/// contract: the user's browser loads each RP's logout endpoint and
+/// the RP clears ITS session (first-party to the OP host, no
+/// third-party cookies).
+#[allow(clippy::type_complexity)]
+pub fn logout_confirmation_page_with_fcl(
+    issuer: &str,
+    sid: Option<&str>,
+    fcl_rows: &[(String, bool)],
+) -> String {
+    let esc = |s: &str| -> String {
+        s.replace('&', "&amp;")
+            .replace('<', "&lt;")
+            .replace('>', "&gt;")
+            .replace('"', "&quot;")
+    };
+    let mut iframes = String::new();
+    for (uri, session_required) in fcl_rows {
+        // FCL 2: the logout URI carries iss (URL-encoded) + sid; the
+        // spec FORBIDS the REGISTERED URI itself from carrying a query
+        // string, so appending with `?` is always correct.
+        let mut frame = format!("{}?iss={}", esc(uri), urlencode(issuer));
+        if *session_required || sid.is_some() {
+            if let Some(s) = sid {
+                frame.push_str(&format!("&sid={}", urlencode(s)));
+            }
+        }
+        iframes.push_str(&format!(
+            r#"<iframe style="display:none" src="{}"></iframe>"#,
+            frame
+        ));
+    }
+    format!(
+        r#"<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Signed out - Sentin8</title>
 <style>
-body { font-family: Inter, system-ui, sans-serif; background: #0f1117; color: #e6e8ee;
-       display: flex; align-items: center; justify-content: center; min-height: 100vh; margin: 0; }
-.panel { background: #171a23; border: 1px solid #262b38; border-radius: 12px;
-        padding: 2rem; width: 100%; max-width: 420px; box-sizing: border-box; }
-h1 { font-size: 1.25rem; margin: 0 0 1rem; }
-p { font-size: 0.95rem; margin: 0.5rem 0; }
-a { color: #D4AF37; }
+body {{ font-family: Inter, system-ui, sans-serif; background: #0f1117; color: #e6e8ee;
+       display: flex; align-items: center; justify-content: center; min-height: 100vh; margin: 0; }}
+.panel {{ background: #171a23; border: 1px solid #262b38; border-radius: 12px;
+        padding: 2rem; width: 100%; max-width: 420px; box-sizing: border-box; }}
+h1 {{ font-size: 1.25rem; margin: 0 0 1rem; }}
+p {{ font-size: 0.95rem; margin: 0.5rem 0; }}
+a {{ color: #D4AF37; }}
 </style>
 </head>
 <body>
@@ -303,9 +343,10 @@ a { color: #D4AF37; }
 <p id="confirmation_message">Your session has ended.</p>
 <p><a href="/sign-in">Sign in again</a></p>
 </div>
+{iframes}
 </body>
 </html>"#
-        .to_string()
+    )
 }
 
 /// A server-rendered TERMINAL error page for an authorization request
