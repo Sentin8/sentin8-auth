@@ -872,6 +872,20 @@ impl SigningKeys {
     /// certificate mode, DESIGN §9a.19): the JWS header carries
     /// `x5c: [<DER cert std-base64>]` of the signing key's
     /// self-issued certificate and NO `jwk` member.
+    ///
+    /// (HAIP-X5C-1) When the chain comes from the environment's
+    /// issuance profile (`chain_override`), the SIGNER is the key the
+    /// chain's leaf certificate is BOUND to - resolved by matching the
+    /// leaf's EC public point against the persisted key set - NOT
+    /// whatever key is currently ACTIVE. The profile's issuance leaf is
+    /// minted for ONE JWKS key (the seed reads the live JWKS and binds
+    /// it); an active-key rotation between the seed and the issuance
+    /// made the credential sign with the new key while x5c[0] carried
+    /// the old key's certificate - the JWS signature failed verification
+    /// against the embedded cert (the suite's
+    /// ValidateSdJwtCredentialX5cCertificateChain). The persisted key
+    /// table keeps every rotated key, so the leaf-matched signer always
+    /// resolves.
     pub fn sign_value_typed_x5c(
         &self,
         claims: &serde_json::Value,
@@ -879,9 +893,23 @@ impl SigningKeys {
         typ: &str,
         chain_override: Option<&[String]>,
     ) -> Result<String, String> {
-        let key = self
-            .signing_key_for(alg)
-            .ok_or_else(|| format!("no {alg} signing key available"))?;
+        let key = match chain_override {
+            Some(c) if !c.is_empty() => {
+                let leaf_der_b64 = c
+                    .first()
+                    .ok_or("empty x5c chain override")?;
+                let leaf_point = leaf_ec_point_b64(leaf_der_b64)?;
+                self.all
+                    .iter()
+                    .find(|k| k.ec_pk_b64.as_deref() == Some(leaf_point.as_str()))
+                    .ok_or_else(|| {
+                        "the issuance profile's leaf certificate does not bind any persisted signing key".to_string()
+                    })?
+            }
+            _ => self
+                .signing_key_for(alg)
+                .ok_or_else(|| format!("no {alg} signing key available"))?,
+        };
         let chain: Vec<String> = match chain_override {
             Some(c) if !c.is_empty() => c.to_vec(),
             _ => key
@@ -2010,4 +2038,28 @@ pub(crate) fn pem_str_to_self_cert_b64(pem: &str) -> Option<String> {
     params.is_ca = rcgen::IsCa::Ca(rcgen::BasicConstraints::Unconstrained);
     let cert = params.self_signed(&kp).ok()?;
     Some(base64::engine::general_purpose::STANDARD.encode(cert.der()))
+}
+
+/// Extract a DER certificate's UNCOMPRESSED EC/P-256 public point
+/// (URL-safe base64, the `ec_pk_b64` comparison form - HAIP-X5C-1:
+/// matching the issuance leaf against the persisted signing keys).
+/// The point rides the SubjectPublicKeyInfo's BIT STRING (a 0x04 ||
+/// x || y, 65-byte window).
+pub(crate) fn leaf_ec_point_b64(cert_der_std_b64: &str) -> Result<String, String> {
+    use base64::Engine as _;
+    let der = base64::engine::general_purpose::STANDARD
+        .decode(cert_der_std_b64)
+        .map_err(|e| format!("x5c leaf DER decode: {e}"))?;
+    // Scan for the uncompressed point inside the SPKI BIT STRING
+    // (0x03 0x42 0x00 <65-byte point>) or OCTET STRING wrappers.
+    let windows: Vec<usize> = (0..der.len().saturating_sub(65))
+        .filter(|&i| der[i] == 0x04 && der[i + 1] == 0x42 && der[i + 2] == 0x00)
+        .collect();
+    if let Some(&i) = windows.first() {
+        let point = &der[i + 3..i + 68];
+        if point.first() == Some(&0x04) && point.len() == 65 {
+            return Ok(base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(point));
+        }
+    }
+    Err("x5c leaf carries no uncompressed P-256 public point".into())
 }

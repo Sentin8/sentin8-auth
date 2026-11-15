@@ -1705,6 +1705,19 @@ plan's EnsureJwksHasNoPrivateOrSymmetricKeyMaterial), and the
 `client_attestation` block (`issuer` + `trust_anchor` +
 `attester_jwks` private keys mirroring the registration).
 
+**HAIP-X5C-1 (the leaf-matched signer).** The credential and
+status-list JWS x5c mints sign with the key the chain's LEAF
+CERTIFICATE binds - resolved by matching the leaf's uncompressed P-256
+public point against the PERSISTED key set, never with the
+currently-ACTIVE key. The environment's issuance leaf is minted (by
+the rig's seed) for ONE live JWKS key; an active-key rotation between
+the seed and an issuance made the credential sign with the new key
+while `x5c[0]` carried the old key's certificate - the suite's
+`ValidateSdJwtCredentialX5cCertificateChain` verifies the JWS against
+the embedded cert and failed. The persisted-key table keeps every
+rotated key (JWKS overlap), so the leaf-matched signer always
+resolves; a leaf binding no persisted key rejects the mint.
+
 
 ### 9a.21 DPoP sender-constraint journey - PAR lifecycle & the jkt chain
 
