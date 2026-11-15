@@ -5015,6 +5015,26 @@ pub async fn authorize_continue(
                 urlencode(&resolve_issuer(&state.config, &headers))
             ));
         }
+        // OIDC Core §3.3.2.1 (the hybrid cells, DESIGN §9a.13): a
+        // response_type carrying an id_token/token member delivers
+        // EVERY response - the DENY error included - in the URL
+        // FRAGMENT (RejectErrorInUrlQuery on the user-rejects module);
+        // the query channel serves the code-only cells only.
+        if crate::oauth::is_fragment_response(
+            req.response_type.as_deref().unwrap_or("code"),
+        ) {
+            url = build_callback_fragment_url(
+                &req.redirect_uri,
+                "error=access_denied",
+                &[("state", urlencode(&req.state))],
+            );
+            if profile.require_iss {
+                url.push_str(&format!(
+                    "&iss={}",
+                    urlencode(&resolve_issuer(&state.config, &headers))
+                ));
+            }
+        }
         // The form_post family (design §9a.25): the deny rides the one-time
         // HTML form as well (the error channel mirrors the response_mode).
         if is_form_post_flow(req.response_mode.as_deref(), &profile.profile) {
@@ -9125,6 +9145,21 @@ async fn resolve_frontchannel_rows(
 fn build_callback_url(base: &str, first: &str, rest: &[(&str, String)]) -> String {
     let sep = if base.contains('?') { "&" } else { "?" };
     let mut url = format!("{base}{sep}{first}");
+    for (k, v) in rest {
+        url.push('&');
+        url.push_str(k);
+        url.push('=');
+        url.push_str(v);
+    }
+    url
+}
+
+/// The FRAGMENT-channel form of [`build_callback_url`] (OIDC Core
+/// §3.1.2.6/§3.3.2.1 - the hybrid/implicit cells deliver their
+/// responses, errors included, after a `#`): the base keeps its own
+/// query members; the OAuth parameters join the fragment.
+fn build_callback_fragment_url(base: &str, first: &str, rest: &[(&str, String)]) -> String {
+    let mut url = format!("{base}#{first}");
     for (k, v) in rest {
         url.push('&');
         url.push_str(k);
