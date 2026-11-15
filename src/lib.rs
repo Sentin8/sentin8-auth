@@ -20,8 +20,7 @@ pub mod backchannel_logout;
 /// Bot / credential-stuffing protection on public flows.
 pub mod bot_protection;
 /// Client-Initiated Backchannel Authentication (RFC 9436 family).
-pub mod ciba;
-/// Attestation-based client authentication
+pub mod ciba;/// Attestation-based client authentication
 /// (draft-ietf-oauth-attestation-based-client-auth; DESIGN §9a.19).
 pub mod client_attestation;
 /// OID4VCI credential-response encryption (§12.2.4; DESIGN §9a.19
@@ -58,6 +57,7 @@ pub mod jar;
 pub mod jarm;
 /// JWKS document building and key rotation.
 pub mod jwks;
+pub mod x5c_leaf;
 /// JWT minting and verification primitives.
 pub mod jwt;
 /// JWT introspection (RFC 7662).

@@ -813,10 +813,32 @@ impl SigningKeys {
         // while the HAIP plan's
         // `ValidateStatusListTokenX5cCertificateChain` requires the x5c
         // chain. RFC 7515 permits coexisting header members.
-        let key = self
-            .signing_key_for("ES256")
-            .or_else(|| self.signing_key_for("RS256"))
-            .ok_or_else(|| "no ES256/RS256 key for the status-list token".to_string())?;
+        //
+        // HAIP-X5C-1 (the leaf-matched signer): when the profile chain
+        // is present, the SIGNER is the key the chain's leaf certificate
+        // binds - resolved by matching the leaf's EC public point
+        // against the PERSISTED key set, never the currently-ACTIVE key
+        // (an active-key rotation between the seed and the issuance
+        // made the token unverifiable against x5c[0] - the same class
+        // the credential mint fixed).
+        let key = match x5c_chain.filter(|c| !c.is_empty()) {
+            Some(chain) => {
+                let leaf = chain.first().ok_or("empty x5c chain")?;
+                let leaf_point = crate::x5c_leaf::leaf_ec_point_b64(leaf)?;
+                self.all
+                    .iter()
+                    .find(|k| k.ec_pk_b64.as_deref() == Some(leaf_point.as_str()))
+                    .ok_or_else(|| {
+                        "the issuance profile's leaf certificate does not bind any persisted signing key".to_string()
+                    })?
+            }
+            None => self
+                .signing_key_for("ES256")
+                .or_else(|| self.signing_key_for("RS256"))
+                .ok_or_else(|| {
+                    "no ES256/RS256 key for the status-list token".to_string()
+                })?,
+        };
         let alg = if key.ml_dsa_key.is_none() { "ES256" } else { active_signing_alg() };
         let jwks = JwksResponse::from_keys(self);
         let jwk = jwks

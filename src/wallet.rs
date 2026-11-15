@@ -53,6 +53,15 @@ pub struct WalletConnectionConfig {
     #[serde(default)]
     /// The trusted issuers.
     pub trusted_issuers: Vec<String>,
+    /// The trusted mdoc DS (document signer) certificates - std-base64
+    /// DER entries (the x5chain leaf admission list for the mdoc
+    /// presentations, DESIGN §9a.29). Empty = the self-consistency
+    /// fallback (the issuerAuth signature verifies against the
+    /// presented leaf; the connection-level trust is the JWKS pair
+    /// above for sd-jwt and this list for mdoc).
+    #[serde(default)]
+    /// The trusted mdoc DS certificates.
+    pub trusted_mdoc_ds: Vec<String>,
     /// DIF Presentation Exchange `presentation_definition` - which
     /// credentials the env demands at sign-in.
     #[serde(default)]
@@ -1044,6 +1053,9 @@ async fn handle_mdoc_vp_response(
             "wallet connection has no trusted_issuers JWKS configured".into(),
         ));
     }
+    // The mdoc DS trust material (the connection's configured list;
+    // empty = the self-consistency fallback inside the verify).
+    let trusted_mdoc_ds = cfg.trusted_mdoc_ds.clone();
 
     // The transcript inputs (the pending request's client_id/nonce +
     // the response_uri): the redirect-mode B.2.6.1 form.
@@ -1083,8 +1095,10 @@ async fn handle_mdoc_vp_response(
                 // The MSO verify: the issuerAuth COSE_Sign1 signature
                 // against the x5chain leaf + the disclosed-item digest
                 // coverage (the suite's ValidateMdocIssuerSignedSignature
-                // + ValidateMdocIssuerSignedItemDigests).
-                sentin8::mdoc::verify_mso_document(&doc, &transcript, &trusted)
+                // + ValidateMdocIssuerSignedItemDigests). The trusted
+                // material is the connection's mdoc DS list (empty =
+                // the self-consistency fallback).
+                sentin8::mdoc::verify_mso_document(&doc, &transcript, &trusted_mdoc_ds)
                     .map_err(|e| (StatusCode::UNAUTHORIZED, format!("mdoc verification: {e}")))?;
                 let claims =
                     sentin8::mdoc::device_response::disclosed_claims(&doc.issuer_signed)
