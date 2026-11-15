@@ -3454,6 +3454,11 @@ async fn fragment_cell_response(
     if wants_code {
         id_claims["c_hash"] = serde_json::json!(crate::jwt::c_hash(code));
     }
+    // FAPI1-ADV §5.2.2.1 (the suite's ExtractSHash): the fragment
+    // id_token binds the request's `state` via s_hash.
+    if !params.state.is_empty() {
+        id_claims["s_hash"] = serde_json::json!(crate::jwt::s_hash(&params.state));
+    }
     // OIDC Back-Channel Logout / Session Management (design 9a.26):
     // the id_token carries `sid` = the session's persistent id - ONLY
     // for clients that registered the logout surface (BCL 1.0 §2.2).
@@ -5345,6 +5350,12 @@ pub async fn authorize_continue(
         let mut id_claims = id_claims;
         if wants_code {
             id_claims["c_hash"] = serde_json::json!(crate::jwt::c_hash(&code));
+        }
+        // FAPI1-ADV §5.2.2.1 (the suite's ExtractSHash on the hybrid
+        // fragment cells): the id_token binds the authorize request's
+        // `state` via s_hash (the SHA-256 left-half form, jwt.rs).
+        if !req.state.is_empty() {
+            id_claims["s_hash"] = serde_json::json!(crate::jwt::s_hash(&req.state));
         }
         // OIDC Back-Channel Logout / Session Management (design 9a.26) -
         // gated on the client's registered logout surface (BCL 1.0 §2.2).

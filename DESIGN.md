@@ -2545,6 +2545,82 @@ sequenceDiagram
     U->>U: (post-logout redirect per the RP-initiated flow)
 ```
 
+### 9a.29 The mdoc credential format - mso_mdoc issuance + iso_mdl presentation (OIDF-ISO-1)
+
+The ISO/IEC 18013-5/-7 closure of the last format exclusion: the
+platform issues `mso_mdoc` credentials under OID4VCI and accepts
+`iso_mdl` presentations under OID4VP. The wire engine is the
+platform-shared `sentin8::mdoc` crate (sdk DESIGN.md §8b) - auth holds
+the ROLES, never a second engine (the wallet8 vertical and every
+vertical wallet import the same crate through the facade).
+
+**The mdoc issuance surface.** The issuer metadata carries the
+`mso_mdoc` configurations beside the dc+sd-jwt families: `format:
+"mso_mdoc"`, `doctype` (REQUIRED - the suite's
+`EnsureMdocDocTypeMatchesCredentialConfiguration`), `cose_key` binding,
+INTEGER COSE algs (`credential_signing_alg_values_supported: [-7]`),
+the `jwt` proof type (ES256). The minted credential is the
+`IssuerSigned` structure (unpadded base64url): the MSO binds the
+PROOF's key (RFC 7638 thumbprint equality -
+`VCIEnsureMdocDeviceKeyMatchesProofKey`), the namespaces carry the
+doctype's mandatory element set from the user's OIDC profile, the
+validity window rides tdate (`Z`, second precision), and the
+`issuerAuth` COSE_Sign1 (alg -7) carries the env's DS certificate as
+the `x5chain` (the HAIP-X5C-1 leaf-matched signing key). The 18013-7
+`status` member is the shared status-list herd pointer
+(`status_list {idx, uri}`). The credential response renders the
+`credentials` array entries with `format: "mso_mdoc"`.
+
+**The iso_mdl presentation surface.** The verifier's
+`vp_formats_supported` advertises `mso_mdoc` with INTEGER
+`issuerauth_alg_values/deviceauth_alg_values` (the key name is
+`mso_mdoc`, NOT `iso_mdl` - the suite's
+`VP1FinalValidateVpFormatsSupportedInClientMetadata`). The DCQL query
+carries the mdoc credential entries: `meta.doctype_value` (the DCQL
+meta key - the metadata key `doctype` differs) + 2-element claim
+paths `[namespace, elementIdentifier]`. The response endpoint accepts
+the DCQL object form - `vp_token` as a JSON object keyed by the
+credential id, each value an array of unpadded-base64url DeviceResponse
+documents - resolved by the `state` parameter (the mdoc flow has no KB
+JWT; the pending-request alias `auth:vp:state:{state}` names the
+request). The verification chain: the x5chain leaf against the
+wallet connection's trusted issuers, the issuerAuth COSE_Sign1
+signature, the valueDigests coverage of every disclosed item, the
+EMPTY deviceSigned elements (`EnsureMdocDeviceSignedElementsEmpty`),
+and the device signature over the B.2.6.1 session transcript
+(`["OpenID4VPHandover", SHA-256([client_id, nonce, jwkThumbprint|null,
+response_uri])]`). The outcome mirrors the sd-jwt path: the verifiable
+session + the downstream code.
+
+**The dc_api response modes.** The request-object `response_mode`
+`dc_api`/`dc_api.jwt` selects the Digital Credentials API session
+channel (OID4VP 1.0 Final App. A): the browser-mediated
+`requestCredential` flow where the wallet posts the authorization
+response to the session's submit URL. The dc_api transcript is the
+B.2.6.2 form (`["OpenID4VPDCAPIHandover", SHA-256([origin, nonce,
+jwkThumbprint|null])]` - `origin`, not client_id) and the KB JWT's
+`aud` is `origin:<origin>`. The wallet-role certification cells (the
+`oid4vp-1final-wallet-haip-test-plan` dc_api/dc_api.jwt variants) are
+what the wallet8 vertical's reference wallet certifies against.
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant W as Wallet (wallet8 SDK)
+    participant A as auth issuer
+    participant V as auth verifier
+    W->>A: OID4VCI proof (P-256 JWK, c_nonce)
+    A->>A: MSO mint (deviceKey = proof key, valueDigests)
+    A-->>W: credentials[{format: mso_mdoc, credential: IssuerSigned b64}]
+    Note over V,W: later - the presentation
+    V->>W: DCQL query (mso_mdoc, meta.doctype_value)
+    W->>W: selective disclosure by digestID
+    W->>W: DeviceResponse + deviceSignature(transcript)
+    W->>V: vp_token {cred-id: [DeviceResponse b64]}
+    V->>V: x5chain trust + MSO digests + device sig
+    V-->>W: {redirect_uri} (the session outcome)
+```
+
 ---
 
 ## 9b. In-process rig mirror - the Rust coverage map

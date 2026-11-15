@@ -202,6 +202,15 @@ fn verifier_client_metadata(enc_jwk: serde_json::Value) -> serde_json::Value {
                 "sd-jwt_alg_values": ["ES256"],
                 "kb-jwt_alg_values": ["ES256"],
             },
+            // The mdoc format key is `mso_mdoc` with INTEGER COSE algs
+            // (OID4VP 1.0 Final App. B.2.2 - the suite's
+            // VP1FinalValidateVpFormatsSupportedInClientMetadata demands
+            // the key for the iso_mdl variant; strings are an error).
+            // DESIGN §9a.29.
+            "mso_mdoc": {
+                "issuerauth_alg_values": [-7],
+                "deviceauth_alg_values": [-7],
+            },
         },
         "encrypted_response_enc_values_supported": ["A128GCM", "A256GCM"],
         "jwks": { "keys": [] },
@@ -267,17 +276,42 @@ async fn create_verifier_request(
         // (the suite's ValidateRequestObjectAudForVP requires it).
         "aud": "https://self-issued.me/v2",
         "client_metadata": verifier_client_metadata(serde_json::Value::Null),
+        // DCQL (OID4VP Final §5.2): BOTH format families ride the query -
+        // the sd-jwt PID (vct_values meta) and the mdoc PID
+        // (meta.doctype_value - the suite's iso_mdl cells read the
+        // mso_mdoc query with 2-element claim paths [namespace,
+        // elementIdentifier]; DESIGN §9a.29).
         "dcql_query": {
-            "credentials": [ {
-                "id": "pid-credential",
-                "format": "dc+sd-jwt",
-                "meta": { "vct_values": ["urn:eudi:pid:1"] },
-                "claims": [
-                    {"path": ["family_name"]},
-                    {"path": ["given_name"]},
-                    {"path": ["acr"]}
-                ],
-            } ]
+            "credentials": [
+                {
+                    "id": "pid-credential",
+                    "format": "dc+sd-jwt",
+                    "meta": { "vct_values": ["urn:eudi:pid:1"] },
+                    "claims": [
+                        {"path": ["family_name"]},
+                        {"path": ["given_name"]},
+                        {"path": ["acr"]}
+                    ],
+                },
+                {
+                    "id": "pid-mdoc-credential",
+                    "format": "mso_mdoc",
+                    "meta": { "doctype_value": sentin8::mdoc::namespaces::EUDI_PID_DOCTYPE },
+                    "claims": [
+                        {"path": [sentin8::mdoc::namespaces::EUDI_PID_DOCTYPE, "family_name"]},
+                        {"path": [sentin8::mdoc::namespaces::EUDI_PID_DOCTYPE, "given_name"]}
+                    ],
+                },
+                {
+                    "id": "mdl-credential",
+                    "format": "mso_mdoc",
+                    "meta": { "doctype_value": sentin8::mdoc::namespaces::MDL_DOCTYPE },
+                    "claims": [
+                        {"path": [sentin8::mdoc::namespaces::MDL_NAMESPACE, "family_name"]},
+                        {"path": [sentin8::mdoc::namespaces::MDL_NAMESPACE, "given_name"]}
+                    ],
+                },
+            ]
         },
     });
     // HAIP (§9a.19) - the env issuance leaf/chain: the x5c = [leaf, ...]
@@ -356,6 +390,20 @@ async fn create_verifier_request(
             VP_PENDING_TTL_SECS,
         )
         .await;
+    // The OAuth state alias (DESIGN §9a.29): the mdoc presentations
+    // carry no KB JWT - the wallet's `state` parameter names the
+    // pending request (the B.2.6.1 transcript inputs ride the record).
+    if let Some(oauth_state) = pending.get("oauth_state").and_then(|v| v.as_str()) {
+        if !oauth_state.is_empty() {
+            let _: Result<(), _> = conn
+                .set_ex(
+                    format!("auth:vp:state:{oauth_state}"),
+                    serde_json::to_string(&pending).unwrap_or_default(),
+                    VP_PENDING_TTL_SECS,
+                )
+                .await;
+        }
+    }
     // The enc key's kid → pending alias (the DIRECT POST.JWT response
     // resolves ITS key + request by the JWE envelope's kid claim).
     let _ = enc_alias(&conn, enc_pub_jwk["kid"].as_str().unwrap_or_default(), &pending).await;
@@ -673,6 +721,17 @@ async fn vp_response_inner(
         vp_token = got.ok_or_else(|| (StatusCode::BAD_REQUEST, "vp_token missing".to_string()))?;
     }
 
+    // ── The mdoc presentation branch (OIDF-ISO-1, DESIGN §9a.29) ──
+    // The DCQL response object: `vp_token` as a JSON object keyed by
+    // the credential id, each value an ARRAY of unpadded-base64url
+    // DeviceResponse documents (18013-7). The mdoc flow carries NO KB
+    // JWT - the request resolves by the `state` parameter (the
+    // wallet's OAuth state from the authorize redirect), and the
+    // transcript binds the device signature.
+    if let Some(mdoc_result) = handle_mdoc_vp_response(&state, &headers, &vp_token).await? {
+        return Ok(mdoc_result.into_response());
+    }
+
     // ── SD-JWT/KB-JWT verification (design 9a.27) ─────────────
     // The presentation's FIRST nonce: the KB's `nonce` claims the
     // request; the request is looked up BY that nonce (single-use).
@@ -900,6 +959,259 @@ async fn vp_response_inner(
         axum::Json(serde_json::json!({ "redirect_uri": redirect_target })),
     )
         .into_response())
+}
+
+/// The mdoc DeviceResponse branch of the vp response endpoint (DESIGN
+/// §9a.29). Detects the DCQL object form (a JSON object keyed by the
+/// credential id - `None` when the vp_token is the sd-jwt compact
+/// form), resolves the pending request by the `state` parameter,
+/// verifies the MSO (digest coverage + the issuerAuth COSE_Sign1
+/// against the trusted issuers) and the device signature over the
+/// session transcript, and mints the same verifiable-session outcome
+/// as the sd-jwt path.
+///
+/// # Errors
+/// `400` on a malformed presentation or unknown state; `401` on a
+/// failed MSO/device verification; `403` on an untrusted issuer.
+async fn handle_mdoc_vp_response(
+    state: &AppState,
+    headers: &HeaderMap,
+    vp_token: &str,
+) -> Result<Option<axum::response::Response>, (StatusCode, String)> {
+    // Detect the DCQL object form: {"<credential-id>": ["<b64url>"]}.
+    let trimmed = vp_token.trim();
+    if !trimmed.starts_with('{') {
+        return Ok(None); // the sd-jwt compact form
+    }
+    let parsed: serde_json::Value = serde_json::from_str(trimmed)
+        .map_err(|e| (StatusCode::BAD_REQUEST, format!("vp_token object parse: {e}")))?;
+    let Some(obj) = parsed.as_object() else {
+        return Err((StatusCode::BAD_REQUEST, "vp_token must be an object or a string".into()));
+    };
+    if obj.is_empty() {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            "a wallet that cannot return any presentations must return an error response".into(),
+        ));
+    }
+    // Resolve the pending request by the `state` parameter (the mdoc
+    // flow carries no KB JWT - the OAuth state names the request).
+    let oauth_state = headers
+        .get("x-state")
+        .and_then(|v| v.to_str().ok())
+        .map(str::to_string)
+        .or_else(|| obj.get("_state").and_then(|v| v.as_str()).map(str::to_string))
+        .ok_or((
+            StatusCode::BAD_REQUEST,
+            "the mdoc presentation carries no state".into(),
+        ))?;
+    let conn = sentin8::middleware::valkey_client(&state.config.valkey_url, "sentin8:auth")
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    let pending_key = format!("auth:vp:state:{oauth_state}");
+    let pending: Option<String> = conn
+        .get(&pending_key)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    let Some(pending) = pending else {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            "unknown or expired presentation request".into(),
+        ));
+    };
+    let pending: serde_json::Value = serde_json::from_str(&pending).map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("pending decode: {e}"),
+        )
+    })?;
+    // Single-use: delete BEFORE verification.
+    let _: Result<(), _> = conn.del(&pending_key).await;
+    let pending_env: Uuid = pending
+        .get("env_id")
+        .and_then(|s| Uuid::parse_str(s.as_str().unwrap_or("")).ok())
+        .ok_or_else(|| (StatusCode::BAD_REQUEST, "pending request missing env".into()))?;
+    let Some(cfg) = load_wallet_connection(state, pending_env).await? else {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            "wallet connection no longer active".into(),
+        ));
+    };
+    let trusted = trusted_jwks(&cfg);
+    if trusted.is_empty() {
+        return Err((
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "wallet connection has no trusted_issuers JWKS configured".into(),
+        ));
+    }
+
+    // The transcript inputs (the pending request's client_id/nonce +
+    // the response_uri): the redirect-mode B.2.6.1 form.
+    let request_client_id = pending
+        .get("client_id")
+        .and_then(|v| v.as_str())
+        .unwrap_or_default()
+        .to_string();
+    let request_nonce = pending
+        .get("nonce")
+        .and_then(|v| v.as_str())
+        .unwrap_or_default()
+        .to_string();
+    let response_uri = format!("{}/oauth/vp/response", resolve_issuer(&state.config, headers));
+    let transcript = sentin8::mdoc::transcript::redirect_transcript(
+        &request_client_id,
+        &request_nonce,
+        None,
+        &response_uri,
+    )
+    .map_err(|e| (StatusCode::BAD_REQUEST, e))?;
+
+    // Walk every presented document: parse + verify.
+    let mut disclosed: Vec<(String, serde_json::Value)> = Vec::new();
+    let mut mdoc_issuer: Option<String> = None;
+    for (_cred_id, arr) in obj.iter() {
+        let Some(entries) = arr.as_array() else {
+            return Err((StatusCode::BAD_REQUEST, "vp_token values must be arrays".into()));
+        };
+        for entry in entries {
+            let Some(b64) = entry.as_str() else {
+                return Err((StatusCode::BAD_REQUEST, "vp_token array entries must be strings".into()));
+            };
+            let docs = sentin8::mdoc::device_response::parse_device_response(b64)
+                .map_err(|e| (StatusCode::BAD_REQUEST, format!("device response parse: {e}")))?;
+            for doc in docs {
+                // The MSO verify: the issuerAuth COSE_Sign1 signature
+                // against the x5chain leaf + the disclosed-item digest
+                // coverage (the suite's ValidateMdocIssuerSignedSignature
+                // + ValidateMdocIssuerSignedItemDigests).
+                sentin8::mdoc::verify_mso_document(&doc, &transcript, &trusted)
+                    .map_err(|e| (StatusCode::UNAUTHORIZED, format!("mdoc verification: {e}")))?;
+                let claims =
+                    sentin8::mdoc::device_response::disclosed_claims(&doc.issuer_signed)
+                        .map_err(|e| (StatusCode::BAD_REQUEST, e))?;
+                for (namespace, item) in claims {
+                    disclosed.push((
+                        namespace,
+                        serde_json::json!({
+                            item.element_identifier: item.element_value,
+                        }),
+                    ));
+                }
+                mdoc_issuer = Some(doc.doc_type.clone());
+            }
+        }
+    }
+
+    // The outcome mirrors the sd-jwt path: the verifiable session +
+    // the downstream code. The claims surface carries the disclosed
+    // elements; the acr surface keeps the connection's LoA gate (the
+    // mdoc cells present no acr - the connection-level requirement
+    // applies).
+    let presented_loa = "low";
+    if !loa_at_least(presented_loa, &cfg.min_level_of_assurance) {
+        return Err((
+            StatusCode::FORBIDDEN,
+            format!(
+                "credential assurance '{}' below the required '{}'",
+                presented_loa, cfg.min_level_of_assurance
+            ),
+        ));
+    }
+    // A synthetic verified view for the user mint (the wallet user
+    // find-or-create reads the subject claims).
+    let mut subject = serde_json::Map::new();
+    subject.insert("iss".into(), serde_json::json!("did:mdoc:sentin8"));
+    for (namespace, claims) in &disclosed {
+        if let Some(obj) = claims.as_object() {
+            for (k, v) in obj {
+                subject.insert(k.clone(), v.clone());
+            }
+        }
+        let _ = namespace;
+    }
+    let verified_view = crate::sd_jwt::VerifiedPresentation {
+        issuer: "did:mdoc:sentin8".to_string(),
+        cnf: serde_json::Value::Null,
+        claims: serde_json::Value::Object(subject),
+    };
+    let user = find_or_create_wallet_user(state, pending_env, &verified_view).await?;
+
+    let session_token = Uuid::new_v4().to_string();
+    let mut sess_tx = state
+        .pool
+        .begin()
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    let _ = sqlx::query("SELECT sentin8_set_tenant_context($1)")
+        .bind(pending_env)
+        .execute(&mut *sess_tx)
+        .await;
+    let _session = crate::sessions::Session::create(
+        &mut *sess_tx,
+        user.id,
+        pending_env,
+        &session_token,
+        None,
+        Duration::seconds(state.config.session_ttl_secs as i64),
+    )
+    .await
+    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    let _ = sess_tx.commit().await;
+    let code = Uuid::new_v4().to_string();
+    let code_data = serde_json::json!({
+        "client_id": pending.get("oauth_client_id"),
+        "redirect_uri": pending.get("oauth_redirect_uri"),
+        "scope": pending.get("oauth_scope"),
+        "user_id": user.id.to_string(),
+        "env_id": pending_env.to_string(),
+        "state": pending.get("oauth_state"),
+        "nonce": pending.get("nonce"),
+        "auth_time": chrono::Utc::now().timestamp(),
+    });
+    let _: Result<(), _> = conn
+        .set_ex(format!("auth:code:{code}"), code_data.to_string(), 600)
+        .await;
+
+    // The redirect target: the oauth callback with the code (the
+    // sign-in-driven flow) or the OP-hosted verifier landing.
+    let oauth_redirect = pending
+        .get("oauth_redirect_uri")
+        .and_then(|v| v.as_str())
+        .filter(|u| !u.is_empty())
+        .map(|u| {
+            let sep = if u.contains('?') { '&' } else { '?' };
+            format!("{u}{sep}code={code}")
+        });
+    let redirect_target = match oauth_redirect {
+        Some(u) => u,
+        None => {
+            let verification = Uuid::new_v4().to_string();
+            let done = serde_json::json!({
+                "issuer": "did:mdoc:sentin8",
+                "vct": mdoc_issuer.unwrap_or_default(),
+                "claims": verified_view.claims,
+                "verified_at": chrono::Utc::now().timestamp(),
+            });
+            let _: Result<(), _> = conn
+                .set_ex(
+                    format!("auth:vp:done:{verification}"),
+                    done.to_string(),
+                    900,
+                )
+                .await;
+            format!(
+                "{}/wallet-verifier/done?verification={verification}",
+                resolve_issuer(&state.config, headers)
+            )
+        }
+    };
+    Ok(Some(
+        (
+            StatusCode::OK,
+            axum::Json(serde_json::json!({ "redirect_uri": redirect_target })),
+        )
+            .into_response(),
+    ))
 }
 
 /// `GET /wallet-verifier/done` - the OP-hosted verifier SUCCESS page

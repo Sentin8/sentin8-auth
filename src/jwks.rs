@@ -1588,6 +1588,16 @@ impl SigningKeys {
             .and_then(|k| k.ec_cert_der_b64.clone())
     }
 
+    /// Every persisted ES256 private PEM (the mdoc DS resolution - the
+    /// x5c leaf-matched key search, DESIGN §9a.29 / HAIP-X5C-1).
+    pub fn es256_pems(&self) -> Vec<String> {
+        self.all
+            .iter()
+            .filter(|k| k.alg == "ES256")
+            .filter_map(|k| k.ec_private_pem())
+            .collect()
+    }
+
     /// The EC private PEM of the given `kid` (or the newest
     /// request-encryption key) for the credential-request JWE
     /// decryption - the ECDH-ES keystore family, ES256 fallback for
