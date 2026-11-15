@@ -1353,10 +1353,21 @@ fn validate_backchannel_request_object(
     ];
     let bad = |desc: &str| (StatusCode::BAD_REQUEST, format!("invalid_request: {desc}"));
 
-    // iss (.1.1 REQUIRED): pins the client identity.
+    // iss (.1.1 REQUIRED): pins the client identity. A MISMATCHED iss
+    // (the request object names a DIFFERENT client than the one that
+    // authenticated - the suite's ensure-different-client-id-and-issuer
+    // negative) is a CLIENT IDENTITY defect: CIBA 7.2 answers 401
+    // `invalid_client`, not 400 invalid_request (the AS refuses the
+    // caller, not the request shape).
     match claims.get("iss").and_then(|v| v.as_str()) {
         Some(iss) if iss == client_id => {}
-        _ => return Err(bad("iss is missing or does not equal the client_id")),
+        Some(_) => {
+            return Err((
+                StatusCode::UNAUTHORIZED,
+                "invalid_client: request object iss does not equal the authenticated client_id".into(),
+            ))
+        }
+        None => return Err(bad("iss is missing from the request object")),
     }
 
     // aud (REQUIRED): the AS must be among the audience members.
