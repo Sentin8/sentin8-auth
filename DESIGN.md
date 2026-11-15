@@ -1833,12 +1833,18 @@ inline JSON body:
   demand the error-page image itself), and an inline error page is
   captured as a real screenshot. Full Dynamic-OP plan 1Q5QEdutLpTgh:
   23/23 terminal (16 PASSED / 7 REVIEW by-design), zero warnings.
-- **FAPI2-SP response_type restriction.** A PAR-mandating profile
-  restricts the authorization request to the RESPONSE TYPE `code`
-  ONLY (FAPI2-SP-FINAL-5.2.2-1): the hybrid forms (`code id_token`,
-  `code token`, `code id_token token`) and the bare `id_token`/`token`
-  forms - in profile for plain OIDC - reject with
-  `unsupported_response_type` redirect under FAPI2-SP.
+- **FAPI2-SP response_type restriction (posture-scoped, not
+  PAR-scoped).** The code-only rule (FAPI2-SP-FINAL-5.2.2-1: the
+  hybrid forms (`code id_token`, `code token`, `code id_token
+  token`) and the bare `id_token`/`token` forms - in profile for
+  plain OIDC - reject with `unsupported_response_type` redirect)
+  keys on the FAPI2 POSTURES (`fapi_2_security_profile`,
+  `fapi_2_message_signing`), NEVER on the PAR mandate itself:
+  `fapi_1_advanced` mandates PAR (Part2 §5.2.2-9) yet KEEPS the
+  hybrid response types in profile (FAPI1-ADV-FINAL §5.2.2 leaves
+  them legal; the suite's plain_response cells drive
+  `code id_token` through a pushed request) - the authorize serves
+  the hybrid fragment response (§9a.13) under it.
 - **JAR state precedence (RFC 9101 - the object IS the request).**
   The request object's `state` claim is THE state: an outside value
   that differs is IGNORED (the callback echoes the object's state);
@@ -1871,6 +1877,23 @@ inline JSON body:
   live-found gap); (b) a proof REMOVED from a bound request rejects
   401 (the sender constraint still applies); (c) `ath` bound to the
   access token (the proof must carry the token's hash).
+- **The DPoP-bound token's certificate-branch fall-through
+  (DPoPRS-1c).** The certificate shortcut inside the userinfo
+  sender-constraint gate admits ONLY platform workloads: a TLS
+  certificate whose CA-verified subject carries the `m2m-` prefix
+  satisfies the `cnf.jkt` constraint (the cert IS a sender
+  constraint, RFC 8705 §3 - Shield resolvers, BFF session
+  enrichment, the auth→sys proxy). A certificate WITHOUT the
+  `m2m-` prefix is NOT a workload identity and NOT a defect: the
+  FAPI2 mtls/dpop cross cell (client auth `tls_client_auth`, sender
+  constraint DPoP - the suite presents its CONFORMANCE CLIENT
+  certificate on the TLS connection while the token is jkt-bound)
+  must fall through to the standard DPoP proof verification
+  (htu/ath/jkt) - the reject 'certificate identity is not a
+  platform workload' answers a conformance client, not a forgery,
+  and the cross cell's userinfo 401 was exactly that defect. Only
+  the `x5t#S256`-bound branch keeps its absolute thumbprint
+  equality (a cert-bound token demands its own certificate).
 - **The require-dpop gate (holder-of-key).** Under
   `require_dpop=true` (the FAPI2-SP/sender-constrain=dpop posture), a
   token-exchange WITHOUT a live DPoP proof AND without a pre-bound

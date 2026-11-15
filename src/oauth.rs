@@ -3886,13 +3886,20 @@ pub async fn authorize(
     // exchange; the id_token/token members make the response a FRAGMENT
     // response (OAuth-) - the redirect encoding picks the channel
     // downstream (is_fragment_response).
-    // A FAPI2-SP posture (PAR-mandating profile) restricts the
-    // authorization request to `code` ONLY (FAPI2-SP-FINAL-5.2.2-1: the
+    // A FAPI2-SP posture (the FAPI2 postures - NOT the PAR mandate
+    // itself: fapi_1_advanced mandates PAR yet keeps the hybrid types
+    // in profile, FAPI1-ADV-FINAL §5.2.2) restricts the authorization
+    // request to `code` ONLY (FAPI2-SP-FINAL-5.2.2-1: the
     // hybrid/id_token/token response types are out of profile - the
     // suite's ensure-response-type-code-idtoken-fails requires the
     // reject, DESIGN §9a.22).
+    let fapi2_code_only = matches!(
+        crate::fapi::FapiProfile::from_str(&profile.profile),
+        Some(crate::fapi::FapiProfile::Fapi20)
+            | Some(crate::fapi::FapiProfile::Fapi20MessageSigning)
+    );
     let response_type_invalid = !is_supported_response_type(&params.response_type)
-        || (profile.require_par
+        || (fapi2_code_only
             && params.response_type.split_whitespace().ne(std::iter::once("code").collect::<Vec<&str>>()));
 
     // Validate PKCE if code_challenge is present. S256-only (RFC 7636
@@ -8075,34 +8082,47 @@ pub async fn userinfo(
                 return Err((StatusCode::UNAUTHORIZED, "token cnf missing jkt".into()));
             };
             // RFC 8705 §3 + RFC 9449 §7.1 (DPoPRS-1): a caller presenting a
-            // CA-verified PLATFORM WORKLOAD CERTIFICATE is itself a sender
-            // constraint - the TLS layer injects the cert thumbprint header
-            // ONLY after verifying the chain against the platform CA (and
-            // strips client-supplied copies). Platform services verify
-            // forwarded user tokens against userinfo through the Shield
-            // role resolver; they cannot sign proofs for a key they do not
-            // hold (the mint key is the BFF's ephemeral). The certificate
-            // identity satisfies the sender-constraint verification for
-            // this resource call exactly as an mTLS-bound token's cert
-            // does - the workload identity is enrolled (registry-gated),
-            // so a forged or revoked workload cannot ride it.
-            if let Some((presented_thumb, _dn)) = crate::mtls::extract_mtls_identity(&headers) {
+            // CA-verified PLATFORM WORKLOAD CERTIFICATE (`m2m-*` subject -
+            // the TLS layer injects the cert thumbprint header ONLY after
+            // verifying the chain against the platform CA and strips
+            // client-supplied copies) is itself a sender constraint.
+            // Platform services verify forwarded user tokens against
+            // userinfo through the Shield role resolver; they cannot sign
+            // proofs for a key they do not hold (the mint key is the BFF's
+            // ephemeral). The certificate identity satisfies the
+            // sender-constraint verification for this resource call
+            // exactly as an mTLS-bound token's cert does - the workload
+            // identity is enrolled (registry-gated), so a forged or
+            // revoked workload cannot ride it.
+            //
+            // (DPoPRS-1c) The shortcut is WORKLOAD-ONLY: a certificate
+            // WITHOUT the `m2m-` prefix (the FAPI2 mtls/dpop cross cell -
+            // the suite presents its conformance CLIENT certificate on
+            // the TLS connection while the token is jkt-bound) is NOT a
+            // workload identity and NOT a defect - the gate falls through
+            // to the standard DPoP proof verification below (the cert
+            // presence alone neither satisfies nor fails the constraint).
+            let cert_admits_workload = crate::mtls::extract_mtls_identity(&headers)
+                .and_then(|_| {
+                    headers
+                        .get("x-sentin8-client-cert-subject")
+                        .and_then(|v| v.to_str().ok())
+                        .map(|s| s.starts_with("m2m-"))
+                })
+                .unwrap_or(false);
+            if cert_admits_workload {
+                let (presented_thumb, _) =
+                    crate::mtls::extract_mtls_identity(&headers).unwrap();
                 if presented_thumb.is_empty() {
                     return Err((
                         StatusCode::UNAUTHORIZED,
                         "certificate identity is empty".into(),
                     ));
                 }
-                let Some(subject) = headers
+                let subject = headers
                     .get("x-sentin8-client-cert-subject")
                     .and_then(|v| v.to_str().ok())
-                    .filter(|s| s.starts_with("m2m-"))
-                else {
-                    return Err((
-                        StatusCode::UNAUTHORIZED,
-                        "certificate identity is not a platform workload".into(),
-                    ));
-                };
+                    .unwrap_or("");
                 let workload = subject.strip_prefix("m2m-").unwrap_or(subject);
                 let Some(rec) = state.workload_registry.get(workload).await else {
                     return Err((
