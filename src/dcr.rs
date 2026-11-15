@@ -153,6 +153,15 @@ pub struct RegisterRequest {
     #[serde(default)]
     /// The backchannel client notification endpoint.
     pub backchannel_client_notification_endpoint: Option<String>,
+    // ── Sender-constraint posture (DESIGN 9a.22 DPoPRS-2) ──
+    /// When true, the client's tokens are DPoP-constrained even when a
+    /// client certificate authenticates the request (the FAPI2
+    /// mtls/dpop cross cell). A sentin8 extension member: RFC 7591
+    /// has no equivalent; the conformance rig's cross-cell client
+    /// declares it.
+    #[serde(default)]
+    /// The dpop bound flag.
+    pub dpop_bound: bool,
 }
 
 /// Client metadata returned after registration (RFC 7591 ).
@@ -792,12 +801,13 @@ pub async fn register(
                 consent_required, backchannel_client_notification_endpoint,
                 post_logout_redirect_uris, initiate_login_uri,
                 backchannel_logout_uri, backchannel_logout_session_required,
-                frontchannel_logout_uri, frontchannel_logout_session_required)
+                frontchannel_logout_uri, frontchannel_logout_session_required,
+                dpop_bound)
            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10,
                    $11, $12, $13, $14, $15, $16, $17, $18, $19,
                    $20, $21, $22, $23, $24, $25, $26, true,
                    $27, $28, $29, $30,
-                   $31, $32, $33, $34, $35, $36)
+                   $31, $32, $33, $34, $35, $36, $37)
            RETURNING
                client_id, client_id_issued_at, client_secret_expires_at,
                client_name, redirect_uris, grant_types, response_types,
@@ -854,6 +864,9 @@ pub async fn register(
         // a query string at registration).
         req.frontchannel_logout_uri.as_deref().filter(|u| !u.is_empty()),
         req.frontchannel_logout_session_required.unwrap_or(false),
+        // The registered DPoP sender-binding posture (DESIGN 9a.22
+        // DPoPRS-2) - the cross-cell registration.
+        req.dpop_bound,
     )
     .fetch_one(&mut *tx)
     .await

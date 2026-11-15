@@ -514,6 +514,15 @@ CREATE TABLE IF NOT EXISTS auth.oauth_clients (
     -- never self-exempt. Proofs presented by exempt clients are still
     -- verified (opt-in sender-constraining).
     dpop_exempt BOOLEAN NOT NULL DEFAULT false,
+    -- DPoP sender-binding flag (SEC-2.2.5 / design 9a.22 DPoPRS-2). When
+    -- true, the client's registered sender-constraint posture is DPoP:
+    -- the token exchange MUST present a live DPoP proof even when a
+    -- client certificate authenticates the request (the FAPI2 mtls/dpop
+    -- cross cell - the cert authenticates, DPoP constrains). The wire
+    -- pair (cert-present + no proof) is otherwise ambiguous between
+    -- the cert-constrained happy path and this posture - only the
+    -- registration resolves it.
+    dpop_bound BOOLEAN NOT NULL DEFAULT false,
     -- RFC 7591 registration metadata the ID-token mint honors: the
     -- registered id_token_signed_response_alg preference (none | RS256 |
     -- ES256 | PS256). NULL = the profile's default signing family.

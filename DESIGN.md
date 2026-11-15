@@ -1947,6 +1947,22 @@ inline JSON body:
   substitutes for a key the record already bound (the suite's
   ensure-holder-of-key-required module strips the DPoP header, keeps
   the client cert, and reads the 4xx).
+  **(DPoPRS-2)** The registration discriminator: the wire pair
+  (cert-present + no proof) is AMBIGUOUS between the mtls/mtls happy
+  path (the cert IS the sender constraint - MUST succeed) and the
+  mtls/dpop negative (DPoP constrains the token - MUST 4xx) - the
+  suite runs both against the SAME cert-authenticated client shape
+  and differentiates ONLY by the cell's registered sender-constraint
+  posture. The server resolves it from the client REGISTRATION: a
+  client flagged `dpop_bound` (the sender_constrain=dpop cell's
+  registration) MUST present a live DPoP proof at the exchange even
+  when a certificate authenticates it - `400 invalid_dpop_proof`
+  (FAPI2-SP-FINAL-5.3.2.1-6). The pre-bound-jkt path (DPoPRS-1d)
+  remains for the flow-bound key; the registration flag governs the
+  PAR-silent case. The conformance rig registers a DEDICATED cross
+  cell client (fapi2-mtls-dpop, self_signed_tls_client_auth +
+  dpop_bound) - never reusing the plain mtls cell's client - and the
+  token endpoint reads the flag from the authenticated client row.
 - **The revocation cascade on the resource surface.** The code-replay
   revocation (RFC 6749 §4.1.2 - `crate::grants::revoke_by_id` on the
   detected replay) must hold EVERYWHERE the grant's tokens speak: the

@@ -197,6 +197,12 @@ pub struct AuthenticatedClient {
     /// platform seed - never settable via DCR or the client-management API.
     /// The DPoP exempt.
     pub dpop_exempt: bool,
+    /// The registered DPoP sender-binding posture (oauth_clients.dpop_bound,
+    /// DESIGN 9a.22 DPoPRS-2): true = the client's tokens are DPoP-constrained
+    /// even when a certificate authenticates the request (the FAPI2
+    /// mtls/dpop cross cell - the cert authenticates, DPoP constrains).
+    /// The dpop bound.
+    pub dpop_bound: bool,
     /// RFC 9396 `authorization_details` types this client may request
     /// Empty = RAR not permitted for this client.
     /// The authorization details types.
@@ -728,7 +734,7 @@ pub async fn authenticate_client(
                   grant_types,
                   token_endpoint_auth_method, jwks, jwks_uri,
                   tls_client_auth_subject_dn, self_signed_tls_client_auth_thumbprint,
-                  post_logout_redirect_uris, dpop_exempt, authorization_details_types,
+                  post_logout_redirect_uris, dpop_exempt, dpop_bound, authorization_details_types,
                   id_token_signed_response_alg, userinfo_signed_response_alg,
                   subject_type, sector_identifier_uri, backchannel_logout_uri,
                   frontchannel_logout_uri, frontchannel_logout_session_required
@@ -783,6 +789,7 @@ pub async fn authenticate_client(
         .try_get::<Vec<String>, _>("post_logout_redirect_uris")
         .unwrap_or_default();
     let dpop_exempt: bool = row.try_get("dpop_exempt").unwrap_or(false);
+    let dpop_bound: bool = row.try_get("dpop_bound").unwrap_or(false);
     let authorization_details_types: Vec<String> = row
         .try_get::<Vec<String>, _>("authorization_details_types")
         .unwrap_or_default();
@@ -851,6 +858,7 @@ pub async fn authenticate_client(
             attested_jkt: None,
             dpop_jkt: None,
             dpop_exempt,
+            dpop_bound,
             authorization_details_types: authorization_details_types.clone(),
             id_token_signed_response_alg: id_token_signed_response_alg.clone(),
             userinfo_signed_response_alg: userinfo_signed_response_alg.clone(),
@@ -1067,6 +1075,7 @@ pub async fn authenticate_client(
         attested_jkt,
         dpop_jkt: None,
         dpop_exempt,
+        dpop_bound,
         authorization_details_types,
         id_token_signed_response_alg,
         userinfo_signed_response_alg,
@@ -6160,18 +6169,25 @@ async fn handle_code_exchange(
     // Reject when there is no live proof AND (no cert at all OR a
     // pre-bound record jkt - the cert never substitutes for a key the
     // record already bound).
+    //
+    // (DPoPRS-2) A dpop_bound registration makes DPoP THE sender
+    // constraint for this client: a live proof is required even when
+    // a certificate authenticates the request (the FAPI2 mtls/dpop
+    // cross cell; FAPI2-SP-FINAL-5.3.2.1-6).
     if !is_dpop_exempt(&client)
         && profile.require_dpop
         && dpop_jkt.is_none()
-        && (!mtls_presented || !record_jkt.is_empty())
+        && (!mtls_presented || !record_jkt.is_empty() || client.dpop_bound)
     {
         return Err(TokenError::OAuth(OAuthTokenError::with_desc(
             StatusCode::BAD_REQUEST,
             "invalid_dpop_proof",
-            if record_jkt.is_empty() {
-                "DPoP proof is required by the sender-constrained authorization"
-            } else {
+            if !record_jkt.is_empty() {
                 "DPoP proof is required - the request's dpop_jkt key must prove possession at the exchange"
+            } else if client.dpop_bound {
+                "DPoP proof is required - the client's tokens are DPoP-constrained"
+            } else {
+                "DPoP proof is required by the sender-constrained authorization"
             },
         )));
     }

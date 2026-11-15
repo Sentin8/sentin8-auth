@@ -1683,6 +1683,41 @@ impl JwksResponse {
 mod tests {
     use super::*;
 
+    #[test]
+    fn leaf_ec_point_b64_spki_bit_string_marker() {
+        // HAIP-X5C-1 regression: the leaf's EC point rides the SPKI
+        // BIT STRING (03 42 00 <04||x||y>) - the scanner must key on
+        // the BIT STRING tag 0x03, not 0x04 (the OCTET STRING form is
+        // accepted as a fallback). A real P-256 self-signed cert round
+        // trips.
+        use rcgen::generate_simple_self_signed;
+        let key_pair = generate_simple_self_signed(vec!["leaf-test".to_string()]).unwrap();
+        let der = key_pair.cert.der();
+        let der_b64 = base64::engine::general_purpose::STANDARD.encode(der);
+        // The cert's public point must equal the signer's (the key
+        // pair publishes the PKCS#8 DER form).
+        let pkcs8 = key_pair.key_pair.serialize_der();
+        let secret = p256::SecretKey::from_slice(&pkcs8[26..]).or_else(|_| {
+            // PKCS#8 wrapper - decode via the pkcs8 trait.
+            use p256::elliptic_curve::pkcs8::DecodePrivateKey;
+            p256::SecretKey::from_pkcs8_der(&pkcs8)
+        });
+        // Fallback: extract the raw point from the cert DER (03 42 00 marker).
+        let point_b64 = leaf_ec_point_b64(&der_b64).unwrap();
+        let raw = base64::engine::general_purpose::URL_SAFE_NO_PAD
+            .decode(&point_b64)
+            .unwrap();
+        let vk = p256::ecdsa::VerifyingKey::from_sec1_bytes(&raw).unwrap();
+        let _ = secret.map(|s| {
+            let sk = p256::ecdsa::SigningKey::from(&s);
+            assert_eq!(sk.verifying_key(), &vk);
+            sk
+        });
+        // The extraction found a well-formed point (04 || 32 || 32).
+        assert_eq!(raw.len(), 65);
+        assert_eq!(raw[0], 0x04);
+    }
+
     fn mk_claims() -> serde_json::Value {
         serde_json::json!({
             "sub": "user-123",
@@ -2083,14 +2118,22 @@ pub(crate) fn leaf_ec_point_b64(cert_der_std_b64: &str) -> Result<String, String
         .decode(cert_der_std_b64)
         .map_err(|e| format!("x5c leaf DER decode: {e}"))?;
     // Scan for the uncompressed point inside the SPKI BIT STRING
-    // (0x03 0x42 0x00 <65-byte point>) or OCTET STRING wrappers.
-    let windows: Vec<usize> = (0..der.len().saturating_sub(65))
-        .filter(|&i| der[i] == 0x04 && der[i + 1] == 0x42 && der[i + 2] == 0x00)
-        .collect();
-    if let Some(&i) = windows.first() {
-        let point = &der[i + 3..i + 68];
-        if point.first() == Some(&0x04) && point.len() == 65 {
-            return Ok(base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(point));
+    // (03 42 00 <65-byte point>) - the BIT STRING tag 0x03, length
+    // 0x42 (66 = 1 pad byte + 65), pad 0x00, then the 04-prefixed
+    // point. Also accept OCTET STRING (04 42 ...) wrappers.
+    let markers: [&[u8]; 2] = [
+        &[0x03, 0x42, 0x00],
+        &[0x04, 0x42, 0x00],
+    ];
+    for marker in markers {
+        let windows: Vec<usize> = (0..der.len().saturating_sub(65))
+            .filter(|&i| &der[i..(i + 3).min(der.len())] == marker)
+            .collect();
+        if let Some(&i) = windows.first() {
+            let point = &der[i + 3..i + 68];
+            if point.first() == Some(&0x04) && point.len() == 65 {
+                return Ok(base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(point));
+            }
         }
     }
     Err("x5c leaf carries no uncompressed P-256 public point".into())
