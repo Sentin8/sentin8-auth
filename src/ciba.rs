@@ -310,6 +310,32 @@ pub async fn bc_authorize(
                 .into(),
         ));
     }
+
+    // CIBA §7.1.1/§7.2 (DESIGN 'CIBA backchannel validation order'):
+    // CLIENT AUTHENTICATION runs BEFORE the signed request-object
+    // validation - an authentication failure (an mTLS certificate that
+    // does not match the presented client's registration, a bad
+    // assertion, an unregistered client) answers 401 invalid_client
+    // (the AS refuses the CALLER), while an authenticated caller's
+    // DEFECTIVE object (mismatched iss among them) answers 400
+    // invalid_request. Authenticating first resolves the authoritative
+    // client identity the object's iss must equal.
+    //
+    // Client auth on the backchannel authorize
+    // endpoint: confidential clients MUST authenticate; public clients are
+    // resolved by client_id (bound to the polling client).
+    let client = crate::oauth::authenticate_client(
+        &state,
+        &headers,
+        Some(form_client_id.as_str()),
+        req.client_secret.as_deref(),
+        req.client_assertion.as_deref(),
+        true,
+        true,
+    )
+    .await
+    .map_err(CibaAuthzError::from)?;
+
     if let Some(jwt) = signed {
         let claims = sentin8::auth::jwt::decode_payload(&jwt).map_err(|e| {
             CibaAuthzError(
@@ -319,11 +345,12 @@ pub async fn bc_authorize(
         })?;
         // FAPI-CIBA request-object validation (.1/7.1.1): claims,
         // then the alg policy, then the signature - a defective object
-        // rejects 400 `invalid_request` . See
+        // rejects 400 `invalid_request` . The object's iss must equal
+        // the AUTHENTICATED client (CIBA §7.1.1). See
         // validate_backchannel_request_object (bottom of this module).
         if let Err(e) = validate_backchannel_request_object(
             &claims,
-            &form_client_id,
+            &client.client_id,
             &state,
             &headers,
         ) {
@@ -354,7 +381,11 @@ pub async fn bc_authorize(
             }
             _ => {}
         }
-        crate::oauth::verify_client_signed_jwt(&state, &form_client_id, &jwt)
+        // The object's signature verifies against the AUTHENTICATED
+        // client's registered keys (the caller owns the object - an
+        // object signed by a different client's key is a defective
+        // request, CIBA §7.1.1).
+        crate::oauth::verify_client_signed_jwt(&state, &client.client_id, &jwt)
             .await
             .map_err(|e| {
                 CibaAuthzError(
@@ -414,21 +445,6 @@ pub async fn bc_authorize(
             }
         }
     }
-
-    // Client auth on the backchannel authorize
-    // endpoint: confidential clients MUST authenticate; public clients are
-    // resolved by client_id (bound to the polling client).
-    let client = crate::oauth::authenticate_client(
-        &state,
-        &headers,
-        Some(form_client_id.as_str()),
-        req.client_secret.as_deref(),
-        req.client_assertion.as_deref(),
-        true,
-        true,
-    )
-    .await
-    .map_err(CibaAuthzError::from)?;
 
     // - fapi_ciba profile constraints: under the FAPI-CIBA
     // profile the binding_message is MANDATORY (the user must be able to
@@ -1353,18 +1369,18 @@ fn validate_backchannel_request_object(
     ];
     let bad = |desc: &str| (StatusCode::BAD_REQUEST, format!("invalid_request: {desc}"));
 
-    // iss (.1.1 REQUIRED): pins the client identity. A MISMATCHED iss
-    // (the request object names a DIFFERENT client than the one that
-    // authenticated - the suite's ensure-different-client-id-and-issuer
-    // negative) is a CLIENT IDENTITY defect: CIBA 7.2 answers 401
-    // `invalid_client`, not 400 invalid_request (the AS refuses the
-    // caller, not the request shape).
+    // iss (.1.1 REQUIRED): pins the client identity - the object's iss
+    // MUST equal the AUTHENTICATED client_id (the object is a REQUEST
+    // member, not an authentication carrier: CIBA §7.2 answers 400
+    // invalid_request for the defective object - the 401
+    // invalid_client class is the CALLER's authentication failure,
+    // which the authenticate_client step owns; DESIGN §CIBA
+    // backchannel validation order).
     match claims.get("iss").and_then(|v| v.as_str()) {
         Some(iss) if iss == client_id => {}
         Some(_) => {
-            return Err((
-                StatusCode::UNAUTHORIZED,
-                "invalid_client: request object iss does not equal the authenticated client_id".into(),
+            return Err(bad(
+                "iss does not equal the authenticated client_id",
             ))
         }
         None => return Err(bad("iss is missing from the request object")),

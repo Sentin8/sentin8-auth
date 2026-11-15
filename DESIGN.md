@@ -1152,6 +1152,25 @@ by the client's registered keys, carrying the CIBA parameters (`scope`,
 `binding_message`, `requested_expiry`, `exp`). Signed wins over form
 parameters; verification is the same verifier as JAR's.
 
+**CIBA backchannel validation order (CIBA §7.1.1/§7.2).** The
+backchannel pipeline orders CLIENT AUTHENTICATION BEFORE the signed
+request-object validation, and the two failure classes carry their
+spec-discrete codes: (a) a caller whose AUTHENTICATION fails (an mTLS
+certificate that does not match the presented `client_id`'s
+registration, a bad assertion, an unregistered client) answers **401
+`invalid_client`** - the AS refuses the CALLER (the suite's
+ensure-different-client-id-and-issuer negative: client2 presents
+itself with client1's certificate - the auth itself is fraudulent);
+(b) an AUTHENTICATED caller whose signed request object carries a
+DEFECT (an `iss` naming another client, missing members, stale
+windows) answers **400 `invalid_request`** - the object is a malformed
+request, not an authentication failure (the suite's
+ensure-request-object-bad-iss negative: client1 authenticates
+correctly by assertion, the object claims client2's iss - signed by
+client1's key). The `iss` must equal the AUTHENTICATED client_id once
+authentication has resolved it; the object's signature must verify
+against the client that authenticated.
+
 **OID4VCI issuer (SD-JWT VC profile, OID4VCI §7-§13).** Standard
 endpoint shapes over the existing SD-JWT/KB-JWT/Status-List core, all
 issuer-hosted on auth:
@@ -1906,6 +1925,15 @@ inline JSON body:
   mint takes over (no jkt, `Bearer`). A client whose registered auth
   method is the certificate (self_signed/tls_client_auth) or whose
   exchange presents ANY thumbprint is unaffected.
+  **(DPoPRS-1d)** The cert substitute serves only the CERT-constrained
+  interaction: a code record carrying a pre-bound `dpop_jkt` chose
+  DPoP as its sender constraint (the FAPI2 mtls/dpop cross cell -
+  the client certificate authenticates the client, DPoP constrains
+  the token). A pre-bound jkt with NO live proof at the exchange
+  rejects `400 invalid_dpop_proof` - the certificate never
+  substitutes for a key the record already bound (the suite's
+  ensure-holder-of-key-required module strips the DPoP header, keeps
+  the client cert, and reads the 4xx).
 - **The revocation cascade on the resource surface.** The code-replay
   revocation (RFC 6749 §4.1.2 - `crate::grants::revoke_by_id` on the
   detected replay) must hold EVERYWHERE the grant's tokens speak: the

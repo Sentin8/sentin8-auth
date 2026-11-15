@@ -6097,10 +6097,26 @@ async fn handle_code_exchange(
     // reject (.1 + the suite's ensure-holder-of-key-required).
     // The pre-bound record carries the PAR/authorize's key. An
     // mTLS-presented certificate IS the sender constraint (RFC 8705
-    // §3): the exchange's TLS client cert (the proxy-injected
+    // §3) - the exchange's TLS client cert (the proxy-injected
     // thumbprint context) satisfies the gate - the cert-bound cnf mint
     // takes over below (no jkt, `Bearer`). DESIGN §9a.12 (2)/(3) +
     // §9a.22.
+    //
+    // (DPoPRS-1d) The cert substitute serves ONLY the cert-constrained
+    // interaction: a code record carrying a PRE-BOUND dpop_jkt chose
+    // DPoP as its sender constraint (the FAPI2 mtls/dpop cross cell -
+    // the client cert authenticates the client, DPoP constrains the
+    // token). A pre-bound jkt with NO live proof is an unconsummated
+    // holder-of-key handshake: the exchange rejects
+    // invalid_dpop_proof - the certificate never substitutes for a key
+    // the record already bound (the suite's
+    // ensure-holder-of-key-required module strips the DPoP header,
+    // keeps the client cert, and expects the 4xx).
+    let record_jkt = code_data
+        .get("dpop_jkt")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
     let mtls_presented = client
         .cert_thumbprint
         .clone()
@@ -6110,20 +6126,22 @@ async fn handle_code_exchange(
                 .filter(|t| !t.is_empty())
         })
         .is_some();
+    // Reject when there is no live proof AND (no cert at all OR a
+    // pre-bound record jkt - the cert never substitutes for a key the
+    // record already bound).
     if !is_dpop_exempt(&client)
         && profile.require_dpop
-        && !mtls_presented
         && dpop_jkt.is_none()
-        && code_data
-            .get("dpop_jkt")
-            .and_then(|v| v.as_str())
-            .unwrap_or("")
-            .is_empty()
+        && (!mtls_presented || !record_jkt.is_empty())
     {
         return Err(TokenError::OAuth(OAuthTokenError::with_desc(
             StatusCode::BAD_REQUEST,
             "invalid_dpop_proof",
-            "DPoP proof is required by the sender-constrained authorization",
+            if record_jkt.is_empty() {
+                "DPoP proof is required by the sender-constrained authorization"
+            } else {
+                "DPoP proof is required - the request's dpop_jkt key must prove possession at the exchange"
+            },
         )));
     }
     let bound_jkt = dpop_jkt.map(str::to_string).or_else(|| {
