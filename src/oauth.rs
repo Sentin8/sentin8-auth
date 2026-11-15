@@ -730,7 +730,8 @@ pub async fn authenticate_client(
                   tls_client_auth_subject_dn, self_signed_tls_client_auth_thumbprint,
                   post_logout_redirect_uris, dpop_exempt, authorization_details_types,
                   id_token_signed_response_alg, userinfo_signed_response_alg,
-                  subject_type, sector_identifier_uri, backchannel_logout_uri
+                  subject_type, sector_identifier_uri, backchannel_logout_uri,
+                  frontchannel_logout_uri, frontchannel_logout_session_required
              FROM oauth_clients
             WHERE client_id = $1 AND status = 'active'"#,
     )
@@ -8722,7 +8723,7 @@ pub async fn logout(
     if uri.is_none() {
         let issuer = resolve_issuer(&state.config, &headers);
         let browser_session = crate::handlers::extract_session_token(&headers).map(|t| t.to_string());
-        let (sid, fcl_rows) = match resolve_frontchannel_rows(&state, &browser_session).await {
+        let (sid, fcl_rows) = match resolve_frontchannel_rows(&state, &headers, &browser_session).await {
             Ok(v) => v,
             Err(_) => (None, Vec::new()),
         };
@@ -8735,6 +8736,7 @@ pub async fn logout(
             &issuer,
             sid.as_deref(),
             &fcl_rows,
+            "",
         );
         let mut resp = (StatusCode::OK, body).into_response();
         resp.headers_mut().insert(
@@ -8914,6 +8916,40 @@ pub async fn logout(
                 }
                 None => uri.to_string(),
             };
+            // Front-Channel Logout (DESIGN §9a.28): when ANY client
+            // carries a frontchannel_logout_uri, the iframes must
+            // LOAD IN THE USER'S BROWSER before the redirect can
+            // happen (FCL 1.0 §2.3 - a bare 302 would skip them).
+            // Serve an HTML interstitial embedding the iframes that
+            // meta-refreshes to the post_logout_redirect_uri; the
+            // plain-302 path stays for envs with no FCL clients.
+            let browser_session =
+                crate::handlers::extract_session_token(&headers).map(|t| t.to_string());
+            let (fcl_sid, fcl_rows) = match resolve_frontchannel_rows(&state, &headers, &browser_session).await {
+                Ok(v) => v,
+                Err(_) => (None, Vec::new()),
+            };
+            if !fcl_rows.is_empty() {
+                let issuer = resolve_issuer(&state.config, &headers);
+                let body = crate::login_page::logout_confirmation_page_with_fcl(
+                    &issuer,
+                    fcl_sid.as_deref(),
+                    &fcl_rows,
+                    &location,
+                );
+                let mut resp = (StatusCode::OK, body).into_response();
+                resp.headers_mut().insert(
+                    axum::http::header::SET_COOKIE,
+                    clear_cookie
+                        .parse()
+                        .unwrap_or(axum::http::HeaderValue::from_static("")),
+                );
+                resp.headers_mut().insert(
+                    axum::http::header::CONTENT_TYPE,
+                    axum::http::HeaderValue::from_static("text/html; charset=utf-8"),
+                );
+                return resp;
+            }
             (
                 StatusCode::FOUND,
                 [
@@ -8970,14 +9006,16 @@ pub struct LogoutQuery {
 // ── Helpers ─────────────────────────────────────────────────────────────
 
 /// The Front-Channel Logout row resolution (DESIGN §9a.28): the
-/// browser session's `sid` + every client of the session's tenant
-/// plane carrying a `frontchannel_logout_uri` -
+/// browser session's `sid` + every client of the LOGOUT REQUEST'S TENANT
+/// PLANE carrying a `frontchannel_logout_uri` -
 /// `(uri, session_required)` pairs the logout-done page embeds as
-/// iframes. Reads go through the platform-plane transaction (the
-/// logout handler is an unauthenticated browser redirect - the same
-/// RLS pattern the backchannel fanout uses).
+/// iframes. The env_id comes from the REQUEST's host context (the
+/// tenant the hint's iss resolves to) - the SYSTEM-env context would
+/// RLS-hide every certification env's FCL clients (each family env is
+/// its own tenant).
 async fn resolve_frontchannel_rows(
     state: &AppState,
+    headers: &HeaderMap,
     browser_session: &Option<String>,
 ) -> Result<(Option<String>, Vec<(String, bool)>), String> {
     // The session sid: only when a browser session cookie exists and
@@ -8986,23 +9024,35 @@ async fn resolve_frontchannel_rows(
     // which is its RP-side contract violation to flag, not ours).
     let mut sid: Option<String> = None;
     if let Some(tok) = browser_session {
-        match crate::sessions::Session::find_by_token(&state.pool, tok).await {
-            Ok(Some(s)) => sid = Some(s.id.to_string()),
-            Ok(None) => {}
+        // The sid lookup INCLUDES revoked sessions: the logout flow
+        // REVOKES the session (the backchannel fanout block) BEFORE
+        // the FCL resolver runs - the ID stays honest for the iframe
+        // call either way (FCL 2.2: the RP correlates the sid with
+        // the id_token's, which the mint stamped pre-revocation).
+        match crate::sessions::Session::sid_by_token(&state.pool, tok).await {
+            Ok(s) => sid = s,
             Err(e) => {
                 tracing::warn!(error = %e, "logout: frontchannel session lookup failed")
             }
         }
     }
+    // The request's tenant env: the TLS-injected X-Sentin8-Env-Id header
+    // (the proxy's resolver stamps it on every request - the SAME
+    // mechanism the authorize flow uses; the hostname fallback would
+    // miss the cert envs whose app_instances rows live in App's owner
+    // plane, not auth's resolver).
+    let (org_id, env_id) =
+        crate::handlers::resolve_tenant_from_headers(&state.pool, headers).await;
     let mut tx = state
         .pool
         .begin()
         .await
         .map_err(|e| format!("begin: {e}"))?;
     let _ = sqlx::query("SELECT sentin8_set_tenant_context($1)")
-        .bind(crate::config::SYSTEM_ENV_ID)
+        .bind(env_id)
         .execute(&mut *tx)
         .await;
+    let _ = org_id;
     let rows = sqlx::query_as::<_, (String, bool)>(
         r#"SELECT frontchannel_logout_uri, frontchannel_logout_session_required
            FROM oauth_clients

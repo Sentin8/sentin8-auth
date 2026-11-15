@@ -1274,7 +1274,7 @@ CREATE TABLE IF NOT EXISTS auth.security_profiles (
     scope           TEXT NOT NULL,                     -- 'platform', 'org', 'env'
     org_id UUID,                              -- NULL for platform scope
     env_id  UUID,                              -- NULL for platform/org scope
-    profile         TEXT NOT NULL CHECK (profile IN ('standard', 'fapi_1_baseline', 'fapi_1_advanced', 'fapi_2', 'fapi_2_message_signing', 'fapi_ciba', 'vci', 'vci_haip', 'formpost_basic', 'formpost_hybrid', 'formpost_implicit', 'formpost', 'sm_session', 'vp')),
+    profile         TEXT NOT NULL CHECK (profile IN ('standard', 'fapi_1_baseline', 'fapi_1_advanced', 'fapi_2', 'fapi_2_message_signing', 'fapi_ciba', 'vci', 'vci_haip', 'formpost_basic', 'formpost_hybrid', 'formpost_implicit', 'formpost', 'sm_session', 'vp', 'fcl')),
     require_par     BOOLEAN NOT NULL DEFAULT false,    -- Pushed Authorization Request
     require_mtls    BOOLEAN NOT NULL DEFAULT false,    -- Mutual Sentin8:TLS for token endpoint
     require_jarm    BOOLEAN NOT NULL DEFAULT false,    -- JWT-Secured Authorization Response Mode

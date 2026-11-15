@@ -180,6 +180,31 @@ impl Session {
         Ok(row)
     }
 
+    /// The session's id BY TOKEN, regardless of status (auth DESIGN
+    /// §9a.28: the Front-Channel Logout iframe's `sid` must survive the
+    /// session's own revocation - the logout flow revokes the session
+    /// before the FCL resolver runs, and the RP correlates the sid with
+    /// the id_token's pre-revocation mint). The returned identifier is
+    /// the session's TOKEN_ID - the SAME value the id_token's sid claim
+    /// carries (Back-Channel Logout 1.0 §2.6 step 11's convention).
+    ///
+    /// # Errors
+    /// - Database failure.
+    pub async fn sid_by_token(pool: &sqlx::PgPool, token_id: &str) -> Result<Option<String>, sqlx::Error> {
+        let mut tx = pool.begin().await?;
+        let _ = sqlx::query("SELECT sentin8_set_tenant_context($1)")
+            .bind(crate::config::SYSTEM_ENV_ID)
+            .execute(&mut *tx)
+            .await;
+        let sid: Option<String> =
+            sqlx::query_scalar(r#"SELECT token_id FROM sessions WHERE token_id = $1"#)
+                .bind(token_id)
+                .fetch_optional(&mut *tx)
+                .await?;
+        let _ = tx.commit().await;
+        Ok(sid)
+    }
+
     /// Revoke a session by token_id and emit `sentin8:auth:session:revoked`.
     ///
     /// The revocation UPDATE and the outbox row land in one transaction

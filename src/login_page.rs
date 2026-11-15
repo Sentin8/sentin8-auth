@@ -281,7 +281,7 @@ a {{ color: #D4AF37; }}
 /// landing - a 302 to `/sign-in` shows the LOGIN page, not a logout
 /// confirmation. Same JS-free panel family as the error page.
 pub fn logout_confirmation_page() -> String {
-    logout_confirmation_page_with_fcl("", None, &[])
+    logout_confirmation_page_with_fcl("", None, &[], "")
 }
 
 /// The Front-Channel Logout confirmation page (DESIGN §9a.28): the
@@ -292,11 +292,18 @@ pub fn logout_confirmation_page() -> String {
 /// contract: the user's browser loads each RP's logout endpoint and
 /// the RP clears ITS session (first-party to the OP host, no
 /// third-party cookies).
+///
+/// The `redirect_location` (the RP-initiated logout's landing target)
+/// rides a meta-refresh AFTER the iframes load - FCL 1.0 §2.3: the
+/// front-channel logout requests happen BEFORE the user leaves the OP.
+/// An EMPTY location renders the plain confirmation page (the no-
+/// landing logout).
 #[allow(clippy::type_complexity)]
 pub fn logout_confirmation_page_with_fcl(
     issuer: &str,
     sid: Option<&str>,
     fcl_rows: &[(String, bool)],
+    redirect_location: &str,
 ) -> String {
     let esc = |s: &str| -> String {
         s.replace('&', "&amp;")
@@ -306,6 +313,15 @@ pub fn logout_confirmation_page_with_fcl(
     };
     let mut iframes = String::new();
     for (uri, session_required) in fcl_rows {
+        // FCL 2/2.2: the iframe call carries iss (+ sid when demanded).
+        // A session-REQUIRED client whose sid is UNKNOWN (an already-
+        // revoked session re-rendering the page - the logout double-
+        // drive class) gets NO iframe: an iss-only call would fail the
+        // RP's sid contract (FCL 2.2 requires the sid on exactly such
+        // clients).
+        if *session_required && sid.is_none() {
+            continue;
+        }
         // FCL 2: the logout URI carries iss (URL-encoded) + sid; the
         // spec FORBIDS the REGISTERED URI itself from carrying a query
         // string, so appending with `?` is always correct.
@@ -320,12 +336,24 @@ pub fn logout_confirmation_page_with_fcl(
             frame
         ));
     }
+    // The meta-refresh carries the ABSOLUTE landing URL HTML-escaped
+    // (a bare url-encode makes the browser treat it as a relative
+    // path - the /oauth/https%3A%2F... mis-navigation class).
+    let refresh = if redirect_location.is_empty() {
+        String::new()
+    } else {
+        format!(
+            r#"<meta http-equiv="refresh" content="3;url={}">"#,
+            esc(redirect_location)
+        )
+    };
     format!(
         r#"<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+{refresh}
 <title>Signed out - Sentin8</title>
 <style>
 body {{ font-family: Inter, system-ui, sans-serif; background: #0f1117; color: #e6e8ee;
