@@ -873,25 +873,38 @@ and free to run; certification fees are waived for this project under
 the OIDF open-source project certification policy. The program covers
 every profile the platform implements except two deliberate exclusions.
 
-### 9a.1 Certification scope (target state)
+### 9a.1 Certification scope (target state - zero gap)
 
-| Profile family | Certifiable profiles | Suite posture |
+The platform certifies EVERY OP-side profile cell the OIDF catalog lists
+for the plan families it ships (backlog OIDF-ALL-1/OIDF-ISO-1). Cell =
+one variant tuple of the suite's plan axes; the battery runs one plan
+per cell over a per-cell certification env (profile-per-env, §9a.2).
+
+| Profile family | Catalog cells (the full matrix) | Suite posture |
 |---|---|---|
-| OIDC Core | Basic OP, Config OP, Dynamic OP | code flow + discovery + DCR; the further response types live in their own certification families (below) |
-| OIDC Logout | RP-Initiated Logout, Back-Channel Logout, Back-Channel + RP-Initiated (joint) | both endpoints implemented + the sid-bound fan-out (§9a.26); Front-Channel Logout is an exclusion |
+| OIDC Core | Basic OP, Config OP, Dynamic OP | code flow + discovery + DCR; the response-type families below carry the other flows |
+| OIDC Logout | RP-Initiated Logout, Back-Channel Logout, Back-Channel + RP-Initiated (joint) | both endpoints + the sid-bound fan-out (§9a.26) |
+| OIDC Front-Channel Logout | Front-Channel Logout OP | `frontchannel_logout_uri` client registration + `frontchannel_logout_supported`/`frontchannel_logout_session_supported` discovery + the logout endpoint's per-client iframe redirects with `iss`/`sid` (§9a.28) - the former exclusion is CLOSED |
 | OIDC Session Management | Session Management OP, Third-Party-Initiated Login OP | `check_session_iframe` + `session_state` + `initiate_login_uri` (§9a.26) |
 | OIDC Response modes | Implicit OP, Hybrid OP, Form-Post OP | fragment + `form_post` channels per certification env (§9a.25) |
-| FAPI 2 | Security Profile OP, Message Signing OP | the platform-default `fapi_2` profile |
-| FAPI 1 | Advanced OP (final) | `fapi_1_advanced` profile |
-| FAPI-CIBA | Poll mode, Ping mode | `bc-authorize` + CIBA grant + ping delivery |
-| OID4VCI | Issuer | wallet credential-issuance surface |
-| OID4VP | Verifier | wallet presentation surface |
+| FAPI 1 Advanced (final) | ALL 8 cells: `client_auth_type` (mtls|private_key_jwt) x `fapi_auth_request_method` (plain|pushed) x `fapi_response_mode` (plain|jarm), restricted to the spec-valid subset (mtls-sender-constraint pairs with its own response mode; the 8-cell matrix the catalog lists) | per-cell env with the matching require_* flag set + the per-cell client (mtls thumbprint or private-key jwks) |
+| FAPI-CIBA | Poll w/ MTLS, Poll w/ Private Key, Ping w/ MTLS, Ping w/ Private Key | `bc-authorize` + both delivery modes, both client-auth families (§9a.14) |
+| FAPI 2 Security Profile (final) | ALL cells: `sender_constrain` (mtls|dpop) x `client_auth_type` (private_key_jwt|mtls) + `openid` (openid_connect|plain_oauth) | per-cell env + client (§9a.22) |
+| FAPI 2 Message Signing (final) | ALL cells (the same axes + JAR/JARM families) | per-cell env + client (§9a.16) |
+| OID4VCI Issuer (1.0 Final + HAIP) | wallet_initiated (shipped), issuer_initiated by_value, issuer_initiated by_reference | the credential-offer landing resolves BOTH offer forms (§9a.19 addendum: `vci_authorization_code_flow_variant` x `vci_credential_offer_variant`) |
+| OID4VCI Wallet (HAIP) | wallet_initiated, issuer_initiated by_value, issuer_initiated by_reference (the WALLET-role plans over our issuer) | the `oid4vci-1_0-wallet-haip-test-plan` runs in the battery (§9a.19) |
+| OID4VP + HAIP (verifier) | Wallet sd_jwt_vc direct_post.jwt, Wallet sd_jwt_vc dc_api.jwt, Wallet iso_mdl direct_post.jwt, Wallet iso_mdl dc_api.jwt | the verifier accepts BOTH response modes (direct_post(.jwt) + the DC API presentation channel) and BOTH credential formats (sd_jwt_vc + iso_mdl/mso_mdoc) (§9a.27) |
 | Identity Assurance (eKYC-IDA) | OP | `claims`/`verified_claims` at authorize |
 
 **Deliberate exclusions (design decisions, never to be reintroduced):**
-
-- **Front-Channel Logout** - third-party iframes are a tracking surface
-  and silent-failure mode; logout signaling is back-channel only.
+NONE at the certification-scope level - the former Front-Channel Logout
+exclusion is closed by §9a.28, the iso_mdl exclusion by OIDF-ISO-1.
+Jurisdiction overlays (UK-OB, AU-CDR, BR-OB/OF/OPIN, KSA, CBUAE,
+ConnectID AU) and the RP-side plans are OUT of platform scope by
+product decision: they repack the same plan families with
+jurisdiction-specific client configs (the underlying plans are the
+ones we certify); the RP-role certification belongs to relying parties,
+not the OP/issuer/verifier platform.
 
 **Profile-scoped response types (§9a.25).** The standard platform
 profile still serves `response_types_supported: ["code"]` only (the
@@ -2348,8 +2361,8 @@ sequenceDiagram
     V->>V: store auth:vp:done:{token} -> {issuer, vct, claims, verified_at}
     V-->>W: 200 {"redirect_uri": ".../wallet-verifier/done?verification={token}"}
     W->>V: GET /wallet-verifier/done?verification={token} (the success page)
-    V-->>W: HTML - the verified credential contents (the suite screenshots this)
-    ```
+    V-->>W: HTML - the verified credential contents - the suite screenshots this
+```
 
 - **The verifier metadata** (`/.well-known/openid-credential-verifier`)
   stays honest: the SINGLE client_id form used by the requests
@@ -2369,12 +2382,21 @@ sequenceDiagram
   it a tenant user's own admin grant can never reach their env's
   admin endpoints).
 
-**Deliberate exclusions.** The verifier's mdoc/iso_mdl cells and the
-dc_api response modes stay OUT of the battery (no iso-mdl fixture
-machinery); the suite's `vp_profile=haip` + `sd_jwt_vc` +
-`direct_post.jwt` cell is the certifiable path driven. The wallet
-plan's alpha cells (`oid4vci-1_0-wallet-test-plan`) keep their
-existing discovery-entry run.
+**Response modes + credential formats (zero-gap target, OIDF-ALL-1/OIDF-ISO-1).**
+The verifier accepts BOTH response modes - `direct_post`/`direct_post.jwt`
+(the shipped path) AND `dc_api`/`dc_api.jwt` (the DC API presentation
+channel: the wallet sends the transaction response over the Digital
+Credentials API request/response session instead of the direct_post
+endpoint; the request object's `response_mode` + `dc_api_query` select
+it, and the `response_uri` answer resolves the same way). The verifier
+accepts BOTH credential formats - `sd_jwt_vc` (shipped) and
+`iso_mdl`/`mso_mdoc` (the mdoc DCQL cells; the issuance side gains the
+`mso_mdoc` credential-configuration format with its data elements and
+the verifier's `vp_formats_supported` advertises it). The catalog's
+four OID4VP+HAIP wallet cells (`sd_jwt_vc` x `direct_post.jwt` x
+`dc_api.jwt`, `iso_mdl` x `direct_post.jwt` x `dc_api.jwt`) all run
+green. The wallet plans' alpha cells (`oid4vci-1_0-wallet-test-plan`)
+keep their discovery-entry run.
 
 **Campaign verdict (OID4VP-1, wire-verified).** Both plans (the
 certifiable HAIP verifier plan + the alpha plain plan) run every
@@ -2400,6 +2422,64 @@ validation chain evaluates: register, parse, COSE signature, signer
 certificate, structure (the Annex F.3.2 shape), the request object
 chain against the reader CA, and the matched entry's trust
 constraints.
+
+### 9a.28 Front-Channel Logout OP (the former exclusion, closed)
+
+OIDC Front-Channel Logout (FCL) 1.0 - the logout session-signaling
+channel that sends the user's browser through per-client logout
+iframes. The platform implements the full OP-side contract:
+
+- **Client registration**: the DCR/admin surface accepts
+  `frontchannel_logout_uri` (https required, no query components per
+  FCL 2/4 - the suite's negative modules reject a URI with a query
+  string) and `frontchannel_logout_session_required` (the per-client
+  `sid` demand). The grant row + the admin UI carry both fields.
+- **Discovery**: `frontchannel_logout_supported: true` and
+  `frontchannel_logout_session_supported: true` ride the discovery
+document (`CheckDiscEndpointFrontchannelLogoutSupported` + the session
+variant read exactly these).
+- **The logout endpoint**: after the RP-initiated logout resolves, the
+  OP's logout landing page embeds an `<iframe src=` per registered
+  client with a `frontchannel_logout_uri` - the iframe URL carries
+  `iss` (the issuer) and, when the client demands it
+  (`frontchannel_logout_session_required` or the client registered a
+  session-bearing logout), the `sid` of the logged-out session. The
+  iframes ride the OP-hosted logout-done page (a server-rendered page,
+  the same shape as the verifier landing - never the SPA shell).
+- **The `sid` claim**: the ID token carries `sid` for clients whose
+  registered logout URI requires it (the same session-identifier plane
+  the back-channel logout token uses, §9a.26).
+- **The certification plan**
+  (`oidcc-frontchannel-rp-initiated-logout-certification-test-plan`)
+  runs over the `cert-fcl` env: discovery verification, the
+  frontchannel-logout happy flow (the logout lands the iframes), the
+  session-required negative (a client with
+  `frontchannel_logout_session_required` must receive `sid`), and the
+  bad-logout-uri negative (a URI with a query string is rejected at
+  registration).
+
+**Phishing posture.** The iframe URLs are EXACTLY the clients'
+registered `frontchannel_logout_uri` values (registered https, exact
+string) - the OP never redirects the browser to an unregistered URL,
+and the `iss` parameter lets each RP verify the iframe call's origin
+(FCL 5.2). The iframe surface is the spec's own contract; the former
+tracking-surface objection is mitigated by the same rules the
+specification mandates (https-only, exact-match registration,
+no third-party cookies - the iframes are first-party to the OP host).
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant U as user browser
+    participant RP as RP (frontchannel_logout_uri)
+    participant OP as auth logout surface
+    U->>OP: GET /oauth/logout (id_token_hint / client_id)
+    OP->>OP: resolve the session (sid) + the client's FCL row
+    OP-->>U: the logout-done page (server-rendered) embedding<br/>an iframe per FCL-registered client
+    U->>RP: iframe src=frontchannel_logout_uri?iss=...&sid=...
+    RP->>RP: validate iss + sid, clear the RP session
+    U->>U: (post-logout redirect per the RP-initiated flow)
+```
 
 ---
 
