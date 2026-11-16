@@ -1190,9 +1190,27 @@ pub async fn credential(
         }
     } else {
         let jwe = body.trim();
-        let kid = sentin8::auth::jwt::decode_header(jwe)
-            .ok()
-            .and_then(|h| h.get("kid").and_then(|k| k.as_str()).map(str::to_string));
+        // The JWE header (RFC 7516 §5.1: a 5-part compact serialization -
+        // the JWT 3-part parser REJECTS it, so decode the protected
+        // header segment directly). The kid names the recipient key the
+        // wallet encrypted to; WITHOUT it the fallback would pick the
+        // NEWEST ECDH-ES key and the decrypt would fail against the
+        // wrong recipient (the battery-5 vci-haip INTERRUPT class).
+        let kid: Option<String> = jwe
+            .split('.')
+            .next()
+            .and_then(|seg| {
+                use base64::Engine;
+                base64::engine::general_purpose::URL_SAFE_NO_PAD
+                    .decode(seg)
+                    .ok()
+            })
+            .and_then(|raw| serde_json::from_slice::<serde_json::Value>(&raw).ok())
+            .and_then(|h| {
+                h.get("kid")
+                    .and_then(|k| k.as_str())
+                    .map(str::to_string)
+            });
         let Some(pem) = state.keys.es256_private_pem(kid.as_deref()) else {
             return oid4vci_error(
                 StatusCode::BAD_REQUEST,

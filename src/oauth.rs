@@ -4111,11 +4111,22 @@ pub async fn authorize(
                 return (StatusCode::FOUND, [("location", url)]).into_response();
             }
         }
-        return authorize_error_redirect(
+        // The FRAGMENT channel for token-returning response types
+        // (OC-34, the FAPI1 hybrid family): `code id_token`/implicit
+        // responses - errors included - ride the URL FRAGMENT
+        // (OAuth Response Modes §2.1; the suite's
+        // ensure-authorization-request-without-request-object-fails
+        // RejectErrorInUrlQuery under FAPI1-ADV-5.2.2-1).
+        let fragment_channel = params
+            .response_type
+            .split_whitespace()
+            .any(|t| t == "id_token" || t == "token");
+        return authorize_error_redirect_channel(
             &params.redirect_uri,
             "invalid_request",
             "PAR is required - provide a request_uri from /oauth/par",
             Some(params.state.as_str()),
+            fragment_channel,
         );
     }
 
@@ -6222,8 +6233,8 @@ async fn handle_code_exchange(
     } else {
         "Bearer"
     };
-    if let Some(jkt) = bound_jkt {
-        access_claims.cnf = Some(crate::dpop::build_dpop_cnf_claim(&jkt));
+    if let Some(jkt) = bound_jkt.as_deref() {
+        access_claims.cnf = Some(crate::dpop::build_dpop_cnf_claim(jkt));
     } else if let Some(thumbprint) = mtls_cnf {
         // RFC 8705 §3 - certificate-bound token (the mTLS cells): one
         // confirmation member per token, so the cert binding rides ONLY
@@ -6546,6 +6557,18 @@ async fn handle_code_exchange(
             Duration::seconds(state.config.refresh_token_ttl_secs as i64),
             Some(&client.client_id),
         );
+        // RFC 9449 §5/§7 (OC-33): a DPoP-constrained grant mints
+        // refresh tokens carrying the SAME cnf.jkt as the access
+        // token - the refresh exchange then demands a live proof from
+        // the bound key (the suite's refresh-without-proof negative;
+        // an unbound refresh token would make the proof-less exchange
+        // correctly succeed and the module reads a 200).
+        if let Some(jkt) = bound_jkt.as_deref().filter(|j| !j.is_empty()) {
+            refresh_claims.cnf = Some(crate::dpop::build_dpop_cnf_claim(jkt));
+        }
+        // The ATCA binding (draft-ietf-oauth-attestation-based-client-auth
+        // 10.3): the attested instance-key thumbprint - a later refresh
+        // request must re-present it.
         if let Some(attested) = client.attested_jkt.as_deref().filter(|j| !j.is_empty()) {
             refresh_claims.cnf = Some(crate::dpop::build_dpop_cnf_claim(attested));
         }
@@ -6665,17 +6688,33 @@ async fn handle_refresh(
         .and_then(|k| k.as_str())
         .map(str::to_string);
     if let Some(bound) = bound_jkt {
-        let live = client.attested_jkt.as_deref().unwrap_or("");
-        if live != bound {
-            tracing::warn!(
-                client_id = %client.client_id,
-                "refresh token ATCA instance-key binding rejected"
-            );
-            return Err(TokenError::OAuth(OAuthTokenError::with_desc(
-                StatusCode::BAD_REQUEST,
-                "invalid_grant",
-                "refresh token client instance key does not match the key the grant was issued under",
-            )));
+        // RFC 9449 §7 (OC-33): a DPoP-bound refresh token demands a
+        // live proof from the BOUND key at every refresh exchange -
+        // the proof-less / wrong-key request answers 400
+        // invalid_dpop_proof (the suite's
+        // refresh-without-proof-of-possession negative).
+        let live_proof = dpop_jkt.filter(|j| !j.is_empty());
+        match live_proof {
+            Some(live) if live == bound => {
+                // proof presented from the bound key - satisfied.
+            }
+            _ => {
+                // No live DPoP proof (or a wrong key): the ATCA
+                // instance-key form may still satisfy it (the attested
+                // caller re-presents its instance key).
+                let live_attested = client.attested_jkt.as_deref().unwrap_or("");
+                if live_attested != bound {
+                    tracing::warn!(
+                        client_id = %client.client_id,
+                        "refresh token DPoP/ATCA key binding rejected"
+                    );
+                    return Err(TokenError::OAuth(OAuthTokenError::with_desc(
+                        StatusCode::BAD_REQUEST,
+                        "invalid_dpop_proof",
+                        "refresh token is sender-constrained - a DPoP proof from the bound key is required",
+                    )));
+                }
+            }
         }
     }
 

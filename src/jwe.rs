@@ -140,7 +140,7 @@ pub(crate) fn b64u_decode(s: &str) -> Result<Vec<u8>, String> {
 /// secret from the ephemeral key ↔ wallet key agreement, with the JWE
 /// party descriptors (`apu`/`apv` exchange headers, `alg`/`enc` ASCII
 /// algorithm ID).
-pub(crate) fn concat_cek(
+pub fn concat_cek(
     shared_secret: &[u8],
     enc: &str,
     apu: &[u8],
@@ -183,7 +183,7 @@ pub(crate) fn concat_cek(
 /// uncompressed). ECDH-ES direct key agreement REQUIRES P-256 for this
 /// implementation (`crv: P-256`) - other curves answer
 /// `UnsupportedCurve`.
-pub(crate) fn jwk_to_p256(jwk: &serde_json::Value) -> Result<p256::PublicKey, EncryptionError> {
+pub fn jwk_to_p256(jwk: &serde_json::Value) -> Result<p256::PublicKey, EncryptionError> {
     let kty = jwk.get("kty").and_then(|v| v.as_str()).unwrap_or("");
     let crv = jwk.get("crv").and_then(|v| v.as_str()).unwrap_or("");
     if kty != "EC" || crv != "P-256" {

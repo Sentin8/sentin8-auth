@@ -374,6 +374,7 @@ mod tests {
             attested_jkt: None,
             dpop_jkt: None,
             dpop_exempt: false,
+            dpop_bound: false,
             authorization_details_types: vec![],
             id_token_signed_response_alg: None,
             userinfo_signed_response_alg: None,
