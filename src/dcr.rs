@@ -162,6 +162,20 @@ pub struct RegisterRequest {
     #[serde(default)]
     /// The dpop bound flag.
     pub dpop_bound: bool,
+    // ── Sender-constraint posture (OC-38, DESIGN §9a.22) ──
+    /// The first-class per-client sender-constraint posture:
+    /// `dpop` (tokens DPoP-bound), `mtls` (tokens cert-bound), `any`
+    /// (whatever the request carries, the historical behavior).
+    /// Drives the request-level gate in `oauth.rs` without any env
+    /// flag - the FAPI2-SP §5.3.2.1-6 per-deployment constraint.
+    #[serde(default = "default_sender_constrain")]
+    /// The sender constrain posture.
+    pub sender_constrain: String,
+}
+
+/// The default sender-constraint posture (`any`).
+fn default_sender_constrain() -> String {
+    "any".to_string()
 }
 
 /// Client metadata returned after registration (RFC 7591 ).
@@ -802,12 +816,13 @@ pub async fn register(
                 post_logout_redirect_uris, initiate_login_uri,
                 backchannel_logout_uri, backchannel_logout_session_required,
                 frontchannel_logout_uri, frontchannel_logout_session_required,
-                dpop_bound)
+                dpop_bound,
+               sender_constrain)
            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10,
                    $11, $12, $13, $14, $15, $16, $17, $18, $19,
                    $20, $21, $22, $23, $24, $25, $26, true,
                    $27, $28, $29, $30,
-                   $31, $32, $33, $34, $35, $36, $37)
+                   $31, $32, $33, $34, $35, $36, $37, $38)
            RETURNING
                client_id, client_id_issued_at, client_secret_expires_at,
                client_name, redirect_uris, grant_types, response_types,
@@ -867,6 +882,7 @@ pub async fn register(
         // The registered DPoP sender-binding posture (DESIGN 9a.22
         // DPoPRS-2) - the cross-cell registration.
         req.dpop_bound,
+        req.sender_constrain.clone(),
     )
     .fetch_one(&mut *tx)
     .await

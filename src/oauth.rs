@@ -203,6 +203,14 @@ pub struct AuthenticatedClient {
     /// mtls/dpop cross cell - the cert authenticates, DPoP constrains).
     /// The dpop bound.
     pub dpop_bound: bool,
+    /// The registered sender-constraint posture (oauth_clients.sender_constrain,
+    /// OC-38, FAPI2-SP 5.3.2.1-6 / FAPI1-ADV Part 2 5.2.2-5/6): 'dpop' =
+    /// DPoP proofs, 'mtls' = the client certificate, 'any' = the AS chooses.
+    /// The per-client posture is the ONLY wire-consistent discriminator for
+    /// the sender-constraining credential (the suite's sender_constrain axis
+    /// varies per cell against one env; an env-level blanket conflates cells).
+    /// The sender constrain.
+    pub sender_constrain: String,
     /// RFC 9396 `authorization_details` types this client may request
     /// Empty = RAR not permitted for this client.
     /// The authorization details types.
@@ -734,7 +742,8 @@ pub async fn authenticate_client(
                   grant_types,
                   token_endpoint_auth_method, jwks, jwks_uri,
                   tls_client_auth_subject_dn, self_signed_tls_client_auth_thumbprint,
-                  post_logout_redirect_uris, dpop_exempt, dpop_bound, authorization_details_types,
+                  post_logout_redirect_uris, dpop_exempt, dpop_bound, sender_constrain,
+                  authorization_details_types,
                   id_token_signed_response_alg, userinfo_signed_response_alg,
                   subject_type, sector_identifier_uri, backchannel_logout_uri,
                   frontchannel_logout_uri, frontchannel_logout_session_required
@@ -790,6 +799,8 @@ pub async fn authenticate_client(
         .unwrap_or_default();
     let dpop_exempt: bool = row.try_get("dpop_exempt").unwrap_or(false);
     let dpop_bound: bool = row.try_get("dpop_bound").unwrap_or(false);
+    let sender_constrain: String =
+        row.try_get("sender_constrain").unwrap_or_else(|_| "any".to_string());
     let authorization_details_types: Vec<String> = row
         .try_get::<Vec<String>, _>("authorization_details_types")
         .unwrap_or_default();
@@ -859,6 +870,7 @@ pub async fn authenticate_client(
             dpop_jkt: None,
             dpop_exempt,
             dpop_bound,
+            sender_constrain: sender_constrain.clone(),
             authorization_details_types: authorization_details_types.clone(),
             id_token_signed_response_alg: id_token_signed_response_alg.clone(),
             userinfo_signed_response_alg: userinfo_signed_response_alg.clone(),
@@ -1076,6 +1088,7 @@ pub async fn authenticate_client(
         dpop_jkt: None,
         dpop_exempt,
         dpop_bound,
+        sender_constrain: sender_constrain.clone(),
         authorization_details_types,
         id_token_signed_response_alg,
         userinfo_signed_response_alg,
@@ -1867,9 +1880,11 @@ pub struct SecurityProfile {
     pub require_jwt_introspection: bool,
     /// The require iss.
     pub require_iss: bool,
-    /// PKCE is mandatory for authorization requests when
-    /// the profile mandates PAR (FAPI 2.0 default). Mirrors `require_par`
-    /// until the profile table grows a dedicated column.
+    /// PKCE mandate (OC-38, FAPI1-ADV Part 2 5.2.2-18): PKCE rides the
+    /// PAR transport in FAPI1 (the by-value JAR cells legitimately omit
+    /// it - the spec's NOTE says PKCE is not required outside PAR "to be
+    /// backwards compatible with earlier drafts") but is unconditional
+    /// in FAPI2 - a REAL profile column, no longer mirroring require_par.
     /// The require pkce.
     pub require_pkce: bool,
     /// Per-tenant JWT signing family (`MLDSA65` | `RS256`) - DESIGN §9a.9.
@@ -2057,7 +2072,7 @@ async fn fetch_profile_row(
     env_id: Option<Uuid>,
 ) -> Option<SecurityProfile> {
     let row = sqlx::query!(
-        r#"SELECT profile, require_par, require_mtls, require_jarm, require_dpop,
+        r#"SELECT profile, require_par, require_mtls, require_jarm, require_dpop, require_pkce,
                   require_http_signatures, require_jwt_introspection, require_iss, signing_alg,
                   allow_client_attestation, client_attestation_trust_anchor_pem,
                   client_attestation_issuer, issuance_leaf_pem, issuance_chain_pem
@@ -2084,8 +2099,9 @@ async fn fetch_profile_row(
         require_jwt_introspection: r.require_jwt_introspection,
         require_iss: r.require_iss,
         signing_alg: r.signing_alg,
-        // PKCE rides on the PAR flag (FAPI 2.0 mandates both).
-        require_pkce: r.require_par,
+        // OC-38: the REAL column (FAPI2 mandates, FAPI1 rides PAR only -
+        // Part 2 5.2.2-18); no longer derived from require_par.
+        require_pkce: r.require_pkce,
         allow_client_attestation: r.allow_client_attestation,
         client_attestation_trust_anchor_pem: r.client_attestation_trust_anchor_pem,
         client_attestation_issuer: r.client_attestation_issuer,
@@ -2116,6 +2132,10 @@ pub struct SecurityProfileResponse {
     pub require_jarm: bool,
     /// The require DPoP.
     pub require_dpop: bool,
+    /// PKCE mandate (OC-38, FAPI1-ADV Part 2 5.2.2-18): rides the PAR
+    /// transport in FAPI1, unconditional in FAPI2.
+    /// The require pkce.
+    pub require_pkce: bool,
     /// RFC 9421 request signatures (FAPI 2.0 Message Signing).
     /// The require http signatures.
     pub require_http_signatures: bool,
@@ -2169,6 +2189,11 @@ pub struct UpdateSecurityProfileRequest {
     #[serde(default)]
     /// The require DPoP.
     pub require_dpop: Option<bool>,
+    /// PKCE mandate (OC-38): FAPI1 rides PAR only (Part 2 §5.2.2-18),
+    /// FAPI2 mandates it - the REAL column, no longer require_par's mirror.
+    #[serde(default)]
+    /// The require pkce.
+    pub require_pkce: Option<bool>,
     /// RFC 9421 HTTP request signatures (FAPI 2.0 MS).
     #[serde(default)]
     /// The require http signatures.
@@ -2248,7 +2273,7 @@ pub async fn get_security_profile_api(
 
     let row = sqlx::query!(
         r#"SELECT scope, org_id, env_id, profile,
-                  require_par, require_mtls, require_jarm, require_dpop,
+                  require_par, require_mtls, require_jarm, require_dpop, require_pkce,
                   require_http_signatures, require_jwt_introspection, require_iss,
                   max_token_lifetime, refresh_rotation, signing_alg
            FROM security_profiles
@@ -2275,6 +2300,7 @@ pub async fn get_security_profile_api(
         require_mtls: row.require_mtls,
         require_jarm: row.require_jarm,
         require_dpop: row.require_dpop,
+        require_pkce: row.require_pkce,
         require_http_signatures: row.require_http_signatures,
         require_jwt_introspection: row.require_jwt_introspection,
         require_iss: row.require_iss,
@@ -2384,7 +2410,7 @@ pub async fn put_security_profile_api(
 
     // Fetch existing values to merge (upsert).
     let existing = sqlx::query!(
-        r#"SELECT require_par, require_mtls, require_jarm, require_dpop,
+        r#"SELECT require_par, require_mtls, require_jarm, require_dpop, require_pkce,
                   require_http_signatures, require_jwt_introspection, require_iss,
                   max_token_lifetime, refresh_rotation, profile, signing_alg,
                   allow_client_attestation, client_attestation_trust_anchor_pem,
@@ -2401,7 +2427,7 @@ pub async fn put_security_profile_api(
     .await
     .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
-    let (e_par, e_mtls, e_jarm, e_dpop, e_hsigs, e_ji, e_iss, e_max, e_rot,
+    let (e_par, e_mtls, e_jarm, e_dpop, e_pkce, e_hsigs, e_ji, e_iss, e_max, e_rot,
          e_profile, e_alg, e_attest, e_anchor, e_att_iss, e_leaf, e_chain) =
         existing.map(|r| {
             (
@@ -2409,6 +2435,7 @@ pub async fn put_security_profile_api(
                 r.require_mtls,
                 r.require_jarm,
                 r.require_dpop,
+                r.require_pkce,
                 r.require_http_signatures,
                 r.require_jwt_introspection,
                 r.require_iss,
@@ -2430,6 +2457,7 @@ pub async fn put_security_profile_api(
             true,
             false,
             false,
+            false,
             true,
             3600,
             true,
@@ -2446,13 +2474,14 @@ pub async fn put_security_profile_api(
         r#"INSERT INTO security_profiles
                (scope, org_id, env_id, profile,
                 require_par, require_mtls, require_jarm, require_dpop,
+                require_pkce,
                 require_http_signatures, require_jwt_introspection, require_iss,
                 max_token_lifetime, refresh_rotation, signing_alg,
                 allow_client_attestation, client_attestation_trust_anchor_pem,
                 client_attestation_issuer, issuance_leaf_pem,
                 issuance_chain_pem)
            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14,
-                   $15, $16, $17, $18, $19)
+                   $15, $16, $17, $18, $19, $20)
            ON CONFLICT (scope, org_id, env_id)
            DO UPDATE SET
                profile = EXCLUDED.profile,
@@ -2460,6 +2489,7 @@ pub async fn put_security_profile_api(
                require_mtls = EXCLUDED.require_mtls,
                require_jarm = EXCLUDED.require_jarm,
                require_dpop = EXCLUDED.require_dpop,
+               require_pkce = EXCLUDED.require_pkce,
                require_http_signatures = EXCLUDED.require_http_signatures,
                require_jwt_introspection = EXCLUDED.require_jwt_introspection,
                require_iss = EXCLUDED.require_iss,
@@ -2476,6 +2506,7 @@ pub async fn put_security_profile_api(
            RETURNING
                scope, org_id, env_id, profile,
                require_par, require_mtls, require_jarm, require_dpop,
+               require_pkce,
                require_http_signatures, require_jwt_introspection, require_iss,
                max_token_lifetime, refresh_rotation, signing_alg,
                allow_client_attestation, client_attestation_trust_anchor_pem,
@@ -2488,6 +2519,7 @@ pub async fn put_security_profile_api(
         req.require_mtls.unwrap_or(e_mtls),
         req.require_jarm.unwrap_or(e_jarm),
         req.require_dpop.unwrap_or(e_dpop),
+        req.require_pkce.unwrap_or(e_pkce),
         req.require_http_signatures.unwrap_or(e_hsigs),
         req.require_jwt_introspection.unwrap_or(e_ji),
         req.require_iss.unwrap_or(e_iss),
@@ -2529,6 +2561,7 @@ pub async fn put_security_profile_api(
         require_mtls: row.require_mtls,
         require_jarm: row.require_jarm,
         require_dpop: row.require_dpop,
+        require_pkce: row.require_pkce,
         require_http_signatures: row.require_http_signatures,
         require_jwt_introspection: row.require_jwt_introspection,
         require_iss: row.require_iss,
@@ -5738,7 +5771,7 @@ pub async fn token(
                 ))
             })?;
         dpop_jkt = Some(jkt);
-    } else if profile.require_dpop
+    } else if (profile.require_dpop || client.sender_constrain == "dpop")
         && (client.cert_thumbprint.is_none() || client.dpop_bound)
         && req.grant_type != "client_credentials"
  // RFC 8693 token exchange is an M2M delegation grant: the

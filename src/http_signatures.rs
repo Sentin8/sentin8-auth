@@ -375,6 +375,8 @@ mod tests {
             dpop_jkt: None,
             dpop_exempt: false,
             dpop_bound: false,
+            // OC-38: the default per-client posture (no constraint).
+            sender_constrain: "any".to_string(),
             authorization_details_types: vec![],
             id_token_signed_response_alg: None,
             userinfo_signed_response_alg: None,

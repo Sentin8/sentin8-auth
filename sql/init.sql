@@ -523,6 +523,16 @@ CREATE TABLE IF NOT EXISTS auth.oauth_clients (
     -- the cert-constrained happy path and this posture - only the
     -- registration resolves it.
     dpop_bound BOOLEAN NOT NULL DEFAULT false,
+    -- The registered sender-constraint posture (OC-38, FAPI2-SP 5.3.2.1-6 /
+    -- FAPI1-ADV Part 2 5.2.2-5/6): which credential constrains this
+    -- client's tokens. 'dpop' = DPoP proofs (RFC 9449); 'mtls' = the client
+    -- certificate (RFC 8705); 'any' = the AS chooses per request. The
+    -- per-client posture is the ONLY wire-consistent discriminator (the
+    -- suite's sender_constrain plan axis varies per cell against one env).
+    -- dpop_bound (above) is the boolean view of sender_constrain='dpop'
+    -- kept for the admin UI compat.
+    sender_constrain TEXT NOT NULL DEFAULT 'any'
+                  CHECK (sender_constrain IN ('dpop', 'mtls', 'any')),
     -- RFC 7591 registration metadata the ID-token mint honors: the
     -- registered id_token_signed_response_alg preference (none | RS256 |
     -- ES256 | PS256). NULL = the profile's default signing family.
@@ -1287,7 +1297,11 @@ CREATE TABLE IF NOT EXISTS auth.security_profiles (
     require_par     BOOLEAN NOT NULL DEFAULT false,    -- Pushed Authorization Request
     require_mtls    BOOLEAN NOT NULL DEFAULT false,    -- Mutual Sentin8:TLS for token endpoint
     require_jarm    BOOLEAN NOT NULL DEFAULT false,    -- JWT-Secured Authorization Response Mode
-    require_dpop    BOOLEAN NOT NULL DEFAULT false,    -- Demonstrating Proof-of-Possession
+    require_dpop    BOOLEAN NOT NULL DEFAULT false,    -- Demonstrating Proof-of-Possession (LEGACY env blanket: the per-client sender_constrain registration is the live gate - this flag stays for the admin UI compat)
+    -- PKCE mandate (OC-38, FAPI1-ADV Part 2 5.2.2-18): PKCE rides the PAR
+    -- transport in FAPI1 (the by-value JAR cells legitimately omit it) but
+    -- is unconditional in FAPI2 - the flag NO LONGER piggybacks require_par.
+    require_pkce    BOOLEAN NOT NULL DEFAULT false,    -- PKCE code_challenge S256 required
     -- FAPI 2.0 Message Signing (SEC.PROF.1): RFC 9421 request signatures on
     -- token/PAR/introspect + RFC 9701 signed introspection responses.
     require_http_signatures  BOOLEAN NOT NULL DEFAULT false,

@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT scope, org_id, env_id, profile,\n                  require_par, require_mtls, require_jarm, require_dpop,\n                  require_http_signatures, require_jwt_introspection, require_iss,\n                  max_token_lifetime, refresh_rotation, signing_alg\n           FROM security_profiles\n           WHERE scope = $1\n             AND (org_id IS NOT DISTINCT FROM $2)\n             AND (env_id IS NOT DISTINCT FROM $3)\n           LIMIT 1",
+  "query": "SELECT scope, org_id, env_id, profile,\n                  require_par, require_mtls, require_jarm, require_dpop, require_pkce,\n                  require_http_signatures, require_jwt_introspection, require_iss,\n                  max_token_lifetime, refresh_rotation, signing_alg\n           FROM security_profiles\n           WHERE scope = $1\n             AND (org_id IS NOT DISTINCT FROM $2)\n             AND (env_id IS NOT DISTINCT FROM $3)\n           LIMIT 1",
   "describe": {
     "columns": [
       {
@@ -45,31 +45,36 @@
       },
       {
         "ordinal": 8,
-        "name": "require_http_signatures",
+        "name": "require_pkce",
         "type_info": "Bool"
       },
       {
         "ordinal": 9,
-        "name": "require_jwt_introspection",
+        "name": "require_http_signatures",
         "type_info": "Bool"
       },
       {
         "ordinal": 10,
-        "name": "require_iss",
+        "name": "require_jwt_introspection",
         "type_info": "Bool"
       },
       {
         "ordinal": 11,
+        "name": "require_iss",
+        "type_info": "Bool"
+      },
+      {
+        "ordinal": 12,
         "name": "max_token_lifetime",
         "type_info": "Int4"
       },
       {
-        "ordinal": 12,
+        "ordinal": 13,
         "name": "refresh_rotation",
         "type_info": "Bool"
       },
       {
-        "ordinal": 13,
+        "ordinal": 14,
         "name": "signing_alg",
         "type_info": "Text"
       }
@@ -95,8 +100,9 @@
       false,
       false,
       false,
+      false,
       false
     ]
   },
-  "hash": "5dad8faafb793e1a7c02ab171a33418d50dd05b0a665e00ee85227e43e588da7"
+  "hash": "09b790202cc4ba902fec2a8fcaba7dd2ff9f22f167bfe82488835d0ae9d4ccf5"
 }

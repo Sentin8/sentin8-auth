@@ -102,6 +102,7 @@ paths(
         crate::oid4vci::notifications,
         crate::wallet::credential_offer_landing,
         crate::wallet::credential_verifier_metadata,
+        crate::wallet::wallet_verifier_done,
         crate::webfinger::webfinger,
         crate::backchannel_logout::trigger_backchannel_logout,
         crate::ciba::bc_authorize,

@@ -1977,6 +1977,52 @@ inline JSON body:
   REMAINS hard-bound on the refresh token (draft 10.3: a grant
   minted under OAuth-Client-Attestation re-presents the SAME
   instance key).
+- **The per-client sender-constraint posture (OC-38).** The
+  sender-constraint decision is REGISTRATION-SCOPED, not
+  env-scoped: `oauth_clients.sender_constrain`
+  (`dpop` | `mtls` | `any`) is the first-class per-client posture
+  and the request-level DPoP gate keys on it -
+  `(profile.require_dpop || client.sender_constrain == "dpop")` -
+  so a DPoP-constrained cell enforces its proof without any env
+  flag, and a cert-authenticated client whose registration is
+  `sender_constrain="mtls"` accepts the certificate as THE sender
+  constraint (RFC 8705 §3). This resolves the wire-pair ambiguity
+  DPoPRS-2 already identified (cert-present + no proof is the
+  mtls/mtls happy path AND the mtls/dpop negative): the REGISTRATION
+  differentiates, and `any` preserves the historical
+  profile-governed behavior. FAPI2-SP §5.3.2.1-6 ("the client
+  SHALL specify which credential type is used to sender-constrain
+  the access token") names the per-deployment choice - the
+  registration IS that specification. The `dpop_bound` boolean
+  remains as the DPoPRS-2 registration view.
+- **PKCE is its own column (OC-38).** `security_profiles.require_pkce`
+  is a REAL profile flag - no longer `require_par`'s mirror. The
+  standards split the two axes: FAPI1-ADV Part 2 §5.2.2-18 requires
+  PKCE only on the PAR transport ("if the pushed authorization
+  request is used ... the request MUST contain a `code_challenge`")
+  and its NOTE explicitly declines to require PKCE elsewhere
+  (backwards compatibility with the by-value request object), so
+  `fapi_1_advanced` sets `require_pkce=false` and the by-value
+  happy flow carries no challenge; FAPI2-SP mandates PKCE
+  unconditionally on the authorization request, so
+  `fapi_2_security_profile` / `fapi_2_message_signing` set
+  `require_pkce=true`. The authorize-side PKCE gate therefore keys
+  on `require_pkce` alone - the PAR-riding coupling
+  (`require_par` implying PKCE) is retired, closing the
+  mtls/by_value cell defect where the by-value happy flow 400'd
+  with "PKCE code_challenge is required".
+
+  OC-38 cell behavior (the registration + profile pair decides):
+
+  | client auth | sender_constrain | proof at exchange | outcome |
+  |---|---|---|---|
+  | pk | dpop | DPoP proof | verify + bind `cnf.jkt` |
+  | pk | dpop | none | `400 invalid_dpop_proof` |
+  | pk | mtls (or any + cert) | certificate | cert-bound `cnf.x5t#S256` |
+  | mtls | dpop | certificate only | `400 invalid_dpop_proof` (DPoPRS-2) |
+  | mtls | mtls | certificate | cert-bound (RFC 8705 §3) |
+  | any | any | neither | profile gate decides (env `require_dpop` for HAIP plan-fixed cells) |
+
 - **The revocation cascade on the resource surface.** The code-replay
   revocation (RFC 6749 §4.1.2 - `crate::grants::revoke_by_id` on the
   detected replay) must hold EVERYWHERE the grant's tokens speak: the
