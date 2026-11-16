@@ -3636,7 +3636,15 @@ pub async fn authorize(
     // browser-visible error-redirect gate as the response_type check
     // (RFC 6749 §4.1.2.1: the error redirect goes to a VALIDATED
     // redirect_uri; the flag rides to the post-validation site below).
-    let missing_par = profile.require_par && q.request_uri.is_none();
+    // FAPI1-ADV Part 2 §5.2.2-1: the AS MUST support the pushed request
+    // object - it does NOT forbid the by-value JAR transport (§5.2.2-5
+    // permits a signed `request` parameter; the suite's
+    // fapi_auth_request_method axis runs by_value cells against the
+    // same posture). The reject fires only when the request carries
+    // NEITHER a request_uri NOR a by-value request object.
+    let missing_par = profile.require_par
+        && q.request_uri.is_none()
+        && q.request.as_deref().map(str::trim).unwrap_or("").is_empty();
     // The deferred PAR-urn reject (DESIGN §9a.22): set when the request_uri
     // did not resolve or resolved for a different client - the reject is
     // DELIVERED after the client + redirect_uri validation (error redirect).
@@ -6724,27 +6732,39 @@ async fn handle_refresh(
         // refresh GRANT demands A valid DPoP proof on the request -
         // present-but-fresh-key is legitimate (the new proof's key
         // rebinds the minted access token; the wallet may rotate
-        // across the refresh). The ATCA instance-key form (§9a.19)
-        // REMAINS hard-bound: a grant minted under
-        // OAuth-Client-Attestation re-presents the SAME instance key.
-        let live_proof = dpop_jkt.filter(|j| !j.is_empty());
-        if live_proof.is_none() {
-            // No DPoP proof at all: the ATCA form may still satisfy
-            // the binding (the attested caller re-presents its
-            // instance key through the attestation, not the DPoP
-            // header).
-            let live_attested = client.attested_jkt.as_deref().unwrap_or("");
-            if live_attested != bound {
-                tracing::warn!(
-                    client_id = %client.client_id,
-                    "refresh token proof-of-possession missing"
-                );
-                return Err(TokenError::OAuth(OAuthTokenError::with_desc(
-                    StatusCode::BAD_REQUEST,
-                    "invalid_dpop_proof",
-                    "refresh token is sender-constrained - a DPoP proof is required",
-                )));
-            }
+        // across the refresh). The refresh token carries NO DPoP
+        // cnf (the mint stamps only the ATCA form) - a bound jkt on
+        // a refresh token IS the ATCA instance key, and the draft's
+        // §10.3 binding is checked whenever the caller authenticates
+        // by attestation, INDEPENDENT of the DPoP proof's presence:
+        // a different instance key answers invalid_grant (the
+        // suite's different-client-instance-key negative presents a
+        // DPoP proof too - skipping the match when a proof exists
+        // would let the wrong instance refresh).
+        let live_attested = client.attested_jkt.as_deref().unwrap_or("");
+        if !live_attested.is_empty() && live_attested != bound {
+            tracing::warn!(
+                client_id = %client.client_id,
+                "refresh token ATCA instance-key binding rejected"
+            );
+            return Err(TokenError::OAuth(OAuthTokenError::with_desc(
+                StatusCode::BAD_REQUEST,
+                "invalid_grant",
+                "refresh token client instance key does not match the key the grant was issued under",
+            )));
+        }
+        // No DPoP proof at all: the request-level require-dpop gate
+        // (FAPI2-SP 5.3.2.1-6) rejects the proof-less form upstream;
+        // a non-attested caller reaching here with no proof on an
+        // ATCA-bound token is equally unbound - reject.
+        if dpop_jkt.map(|j| j.is_empty()).unwrap_or(true)
+            && client.attested_jkt.is_none()
+        {
+            return Err(TokenError::OAuth(OAuthTokenError::with_desc(
+                StatusCode::BAD_REQUEST,
+                "invalid_dpop_proof",
+                "refresh token is sender-constrained - a DPoP proof is required",
+            )));
         }
     }
 
