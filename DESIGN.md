@@ -1963,14 +1963,20 @@ inline JSON body:
   cell client (fapi2-mtls-dpop, self_signed_tls_client_auth +
   dpop_bound) - never reusing the plain mtls cell's client - and the
   token endpoint reads the flag from the authenticated client row.
-  **(OC-33)** The refresh chain is sender-constrained end to end
-  (RFC 9449 §5/§7): a DPoP-constrained grant mints the REFRESH
-  token with the same `cnf.jkt` as the access token, and the refresh
-  exchange demands a live proof from the bound key - the proof-less
-  or wrong-key request answers `400 invalid_dpop_proof` (the suite's
-  refresh-without-proof-of-possession negative reads the 4xx; an
-  unbound refresh token made the negative a correct 200). The ATCA
-  instance-key form (§9a.19) remains the alternative binding.
+  **(OC-33, revised against RFC 9449's text)** The refresh chain is
+  sender-constrained at the REQUEST level, not the token level: §5
+  binds the ACCESS token's `cnf.jkt` (the §7.1 resource proof must
+  come from that key), but the refresh GRANT (§7) only demands A
+  valid DPoP proof on the request - the proof's key REBINDS the
+  freshly minted access token (the wallet may rotate its DPoP key
+  across the refresh). The refresh token carries NO DPoP cnf
+  (stamping the original jkt would hard-bind it and reject the
+  legitimate rotation); the missing-proof negative is enforced by
+  the request-level require-dpop gate (§5.3.2.1-6,
+  `400 invalid_request`). The ATCA instance-key form (§9a.19)
+  REMAINS hard-bound on the refresh token (draft 10.3: a grant
+  minted under OAuth-Client-Attestation re-presents the SAME
+  instance key).
 - **The revocation cascade on the resource surface.** The code-replay
   revocation (RFC 6749 §4.1.2 - `crate::grants::revoke_by_id` on the
   detected replay) must hold EVERYWHERE the grant's tokens speak: the

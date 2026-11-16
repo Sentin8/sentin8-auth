@@ -4154,11 +4154,21 @@ pub async fn authorize(
                 return (StatusCode::FOUND, [("location", url)]).into_response();
             }
         }
-        return authorize_error_redirect(
+        // The FRAGMENT channel for token-returning response types
+        // (OC-34, OAuth Response Modes §2.1 - the request_uri-negative
+        // family shares the hybrid family's channel rule: the suite's
+        // par-attempt-reuse-request_uri reads RejectErrorInUrlQuery
+        // under FAPI1-ADV-5.2.2-1 with response_type=code id_token).
+        let fragment_channel = params
+            .response_type
+            .split_whitespace()
+            .any(|t| t == "id_token" || t == "token");
+        return authorize_error_redirect_channel(
             &params.redirect_uri,
             "invalid_request_uri",
             &desc,
             Some(params.state.as_str()),
+            fragment_channel,
         );
     }
     // The deferred JAR reject (RFC 6749 4.1.2.1 + JAR 6.2): the
@@ -4185,11 +4195,18 @@ pub async fn authorize(
                 return (StatusCode::FOUND, [("location", url)]).into_response();
             }
         }
-        return authorize_error_redirect(
+        // OAuth Response Modes 2.1 (OC-34 class): token-returning
+        // response types receive the reject in the FRAGMENT.
+        let fragment_channel = params
+            .response_type
+            .split_whitespace()
+            .any(|t| t == "id_token" || t == "token");
+        return authorize_error_redirect_channel(
             &params.redirect_uri,
             &code,
             &desc,
             Some(params.state.as_str()),
+            fragment_channel,
         );
     }
     // OIDC Core §3.2.1.1 / §3.3.2.1 (the implicit + hybrid cells, design
@@ -4247,11 +4264,15 @@ pub async fn authorize(
                 return (StatusCode::FOUND, [("location", url)]).into_response();
             }
         }
-        return authorize_error_redirect(
+        return authorize_error_redirect_channel(
             &params.redirect_uri,
             "invalid_request",
             "response_type is required",
             Some(params.state.as_str()),
+            params
+                .response_type
+                .split_whitespace()
+                .any(|t| t == "id_token" || t == "token"),
         );
     }
     // DESIGN §9a.22 - the deferred PKCE-missing reject (the same
@@ -4276,11 +4297,18 @@ pub async fn authorize(
                 return (StatusCode::FOUND, [("location", url)]).into_response();
             }
         }
-        return authorize_error_redirect(
+        // OAuth Response Modes 2.1 (OC-34 class): the PKCE reject rides
+        // the FRAGMENT for token-returning response types.
+        let fragment_channel = params
+            .response_type
+            .split_whitespace()
+            .any(|t| t == "id_token" || t == "token");
+        return authorize_error_redirect_channel(
             &params.redirect_uri,
             "invalid_request",
             &desc,
             Some(params.state.as_str()),
+            fragment_channel,
         );
     }
 
@@ -5703,7 +5731,7 @@ pub async fn token(
             })?;
         dpop_jkt = Some(jkt);
     } else if profile.require_dpop
-        && client.cert_thumbprint.is_none()
+        && (client.cert_thumbprint.is_none() || client.dpop_bound)
         && req.grant_type != "client_credentials"
  // RFC 8693 token exchange is an M2M delegation grant: the
  // subscriber authenticates as a service client and sender-
@@ -6557,15 +6585,19 @@ async fn handle_code_exchange(
             Duration::seconds(state.config.refresh_token_ttl_secs as i64),
             Some(&client.client_id),
         );
-        // RFC 9449 §5/§7 (OC-33): a DPoP-constrained grant mints
-        // refresh tokens carrying the SAME cnf.jkt as the access
-        // token - the refresh exchange then demands a live proof from
-        // the bound key (the suite's refresh-without-proof negative;
-        // an unbound refresh token would make the proof-less exchange
-        // correctly succeed and the module reads a 200).
-        if let Some(jkt) = bound_jkt.as_deref().filter(|j| !j.is_empty()) {
-            refresh_claims.cnf = Some(crate::dpop::build_dpop_cnf_claim(jkt));
-        }
+        // The refresh-token binding is deliberately DIFFERENT from the
+        // access token's (RFC 9449 OC-33 revised against the spec text):
+        // §5 binds the ACCESS token's cnf.jkt - the resource-surface
+        // proof (§7.1) must then come from that key. The refresh GRANT
+        // (§7) only demands A valid DPoP proof on the request - the
+        // proof's key REBINDS the freshly minted access token (the
+        // wallet may rotate its DPoP key across the refresh; the
+        // suite's happy refresh presents a fresh key and expects 200,
+        // while its negative strips the proof entirely and expects
+        // 4xx under the FAPI2 sender-constraint mandate
+        // 5.3.2.1-6). Stamping the ORIGINAL jkt onto the refresh
+        // token would hard-bind it and reject the legitimate rotation.
+        //
         // The ATCA binding (draft-ietf-oauth-attestation-based-client-auth
         // 10.3): the attested instance-key thumbprint - a later refresh
         // request must re-present it.
@@ -6688,32 +6720,30 @@ async fn handle_refresh(
         .and_then(|k| k.as_str())
         .map(str::to_string);
     if let Some(bound) = bound_jkt {
-        // RFC 9449 §7 (OC-33): a DPoP-bound refresh token demands a
-        // live proof from the BOUND key at every refresh exchange -
-        // the proof-less / wrong-key request answers 400
-        // invalid_dpop_proof (the suite's
-        // refresh-without-proof-of-possession negative).
+        // RFC 9449 §7 (OC-33 revised against the spec text): the
+        // refresh GRANT demands A valid DPoP proof on the request -
+        // present-but-fresh-key is legitimate (the new proof's key
+        // rebinds the minted access token; the wallet may rotate
+        // across the refresh). The ATCA instance-key form (§9a.19)
+        // REMAINS hard-bound: a grant minted under
+        // OAuth-Client-Attestation re-presents the SAME instance key.
         let live_proof = dpop_jkt.filter(|j| !j.is_empty());
-        match live_proof {
-            Some(live) if live == bound => {
-                // proof presented from the bound key - satisfied.
-            }
-            _ => {
-                // No live DPoP proof (or a wrong key): the ATCA
-                // instance-key form may still satisfy it (the attested
-                // caller re-presents its instance key).
-                let live_attested = client.attested_jkt.as_deref().unwrap_or("");
-                if live_attested != bound {
-                    tracing::warn!(
-                        client_id = %client.client_id,
-                        "refresh token DPoP/ATCA key binding rejected"
-                    );
-                    return Err(TokenError::OAuth(OAuthTokenError::with_desc(
-                        StatusCode::BAD_REQUEST,
-                        "invalid_dpop_proof",
-                        "refresh token is sender-constrained - a DPoP proof from the bound key is required",
-                    )));
-                }
+        if live_proof.is_none() {
+            // No DPoP proof at all: the ATCA form may still satisfy
+            // the binding (the attested caller re-presents its
+            // instance key through the attestation, not the DPoP
+            // header).
+            let live_attested = client.attested_jkt.as_deref().unwrap_or("");
+            if live_attested != bound {
+                tracing::warn!(
+                    client_id = %client.client_id,
+                    "refresh token proof-of-possession missing"
+                );
+                return Err(TokenError::OAuth(OAuthTokenError::with_desc(
+                    StatusCode::BAD_REQUEST,
+                    "invalid_dpop_proof",
+                    "refresh token is sender-constrained - a DPoP proof is required",
+                )));
             }
         }
     }
