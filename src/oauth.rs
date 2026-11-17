@@ -3980,6 +3980,29 @@ pub async fn authorize(
                         params.state = state;
                     }
                 }
+                // The response-mode recovery (F1JARMERR-1's second
+                // half): a JAR flow's `response_mode=jwt` rides INSIDE
+                // the object (the Ok arm overlays it at the site above
+                // - on reject that overlay never runs). The deferred
+                // reject's channel dispatch reads params.response_mode;
+                // without the recovery the JARM-wrapped reject falls
+                // back to the plain query redirect and the suite's
+                // ExtractJARMFromURLQuery finds no `response` param.
+                // Same unverified decode trust level as the state echo.
+                if params.response_mode.is_none() {
+                    if let Some(rm) = sentin8::auth::jwt::decode_payload(&request_jwt)
+                        .ok()
+                        .and_then(|claims| {
+                            claims
+                                .get("response_mode")
+                                .and_then(|v| v.as_str())
+                                .map(str::to_string)
+                        })
+                        .filter(|s| !s.is_empty())
+                    {
+                        params.response_mode = Some(rm);
+                    }
+                }
                 // RFC 6749 4.1.2.1: the error redirect targets a
                 // VALIDATED redirect_uri - the reject is DEFERRED to
                 // the post-(client,redirect_uri)-validation site (the
@@ -4297,6 +4320,31 @@ pub async fn authorize(
                 register_form_post_ref(&state.config.valkey_url, &params.redirect_uri, &pairs).await
             {
                 let url = format!("{}/oauth/form-post/{}", resolve_issuer(&state.config, &headers), ref_id);
+                return (StatusCode::FOUND, [("location", url)]).into_response();
+            }
+        }
+        // JARM wraps the reject (battery-11, F1JARMERR-1): the
+        // by_value/jarm variant rides response_mode=jwt, and the suite's
+        // ExtractJARMFromURLQuery reads the callback's `response=`
+        // param for the ERROR JWT too - JARM-2.2 defines the error
+        // response's JWT form (error + error_description + iss claims;
+        // the same validator chain as the code response). A plain
+        // RFC 6749 error redirect answers `Couldn't find response in
+        // callback_query_params` and the module INTERRUPTED.
+        if profile.require_jarm && params.response_mode.as_deref() == Some("jwt") {
+            let jarm_claims = crate::jarm::build_jarm_error(
+                &resolve_issuer(&state.config, &headers),
+                &params.client_id,
+                &code,
+                Some(&desc),
+                if params.state.is_empty() {
+                    None
+                } else {
+                    Some(&params.state)
+                },
+            );
+            if let Ok(jwt) = crate::jarm::sign_jarm_jwt(&state.keys, &jarm_claims, &profile.signing_alg) {
+                let url = crate::jarm::build_jarm_redirect_url(&params.redirect_uri, &jwt);
                 return (StatusCode::FOUND, [("location", url)]).into_response();
             }
         }

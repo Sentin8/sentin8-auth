@@ -1754,11 +1754,31 @@ two): while a module is WAITING and its log carries the parking entry
 (`Waiting for call to credential offer endpoint` - the gate prevents
 the same-second misfire against modules that never park), read the
 exposed `credential_offer_endpoint` from the runner record and GET it
-ONCE per WAITING state. Without the hook the module parks WAITING
+once per PARKED WAIT. Without the hook the module parks WAITING
 until the drive window times out with auth never receiving a request
 (the battery-9 vci-haip single-module failure, reproduced on a
 targeted retry: both wallet_initiated cells pass, the issuer_initiated
 cells starve).
+
+**One hook fire PER parked wait (battery-11, OFFERHOOK2-1).** The
+wait marker is re-emitted by the suite for every parking episode: the
+`multiple-clients` module runs the wallet role TWICE in one module
+(OID4VCI-1FINAL `AbstractVCIIssuerMultipleClient`: "The first client
+has obtained its credential. Pre-authorized codes are single-use, so
+a NEW Credential Offer for the second client is needed now" - the
+second wait parks the same `WAITING` state with the SAME
+`credential_offer_endpoint`). A once-per-runner submission would
+starve the second wait (the module dies at driveMs with client2's
+authorize never issued). The hook therefore counts the marker's
+occurrences in the module log and fires ONE offer submission per
+counted wait: on the first observation it submits and records the
+count; whenever the count RISES (the suite re-parked for the second
+client), the next WAITING observation submits again. The submission
+form per cell is unchanged (BY_VALUE inline JSON / BY_REFERENCE
+document URL); only the re-arm policy changed. A fired submission
+that the suite consumed shows up as the client's authorize flow in
+the module log (the browser block drives it) - the count comparison
+is the only new state.
 
 **The BY_REFERENCE offer document service (the hook's two-form
 split).** The suite's `VCIValidateCredentialOfferRequestParams`
@@ -1943,6 +1963,24 @@ inline JSON body:
   unverified decode carries the same trust level as the outer query's
   state (a plain request parameter - RFC 6749 4.1.3's state is an
   echo, never an input).
+- **The JAR-reject rides the JARM channel when the flow's response
+  mode is jwt (battery-11, F1JARMERR-1).** The by_value/jarm variant
+  configures the flow with `response_mode=jwt` (JARM-2.2): the reject
+  an exp-less object triggers is part of the AUTHORIZATION RESPONSE
+  contract, and under JARM the suite's `ExtractJARMFromURLQuery`
+  reads the callback's `response=` param for error JWTs too - a plain
+  RFC 6749 `error=` redirect carries NO response and the module dies
+  with `Couldn't find response in callback_query_params` (WARNING
+  then FAILURE then INTERRUPTED). The deferred JAR reject therefore
+  dispatches its channel by the flow's own mode: `response_mode=jwt`
+  + a JARM-mandating profile wraps the error in the JARM error JWT
+  (`iss`, `aud`, `exp`, `error`, `error_description`, and the echoed
+  state per 4.1.2.1) signed with the profile's signing alg - the same
+  wrapping the PAR-mandatory, request_uri, and PKCE rejects already
+  perform; the form_post and fragment families keep their existing
+  channels and the plain-query families keep the bare error redirect
+  (the query channel has no `response=` to extract - the suite's
+  RejectErrorInUrlQuery reads `error=` directly there).
 - **Campaign terminal state (2026-10-26).** Both f2 plans run
   terminal-ZERO-WARNING-ZERO-REVIEW green against the same deployed
   binary: fapi2-message-signing run16 = 117 module-instances (116 PASSED
