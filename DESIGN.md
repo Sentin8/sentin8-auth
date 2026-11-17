@@ -1981,6 +1981,24 @@ inline JSON body:
   channels and the plain-query families keep the bare error redirect
   (the query channel has no `response=` to extract - the suite's
   RejectErrorInUrlQuery reads `error=` directly there).
+- **The by-value JAR scope mandate (battery-11, F1SCOPE-1).** The
+  PAR push rejects a scope-less request object at `/oauth/par`
+  (FAPI1-ADV 7.1 - the request object MUST carry `scope`), but the
+  BY-VALUE authorize path accepted the same object: the Ok arm's
+  overlay assigned the object's EMPTY scope to `params.scope` and the
+  flow continued (a code minted through the continue + exchange), so
+  the suite's `ensure-request-object-without-scope-fails` module -
+  a by_value/jarm cell - read a signature-valid JARM response with
+  NO error and failed "expected an error but did not". Both
+  transports enforce the same JAR contract: the FAPI1-ADV authorize
+  path raises the same `invalid_request_object` reject when a
+  by-value object left `params.scope` empty (the check runs AFTER
+  the overlay, so a non-empty object scope or a NON-JAR request is
+  untouched; other postures - fapi_2, the plan-locked families -
+  keep their own flows). The deferred channel machinery (the JARM
+  wrapping, the state echo) applies unchanged. Verified: the
+  targeted scope-less module FINISHED PASSED on all eight variant
+  cells.
 - **Campaign terminal state (2026-10-26).** Both f2 plans run
   terminal-ZERO-WARNING-ZERO-REVIEW green against the same deployed
   binary: fapi2-message-signing run16 = 117 module-instances (116 PASSED

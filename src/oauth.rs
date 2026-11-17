@@ -3868,7 +3868,7 @@ pub async fn authorize(
     } else {
         None
     };
-    if let Some(request_jwt) = jar_jwt {
+    if let Some(ref request_jwt) = jar_jwt {
         let resolved_profile = crate::fapi::FapiProfile::from_str(
             &resolve_security_profile(&state.pool, &headers, "env").await.profile,
         );
@@ -4056,6 +4056,28 @@ pub async fn authorize(
         .unwrap_or(false);
     if pkce_method_invalid {
         deferred_pkce_reject = Some("code_challenge_method must be S256".to_string());
+    }
+    // The by-value JAR scope mandate (battery-11, F1SCOPE-1): the
+    // PAR push rejects a scope-less object at /oauth/par (FAPI1-ADV
+    // 7.1 - the request object MUST carry scope; the without-scope
+    // module), but the BY-VALUE authorize path accepted the same
+    // object - the Ok-arm assignment below leaves params.scope empty
+    // and the flow CONTINUED (a code minted through the continue +
+    // exchange), the suite's scope-less module then failed
+    // "expected an error but did not". Both transports enforce the
+    // same JAR contract: the by-value OK arm raising the empty object
+    // scope defers the SAME invalid_request_object reject.
+    let fapi1_posture = matches!(
+        crate::fapi::FapiProfile::from_str(&profile.profile),
+        Some(crate::fapi::FapiProfile::Fapi10Advanced)
+    );
+    if fapi1_posture
+        && jar_jwt.is_some()
+        && params.scope.trim().is_empty()
+        && deferred_jar_reject.is_none()
+    {
+        deferred_jar_reject =
+            Some("invalid_request_object: pushed request object carries no scope".to_string());
     }
     // PKCE is mandatory when the profile mandates PAR
     // (FAPI 2.0 default): the reject DEFERS to the post-validation site
@@ -10084,8 +10106,17 @@ async fn verify_jar_request(
     if let Some(exp) = raw.get("exp").and_then(|v| v.as_i64()) {
         // Closed-window boundary (same shape as the client assertion): exp
         // == now-600 IS expired - the boundary instant must not pass.
+        // The reject code rides the head: the suite's
+        // ensure-expired-request-object-fails chains
+        // EnsureInvalidRequestObjectError (getExpectedError =
+        // invalid_request_object) - a bare message reaches the by-value
+        // Err arm's DEFAULT mapping which codes it invalid_request and
+        // the module fails 'error field has unexpected value'
+        // (battery-11, F1EXPOBJ-1).
         if exp <= now - 600 || exp > now + 600 {
-            return Err("JAR request object exp out of range (+/-10min)".into());
+            return Err(
+                "invalid_request_object: JAR request object exp out of range (+/-10min)".into(),
+            );
         }
     }
 
