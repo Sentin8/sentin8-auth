@@ -10024,7 +10024,8 @@ async fn verify_jar_request(
     // mandate table tightens exactly the flags a posture sets.
     if flags.forbid_jar_alg_none && header_alg.as_deref() == Some("none") {
         return Err(
-            "the active security profile forbids an unsigned request object".into(),
+            "invalid_request_object: the active security profile forbids an unsigned request object"
+                .into(),
         );
     }
     if flags.require_jar_exp && raw.get("exp").is_none() {
