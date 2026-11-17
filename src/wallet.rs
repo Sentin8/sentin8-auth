@@ -2479,6 +2479,72 @@ pub async fn credential_offer_landing(
     axum::response::Redirect::to(&url).into_response()
 }
 
+/// The OID4VCI BY-REFERENCE offer DOCUMENT (auth DESIGN §9a.20 - the
+/// BY_REFERENCE offer document service): the suite's issuer-plan
+/// by-reference flow (`VCIFetchCredentialOfferFromCredentialOfferUri`)
+/// fetches `credential_offer_uri` SERVER-SIDE and parses the response
+/// body as the Credential Offer JSON itself - the BY-VALUE landing (a
+/// browser redirect page) cannot serve that fetch (it demands the
+/// `credential_offer` query param and would answer 400 to the suite's
+/// plain GET). This endpoint returns the standalone offer document
+/// (OID4VCI-1FINAL §4.1: the offer is a JSON resource deliverable
+/// inline or by URI): a fresh `issuer_state`, the request-host-resolved
+/// credential issuer, and the plan's configuration id. Stateless - the
+/// state is consumed at the authorize step the suite drives after
+/// validating the offer, exactly like the landing's flow.
+///
+/// # Errors
+/// `400` when the harness-bound `client_id`/`redirect_uri` params are
+/// missing (the same binding contract as the landing).
+#[utoipa::path(
+    get,
+    operation_id = "credentialOfferDocument",
+    path = "/oauth/credential-offer/document",
+    responses(
+        (status = 200, description = "The Credential Offer JSON (credential_issuer + configuration ids + authorization_code grant)", content_type = "application/json"),
+        (status = 400, description = "Missing harness-bound client_id/redirect_uri params"),
+    ),
+    security(),
+    tag = "wallet",
+)]
+pub async fn credential_offer_document(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    RawQuery(query): RawQuery,
+) -> Response {
+    let params: std::collections::HashMap<String, String> = query
+        .map(|q| serde_urlencoded::from_str::<std::collections::HashMap<String, String>>(q.as_str()).unwrap_or_default())
+        .unwrap_or_default();
+
+    // The harness binds the cell's client + redirect through the
+    // pass-through query params (the same contract as the landing).
+    let client_id = params.get("client_id").cloned().unwrap_or_default();
+    let redirect_uri = params.get("redirect_uri").cloned().unwrap_or_default();
+    if client_id.is_empty() || redirect_uri.is_empty() {
+        return (
+            StatusCode::BAD_REQUEST,
+            "the offer document URL must carry client_id and redirect_uri (harness-bound)",
+        )
+            .into_response();
+    }
+
+    let issuer = crate::oauth::resolve_issuer(&state.config, &headers);
+    let offer = serde_json::json!({
+        "credential_issuer": issuer,
+        "credential_configuration_ids": ["VerifiedPersonCredential"],
+        "grants": {
+            "authorization_code": {
+                "issuer_state": Uuid::new_v4().to_string(),
+            },
+        },
+    });
+    (
+        [(axum::http::header::CONTENT_TYPE, "application/json")],
+        axum::Json(offer),
+    )
+        .into_response()
+}
+
 
 
 #[cfg(test)]

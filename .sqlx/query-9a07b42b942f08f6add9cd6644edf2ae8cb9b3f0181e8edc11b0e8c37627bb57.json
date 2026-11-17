@@ -1,0 +1,16 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE webhook_outbox\n           SET retry_count = $2,\n               next_attempt_at = now() + ($3 || ' seconds')::interval\n           WHERE id = $1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Int4",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "9a07b42b942f08f6add9cd6644edf2ae8cb9b3f0181e8edc11b0e8c37627bb57"
+}

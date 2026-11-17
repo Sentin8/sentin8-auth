@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE sessions SET status = 'active', updated_at = now()\n                   WHERE token_id = $1 AND status = 'pending_mfa'",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "2c13a1b6d730aad0fd18a5ca7fde4407b39dd640ed3da5cddefe86f00e0ab15d"
+}

@@ -1,0 +1,53 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT a.id, a.outbox_id, a.status_code, a.error, a.duration_ms, a.attempted_at\n           FROM webhook_attempts a\n           JOIN webhook_outbox o ON o.id = a.outbox_id\n           WHERE a.outbox_id = $1 AND o.env_id = $2\n           ORDER BY a.attempted_at DESC",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "outbox_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 2,
+        "name": "status_code",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 3,
+        "name": "error",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 4,
+        "name": "duration_ms",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 5,
+        "name": "attempted_at",
+        "type_info": "Timestamptz"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      true,
+      true,
+      true,
+      false
+    ]
+  },
+  "hash": "bec555baed9286dd9639d243793663e4a53b95b464a249d6f1d09e6085504a7a"
+}

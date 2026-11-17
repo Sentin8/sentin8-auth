@@ -1,0 +1,19 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO sso_sessions\n             (connection_id, env_id, state, nonce, pkce_verifier, return_to, expires_at)\n           SELECT $1, env_id, $2, $3, $4, $5, now() + ($6 || ' seconds')::interval\n           FROM enterprise_connections WHERE id = $1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Text",
+        "Text",
+        "Text",
+        "Text",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "f9cea61f2069983d1eccc8a70180c7dd0eb3cbc666d6beba8368844f65ece84f"
+}

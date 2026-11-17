@@ -1,0 +1,37 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT c.id, c.env_id, c.status\n             FROM oauth_clients c\n             JOIN federated_credentials fc ON fc.client_id = c.id\n            WHERE c.client_id = $1 AND fc.issuer = $2 AND fc.subject = $3\n              AND (fc.audience = '' OR fc.audience = $4)",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "env_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 2,
+        "name": "status",
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text",
+        "Text",
+        "Text"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "b29b81797340a857394d1448cc8d7ac3cebb2ffea8beed97151b996291ffff8a"
+}

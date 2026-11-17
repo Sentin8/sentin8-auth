@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE actor_events\n           SET action = 'revoke'\n           WHERE token_id = $1 AND action = 'issue'",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "279463093d3e920dcf5f3366d3f90080011fe601b7bb53400a38cf9fbc50d013"
+}

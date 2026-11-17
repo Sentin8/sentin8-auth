@@ -1,0 +1,35 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT secret_cipher, factor_kind, status\n           FROM mfa_factors WHERE id = $1 AND user_id = $2",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "secret_cipher",
+        "type_info": "Bytea"
+      },
+      {
+        "ordinal": 1,
+        "name": "factor_kind",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 2,
+        "name": "status",
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      true,
+      false,
+      false
+    ]
+  },
+  "hash": "501cda25ed5d5f44a4b1ff2d718cfcb623acdc092241fd893f5491e9daaf7305"
+}

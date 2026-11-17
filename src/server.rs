@@ -374,6 +374,13 @@ pub fn build_router(state: AppState) -> Router {
             "/oauth/credential-offer",
             get(crate::wallet::credential_offer_landing),
         )
+        // OID4VCI BY-REFERENCE offer DOCUMENT (DESIGN §9a.20): the
+        // suite's issuer-plan by-reference flow fetches this URL
+        // server-side and parses the response body as the offer JSON.
+        .route(
+            "/oauth/credential-offer/document",
+            get(crate::wallet::credential_offer_document),
+        )
         .route("/oauth/credentials", post(crate::wallet::credential_offer))
         .route(
             "/oauth/credentials/issue",

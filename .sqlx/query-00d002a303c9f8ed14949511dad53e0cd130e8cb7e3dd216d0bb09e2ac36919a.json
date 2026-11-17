@@ -1,0 +1,79 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT\n               id, env_id, actor_user_id,\n               token_id, correlation_id, action,\n               target_resource_type, target_resource_id, timestamp, schema_version\n           FROM audit_events\n           WHERE env_id = $1\n             AND ($2::text IS NULL OR action = $2)\n           ORDER BY timestamp DESC\n           LIMIT $3 OFFSET $4",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "env_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 2,
+        "name": "actor_user_id",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 3,
+        "name": "token_id",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 4,
+        "name": "correlation_id",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 5,
+        "name": "action",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 6,
+        "name": "target_resource_type",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 7,
+        "name": "target_resource_id",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 8,
+        "name": "timestamp",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 9,
+        "name": "schema_version",
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Text",
+        "Int8",
+        "Int8"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      true,
+      true,
+      true,
+      false,
+      true,
+      true,
+      false,
+      false
+    ]
+  },
+  "hash": "00d002a303c9f8ed14949511dad53e0cd130e8cb7e3dd216d0bb09e2ac36919a"
+}

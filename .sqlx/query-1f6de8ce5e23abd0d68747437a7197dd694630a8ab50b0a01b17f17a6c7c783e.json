@@ -1,0 +1,22 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT g.name FROM groups g\n           JOIN group_members gm ON gm.group_id = g.id\n           WHERE gm.user_id = $1\n           ORDER BY g.name",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "name",
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "1f6de8ce5e23abd0d68747437a7197dd694630a8ab50b0a01b17f17a6c7c783e"
+}

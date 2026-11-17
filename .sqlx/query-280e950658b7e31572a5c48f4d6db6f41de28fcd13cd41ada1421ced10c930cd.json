@@ -1,0 +1,28 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT n.parent_role_id AS parent_id, c.name AS child_name\n               FROM role_nesting n\n               JOIN roles c ON c.id = n.child_role_id\n               WHERE n.parent_role_id = ANY($1)",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "parent_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "child_name",
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "UuidArray"
+      ]
+    },
+    "nullable": [
+      false,
+      false
+    ]
+  },
+  "hash": "280e950658b7e31572a5c48f4d6db6f41de28fcd13cd41ada1421ced10c930cd"
+}

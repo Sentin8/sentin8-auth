@@ -1,0 +1,17 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO mfa_challenges\n             (id, user_id, factor_id, challenge_kind, pending_token_id, expires_at)\n           VALUES ($1, $2, $3, 'enroll', NULL, now() + ($4 || ' seconds')::interval)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Uuid",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "f70adf7dbd1c18138f243d17fe1835ef48aaec37bc9231c562527ad70663d248"
+}

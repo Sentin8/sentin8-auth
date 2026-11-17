@@ -1,0 +1,22 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "WITH RECURSIVE seed_roles AS (\n                SELECT r.id, r.name\n                FROM roles r\n                JOIN user_roles ur ON ur.role_id = r.id\n                WHERE ur.user_id = $1\n                UNION ALL\n                SELECT gr.role_id AS id, r.name\n                FROM group_members gm\n                JOIN group_roles gr ON gr.group_id = gm.group_id\n                JOIN roles r ON r.id = gr.role_id\n                WHERE gm.user_id = $1\n            ),\n            role_closure AS (\n                SELECT id, name FROM seed_roles\n                UNION ALL\n                SELECT child.id, child.name\n                FROM roles child\n                JOIN role_nesting nest ON nest.child_role_id = child.id\n                JOIN role_closure parent ON parent.id = nest.parent_role_id\n            )\n            SELECT DISTINCT name FROM role_closure ORDER BY name",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "name",
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "abd26109f362aee61cd98d8c9e4bb4419e7862d2a384683e6337f8e7c855e4da"
+}

@@ -101,6 +101,7 @@ paths(
         crate::oid4vci::deferred_credential,
         crate::oid4vci::notifications,
         crate::wallet::credential_offer_landing,
+        crate::wallet::credential_offer_document,
         crate::wallet::credential_verifier_metadata,
         crate::wallet::wallet_verifier_done,
         crate::webfinger::webfinger,

@@ -1,0 +1,22 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT id FROM mfa_factors\n           WHERE user_id = $1 AND factor_kind = 'webauthn' AND status = 'active'\n           LIMIT 1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "83a766e1e72f188a09f6019792a31e0fa5453f4a03b23a71d1513ba1adadf99c"
+}

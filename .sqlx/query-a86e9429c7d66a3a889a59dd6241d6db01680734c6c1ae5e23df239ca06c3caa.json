@@ -1,0 +1,26 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT flow_id, trigger_patterns FROM consent_flows",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "flow_id",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 1,
+        "name": "trigger_patterns",
+        "type_info": "Jsonb"
+      }
+    ],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": [
+      false,
+      false
+    ]
+  },
+  "hash": "a86e9429c7d66a3a889a59dd6241d6db01680734c6c1ae5e23df239ca06c3caa"
+}

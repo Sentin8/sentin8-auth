@@ -1,0 +1,73 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT\n               id, actor_user_id, target_user_id, token_id, scope, reason, action,\n               expires_at, created_at\n           FROM actor_events\n           WHERE ($1::uuid IS NULL OR target_user_id = $1)\n             AND ($2::uuid IS NULL OR actor_user_id = $2)\n           ORDER BY created_at DESC\n           LIMIT $3 OFFSET $4",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "actor_user_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 2,
+        "name": "target_user_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 3,
+        "name": "token_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 4,
+        "name": "scope",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 5,
+        "name": "reason",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 6,
+        "name": "action",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 7,
+        "name": "expires_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 8,
+        "name": "created_at",
+        "type_info": "Timestamptz"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Int8",
+        "Int8"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "f56b12f7b96f9de06362eee56af613f16b0858835f67145552117527387fcedc"
+}

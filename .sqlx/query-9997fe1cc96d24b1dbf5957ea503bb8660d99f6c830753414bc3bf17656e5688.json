@@ -1,0 +1,103 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO oauth_clients\n               (env_id, client_id, client_name,\n                client_secret_hash, redirect_uris, grant_types, response_types,\n                token_endpoint_auth_method, scopes, consent_required)\n           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)\n           RETURNING\n               id, env_id, client_id, client_name,\n               redirect_uris, grant_types, response_types,\n               token_endpoint_auth_method, scopes, status,\n               consent_required,\n               created_at, updated_at",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "env_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 2,
+        "name": "client_id",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 3,
+        "name": "client_name",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 4,
+        "name": "redirect_uris",
+        "type_info": "TextArray"
+      },
+      {
+        "ordinal": 5,
+        "name": "grant_types",
+        "type_info": "TextArray"
+      },
+      {
+        "ordinal": 6,
+        "name": "response_types",
+        "type_info": "TextArray"
+      },
+      {
+        "ordinal": 7,
+        "name": "token_endpoint_auth_method",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 8,
+        "name": "scopes",
+        "type_info": "TextArray"
+      },
+      {
+        "ordinal": 9,
+        "name": "status",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 10,
+        "name": "consent_required",
+        "type_info": "Bool"
+      },
+      {
+        "ordinal": 11,
+        "name": "created_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 12,
+        "name": "updated_at",
+        "type_info": "Timestamptz"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Text",
+        "Text",
+        "Text",
+        "TextArray",
+        "TextArray",
+        "TextArray",
+        "Text",
+        "TextArray",
+        "Bool"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "9997fe1cc96d24b1dbf5957ea503bb8660d99f6c830753414bc3bf17656e5688"
+}

@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE mfa_factors\n           SET status = 'active', is_default = true, secret_preview = NULL, updated_at = now()\n           WHERE id = $1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "50d859131f208df4c5e0402fde1cde5748348abea99940bcbbad8d787ec96a57"
+}

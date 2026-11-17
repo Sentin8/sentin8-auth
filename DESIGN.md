@@ -891,6 +891,23 @@ per cell over a per-cell certification env (profile-per-env, §9a.2).
 | FAPI-CIBA | Poll w/ MTLS, Poll w/ Private Key, Ping w/ MTLS, Ping w/ Private Key | `bc-authorize` + both delivery modes, both client-auth families (§9a.14) |
 | FAPI 2 Security Profile (final) | ALL cells: `sender_constrain` (mtls|dpop) x `client_auth_type` (private_key_jwt|mtls) + `openid` (openid_connect|plain_oauth) | per-cell env + client (§9a.22) |
 | FAPI 2 Message Signing (final) | ALL cells (the same axes + JAR/JARM families) | per-cell env + client (§9a.16) |
+
+**The plain_oauth cells' plan-config scope drops `openid`.** The
+suite's FAPI2ProfileBehavior.initializeVariants rejects a plan whose
+variant axis is plain_oauth while `config.client.scope` still carries
+the `openid` scope value (`openid scope cannot be used with
+PLAIN_OAUTH` - an INTERRUPT at the module's variant initialization,
+the plain_oauth cells' first happy-flow round). The conformance
+harness therefore derives the per-cell config scope from the variant:
+the openid_connect cells keep `openid profile email phone address
+offline_access` (the suite's isOpenId - the id_token mandate - reads
+the SCOPE value, not the variant axis), and the plain_oauth cells send
+`profile email phone address offline_access`. The REGISTERED client
+scope (the seed's dcr body) stays unchanged for both - the AS accepts
+a narrower request under a wider registration, and one scope body per
+cell keeps the registration surface simple. No id_token is minted on
+the plain_oauth cells and no suite check demands one (the OIDC
+variants' id_token requirements ride the openid scope they keep).
 | OID4VCI Issuer (1.0 Final + HAIP) | wallet_initiated (shipped), issuer_initiated by_value, issuer_initiated by_reference | the credential-offer landing resolves BOTH offer forms (§9a.19 addendum: `vci_authorization_code_flow_variant` x `vci_credential_offer_variant`) |
 | OID4VCI Wallet (HAIP) | wallet_initiated, issuer_initiated by_value, issuer_initiated by_reference (the WALLET-role plans over our issuer) | the `oid4vci-1_0-wallet-haip-test-plan` runs in the battery (§9a.19) |
 | OID4VP + HAIP (verifier) | Wallet sd_jwt_vc direct_post.jwt, Wallet sd_jwt_vc dc_api.jwt, Wallet iso_mdl direct_post.jwt, Wallet iso_mdl dc_api.jwt | the verifier accepts BOTH response modes (direct_post(.jwt) + the DC API presentation channel) and BOTH credential formats (sd_jwt_vc + iso_mdl/mso_mdoc) (§9a.27) |
@@ -1718,6 +1735,67 @@ the embedded cert and failed. The persisted-key table keeps every
 rotated key (JWKS overlap), so the leaf-matched signer always
 resolves; a leaf binding no persisted key rejects the mint.
 
+**The issuer-plan offer wait is a HARNESS hook (battery-9,
+auth DESIGN 9a.20).** The ISSUER plan (`oid4vci-1_0-issuer-haip-test-plan`,
+the `vci_authorization_code_flow_variant=issuer_initiated` cells)
+reverses the wallet plan's roles: the SUITE plays the issuer and our
+side plays the wallet. The suite's
+`AbstractVCIIssuerTestModule.waitForCredentialOffer` sets the runner
+WAITING and exposes `credential_offer_endpoint` = the SUITE's own
+`{base_url}/credential_offer` (the suite-host URL
+`https://localhost.emobix.co.uk:8443/test/a/{alias}/credential_offer`);
+the module resumes (`handleCredentialOffer`) only when a request
+carrying `credential_offer` (BY_VALUE: the offer JSON inline) or
+`credential_offer_uri` (BY_REFERENCE: an https URL the suite fetches
+server-side) arrives there - the two params are mutually exclusive
+(OID4VCI-1FINAL-4.1). The rig runner therefore gains a THIRD operator
+hook (the CIBA approval and the rotate-keys resume being the first
+two): while a module is WAITING and its log carries the parking entry
+(`Waiting for call to credential offer endpoint` - the gate prevents
+the same-second misfire against modules that never park), read the
+exposed `credential_offer_endpoint` from the runner record and GET it
+ONCE per WAITING state. Without the hook the module parks WAITING
+until the drive window times out with auth never receiving a request
+(the battery-9 vci-haip single-module failure, reproduced on a
+targeted retry: both wallet_initiated cells pass, the issuer_initiated
+cells starve).
+
+**The BY_REFERENCE offer document service (the hook's two-form
+split).** The suite's `VCIValidateCredentialOfferRequestParams`
+dispatches on the delivered parameter: `credential_offer` (inline
+JSON) feeds `VCIValidateCredentialOffer` directly;
+`credential_offer_uri` enters `VCIFetchCredentialOfferFromCredential
+OfferUri` - a SERVER-SIDE HTTP GET of the URI whose response body must
+BE the offer JSON (the suite parses `body` into
+`credential_offer_raw` and validates it). The BY-VALUE landing
+(`GET /oauth/credential-offer`, the browser redirect page above)
+cannot serve that fetch: it demands the `credential_offer` query
+param and 302s into authorize - fetched by the suite it answers
+`400 credential_offer is required` and the module dies
+(`Unable to fetch credential offer from ...`). The issuer therefore
+gains the BY_REFERENCE half of the offer contract
+(OID4VCI-1FINAL-4.1: the offer is a standalone JSON resource
+deliverable inline or by URI):
+
+- `GET /oauth/credential-offer/document?client_id=...&redirect_uri=...`
+  - the offer DOCUMENT endpoint (the harness-bound pass-through
+  params, the same contract as the landing). It mints a fresh
+  `issuer_state`, resolves the credential issuer from the request
+  host, and returns `200 application/json` with the Credential Offer
+  object: `credential_issuer`, `credential_configuration_ids`
+  (the plan's configuration - `VerifiedPersonCredential`), and
+  `grants.authorization_code.issuer_state`. No redirect, no session,
+  no persistence - the state is consumed at the authorize step it
+  redirects into, exactly like the landing's flow.
+
+The hook delivers the matching form per cell: the BY_VALUE cells
+submit `credential_offer` = the document endpoint's JSON inline;
+the BY_REFERENCE cells submit `credential_offer_uri` = the document
+endpoint's URL. Both forms validate identically (the suite's
+`VCIValidateCredentialOffer` runs on the resolved JSON either way),
+and the authorize journey after the resume is the standard browser
+block.
+
 
 ### 9a.21 DPoP sender-constraint journey - PAR lifecycle & the jkt chain
 
@@ -1832,6 +1910,39 @@ inline JSON body:
   logs the 'unexpected parameters' warning, the wrapped form decodes).
   Wire-proven: par-ensure-pkce-required + par-plain-pkce-rejected PASS in
   both cells.
+- **The FAPI1 PAR-transport PKCE mandate (OC-38's second
+  axis).** FAPI1-ADV Part 2 5.2.2-18 is a PAR-ENDPOINT rule, not
+  the general `require_pkce` column: "if the pushed authorization request
+  is used, the request MUST contain a `code_challenge`". The pushed
+  transport under `fapi_1_advanced` therefore REJECTS a PKCE-less push
+  at `/oauth/par` (`400 invalid_request`) while the by-value transports
+  (the signed request object and the plain form) carry no challenge -
+  exactly the split OC-38 encodes (`require_pkce=false` on the profile
+  row, the PAR push enforcing its own transport mandate). The push-site
+  gate keys on `(profile == fapi_1_advanced && pushed && no
+  code_challenge)` - the challenge read from the FORM fields OR the
+  request object's claims (the suite's happy flow pushes the whole
+  request inside the JAR); the FAPI2 families keep the blanket
+  `require_pkce` mandate (their PAR pushes AND by-value flows both
+  carry challenges).
+- **The JAR-reject state echo.** A by-value JAR flow
+  carries its `state` ONLY inside the request object (the outer query
+  carries client_id, redirect_uri, and the `request` param - the suite's
+  BuildRequestObjectByReference/ByValue modules put every authorization
+  parameter in the object). When the JAR REJECTS (any of the mandate
+  violations: the code-jarm pairing, the alg family, the freshness
+  windows), the Ok-arm overlay never runs and the deferred reject's
+  error redirect would carry NO state - RFC 6749 4.1.2.1 requires the
+  error response to echo the request's state, and the suite's
+  CheckStateInAuthorizationResponse reads exactly that (battery-10's
+  response-mode-query failure: the reject redirect carried error +
+  error_description but dropped the object's state). The Err arm
+  therefore decodes the object UNVERIFIED to recover the state claim
+  for the error redirect: the reject path never mints tokens, the
+  recovered value is only echoed back to the redirect_uri, and the
+  unverified decode carries the same trust level as the outer query's
+  state (a plain request parameter - RFC 6749 4.1.3's state is an
+  echo, never an input).
 - **Campaign terminal state (2026-10-26).** Both f2 plans run
   terminal-ZERO-WARNING-ZERO-REVIEW green against the same deployed
   binary: fapi2-message-signing run16 = 117 module-instances (116 PASSED
@@ -2018,10 +2129,104 @@ inline JSON body:
   |---|---|---|---|
   | pk | dpop | DPoP proof | verify + bind `cnf.jkt` |
   | pk | dpop | none | `400 invalid_dpop_proof` |
-  | pk | mtls (or any + cert) | certificate | cert-bound `cnf.x5t#S256` |
+  | pk | mtls (or any + cert) | certificate (TLS layer) | cert-bound `cnf.x5t#S256` |
+  | pk | mtls | neither (cert stripped) | `400 invalid_request` - the mtls-sender
+  registration DEMANDS its certificate (the OC-38 cell table) |
   | mtls | dpop | certificate only | `400 invalid_dpop_proof` (DPoPRS-2) |
-  | mtls | mtls | certificate | cert-bound (RFC 8705 §3) |
+  | mtls | mtls | certificate | cert-bound (RFC 8705 section 3) |
   | any | any | neither | profile gate decides (env `require_dpop` for HAIP plan-fixed cells) |
+
+  `certificate` in this table = the TLS CONNECTION carried a client
+  certificate (the thumbprint header rode), which is true for BOTH
+  the cert-auth cells (the cert authenticates) and the pk/mtls
+  cells (the cert rides the handshake while the assertion
+  authenticates - RFC 8705 section 3 distinguishes authentication
+  from binding).
+
+- **The mtls-sender registration demands its certificate at the
+  exchange.** OC-38's registration gate is SYMMETRIC: a
+  `sender_constrain=dpop` registration demands a live DPoP proof (the
+  `400 invalid_dpop_proof` row above), and a `sender_constrain=mtls`
+  registration demands the client CERTIFICATE at the token exchange -
+  the certificate IS the sender-constraining credential the
+  registration named (FAPI2-SP 5.3.2.1-6: the registration specifies
+  the credential type). The suite's ensure-holder-of-key-required
+  negative on the private_key_jwt/mtls cell strips BOTH the cert and
+  the DPoP proof and reads the 4xx; with the registration left at
+  `any` no gate fired and the exchange 200ed (battery-9, both fapi2
+  and fapi2-signing, the single module failure in each). Target
+  state: the token-exchange gate keys on BOTH registration members -
+  `(profile.require_dpop || client.sender_constrain == "dpop")` keeps
+  demanding the proof, and the mtls-sender reject fires when the
+  CONNECTION carries no client certificate.
+
+  **The certificate is read from the TLS CONNECTION, not the
+  authentication method (RFC 8705 section 3).** The gate's probe is
+  the sentin8-tls-injected thumbprint header union
+  (`authenticate_client`'s cert-auth arm \|\| the presented-cert
+  headers) - NOT the `cert_thumbprint` member alone. That member is
+  only set when the client AUTHENTICATES by certificate
+  (self_signed_tls_client_auth / tls_client_auth); a
+  `private_key_jwt` client keeps it `None` EVEN WHEN the TLS
+  handshake presented its config certificate (the sentin8-tls layer
+  injects `X-Sentin8-Client-Cert-Thumbprint` on every cert-bearing
+  handshake). The FAPI2 private_key_jwt/mtls cell is exactly that
+  shape: assertion-auth + the SAME mtls cert pair attached at the
+  TLS layer on every token call (the suite attaches config.mtls to
+  the token POST, /oauth/token). The wire-proven split:
+  the happy flow presents the cert at TLS (the header rides, the
+  gate passes, the token mints `cnf.x5t#S256` via the same header
+  union at the bind site) and the negative's RemoveMTLSCertificates
+  strips the cert (no header, the gate rejects `400 invalid_request`).
+  Keying the gate on the auth-method arm alone would kill the pk
+  cell's happy flow (battery-10's fapi2 + fapi2-signing
+  `CheckTokenEndpointHttpStatus200` interrupts), because the
+  assertion-auth arm never sets the member.
+
+  The registration-to-cell mapping is EXCLUSIVE per flow shape: the
+  mtls-sender registration belongs ONLY to cells whose happy flow
+  PRESENTS the certificate (the FAPI2 private_key_jwt/mtls cell:
+  assertion-auth + cert-present; the negative strips it). A cell whose
+  happy flow presents NEITHER a proof NOR a certificate (the FAPI1-ADV
+  private_key_jwt cells - assertion-auth, plain token POST on the mtls
+  alias, no TLS client auth in the request shape) must NOT ride the
+  mtls-sender registration: the gate would reject its happy flow
+  (`400 client certificate required`, the battery-10 fapi1 live
+  finding). The conformance seed therefore registers a THIRD jwks
+  client family for those cells - `cert-fapi1-pk`
+  (`sender_constrain:"any"`, the profile gate governs) - while
+  `cert-fapi2-mtls-pk` (`sender_constrain:"mtls"`) serves the FAPI2
+  mtls-sender cell and `cert-fapi2-mtls` (self_signed cert auth,
+  `sender_constrain:"mtls"`) serves the CERT-auth cells; the cross
+  cells keep dpop. The FAPI1 spec's pk cells read the fapi1-pk
+  family.
+
+- **The rig seeds the REAL column per family (OC-38's rig
+  application).** The conformance seed (`conformance-seed.sh`) sets
+  `require_pkce` from the certification family's plan profile - the
+  same standards table the server-side flag encodes - with NO
+  post-`FLAGS` override line: a JSON later-key-wins override would
+  silently overwrite the per-family posture for every env. The rig
+  table the seed writes:
+
+  | rig family | profile | `require_pkce` | authority |
+  |---|---|---|---|
+  | fapi2, fapi2-signing | `fapi_2`, `fapi_2_message_signing` | `true` | FAPI2-SP mandates PKCE unconditionally on the authorization request |
+  | fapi1 | `fapi_1_advanced` | `false` | Part 2 §5.2.2-18 NOTE: PKCE rides the PAR transport only; the by-value happy flow carries no challenge |
+  | vci-issuer, vci-haip | `vci`, `vci_haip` | `true` | the wallet cells always push S256 challenges (the issuance code flow is challenge-carrying end-to-end) |
+  | smoke, oidc-basic, oidc-config, oidc-dynamic, logout | `standard` | `false` | plain OIDC Core: all FAPI flags off (runbook §9a.5 step 2) |
+  | implicit, hybrid | `standard` | `false` | the response-mode families ride the plain OIDC posture (§9a.25) |
+  | formpost | `formpost` | `false` | the Form Post OP profile is the plain OIDC posture (§9a.25) |
+  | sessionmgmt | `sm_session` | `false` | the Session-OP trio needs no flags (§9a.26) |
+  | fcl | `fcl` | `false` | the FCL surface rides the client registration, not a flag set (§9a.28) |
+  | ciba | `fapi_ciba` | `false` | the CIBA channel never touches the authorize endpoint; the plan's happy flows carry no code_challenge |
+  | oid4vp | `vp` | `false` | the verifier family rides the plain OIDC token posture (§9a.27) |
+
+  A stale seed line that mandates PKCE on the `standard`/`fapi_1_advanced`
+  families 400s every browser-driven happy flow at the authorize gate
+  (`invalid_request: PKCE code_challenge is required by the active
+  security profile` on the callback) - the exact regression class the
+  per-family `FLAGS` exist to prevent.
 
 - **The revocation cascade on the resource surface.** The code-replay
   revocation (RFC 6749 §4.1.2 - `crate::grants::revoke_by_id` on the

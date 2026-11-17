@@ -1,0 +1,52 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT id, endpoint_id, event_type, payload, retry_count, max_retries\n           FROM webhook_outbox\n           WHERE delivered_at IS NULL\n             AND failed_at IS NULL\n             AND next_attempt_at <= now()\n           ORDER BY next_attempt_at\n           LIMIT $1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "endpoint_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 2,
+        "name": "event_type",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 3,
+        "name": "payload",
+        "type_info": "Jsonb"
+      },
+      {
+        "ordinal": 4,
+        "name": "retry_count",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 5,
+        "name": "max_retries",
+        "type_info": "Int4"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "4decc38939ea959806d66e59ebf37940691dfc7f96412c88944a9d6453bc746a"
+}

@@ -3028,6 +3028,47 @@ pub async fn pushed_authorization_request(
         ));
     }
 
+    // FAPI1-ADV Part 2 5.2.2-18 (auth DESIGN 9a.22 - the PAR-transport
+    // PKCE mandate): the rule is a PAR-ENDPOINT mandate -
+    // "if the pushed authorization request is used, the request MUST
+    // contain a code_challenge" - independent of the general
+    // require_pkce column (the by-value transports carry no challenge
+    // under the same profile, the exact split OC-38 encodes). The
+    // challenge may ride the FORM fields OR the signed request object
+    // (the suite's happy flow pushes the whole request inside the JAR -
+    // the effective challenge is the union, the same overlay semantics
+    // as the redirect_uri resolution above). The pushed transport under
+    // fapi_1_advanced rejects inline at the push; FAPI2 keeps the
+    // blanket require_pkce mandate (its pushes AND by-value flows both
+    // carry challenges).
+    {
+        let par_profile = resolve_security_profile(&state.pool, &headers, "env").await;
+        let jar_code_challenge = req
+            .request
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .and_then(|jwt| sentin8::auth::jwt::decode_payload(jwt).ok())
+            .and_then(|claims| {
+                claims
+                    .get("code_challenge")
+                    .and_then(|v| v.as_str())
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
+                    .map(|s| s.to_string())
+            });
+        if par_profile.profile == "fapi_1_advanced"
+            && req.code_challenge.as_deref().unwrap_or("").is_empty()
+            && jar_code_challenge.is_none()
+        {
+            return Err(json_error(
+                StatusCode::BAD_REQUEST,
+                "invalid_request",
+                "code_challenge is required on the pushed authorization request (FAPI1-ADV Part 2 5.2.2-18)".to_string(),
+            ));
+        }
+    }
+
     // RFC 9449 SS10.1 - the PAR endpoint honors an attached DPoP proof:
     // a proof MUST verify (method/htu/iat/jti) and, when the pushed
     // request pre-binds dpop_jkt, the proof's key thumbprint MUST equal
@@ -3916,6 +3957,29 @@ pub async fn authorize(
                     }
                     _ => ("invalid_request".to_string(), e.clone()),
                 };
+                // RFC 6749 4.1.2.1 (auth DESIGN 9a.22 - the JAR-reject
+                // state echo): a by-value JAR flow carries its state
+                // ONLY inside the request object (the outer query
+                // holds client_id + redirect_uri + request). The Ok-arm
+                // overlay below never runs on reject, so the object's
+                // state is recovered here UNVERIFIED for the error
+                // redirect - the RFC requires the error
+                // response to echo the request's state, the reject
+                // path never mints tokens, and the echoed value rides
+                // the same trust level as the outer query's state.
+                if params.state.is_empty() {
+                    if let Some(state) = sentin8::auth::jwt::decode_payload(&request_jwt)
+                        .ok()
+                        .and_then(|claims| {
+                            claims
+                                .get("state")
+                                .and_then(|v| v.as_str())
+                                .map(str::to_string)
+                        })
+                    {
+                        params.state = state;
+                    }
+                }
                 // RFC 6749 4.1.2.1: the error redirect targets a
                 // VALIDATED redirect_uri - the reject is DEFERRED to
                 // the post-(client,redirect_uri)-validation site (the
@@ -5796,6 +5860,36 @@ pub async fn token(
             StatusCode::BAD_REQUEST,
             "invalid_request",
             "DPoP proof required for this grant",
+        )));
+    }
+
+    // The registration-scoped mtls sender-constraint gate (auth DESIGN
+    // 9a.22 - the OC-38 cell table's symmetric row): a sender_constrain=mtls
+    // registration names the client
+    // CERTIFICATE as the sender-constraining credential (FAPI2-SP
+    // 5.3.2.1-6 - the registration is the per-deployment choice). The
+    // certificate is read from the TLS CONNECTION (the sentin8-tls
+    // thumbprint header union - the same probe the cnf-binding site
+    // below uses), NOT from the mtls auth-method arm alone: a
+    // private_key_jwt client keeps `cert_thumbprint` None even when its
+    // handshake presented the config cert (RFC 8705 section 3 -
+    // authentication and binding are distinct). The exchange must then
+    // carry the cert: a caller whose connection presented no
+    // certificate under this registration did not present the named
+    // credential - reject invalid_request so the holder-of-key negative
+    // (RemoveMTLSCertificates strips the cert AND the proof) reads the
+    // 4xx. The cert-present happy path (cert-auth cells AND the pk/mtls
+    // cells riding the cert at TLS) is untouched.
+    let presented_cert =
+        client.cert_thumbprint.is_some()
+            || crate::mtls::extract_mtls_identity(&headers)
+                .map(|(t, _)| !t.is_empty())
+                .unwrap_or(false);
+    if client.sender_constrain == "mtls" && !presented_cert {
+        return Err(TokenError::OAuth(OAuthTokenError::with_desc(
+            StatusCode::BAD_REQUEST,
+            "invalid_request",
+            "client certificate required - the registration sender-constrains by mtls",
         )));
     }
 

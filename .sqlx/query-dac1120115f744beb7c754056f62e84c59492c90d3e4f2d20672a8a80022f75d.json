@@ -1,0 +1,28 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT public_key, credential_id FROM mfa_factors WHERE id = $1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "public_key",
+        "type_info": "Bytea"
+      },
+      {
+        "ordinal": 1,
+        "name": "credential_id",
+        "type_info": "Bytea"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      true,
+      true
+    ]
+  },
+  "hash": "dac1120115f744beb7c754056f62e84c59492c90d3e4f2d20672a8a80022f75d"
+}

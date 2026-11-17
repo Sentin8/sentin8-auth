@@ -1,0 +1,28 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT client_id, backchannel_logout_uri\n           FROM oauth_clients\n           WHERE backchannel_logout_uri IS NOT NULL\n             AND backchannel_logout_uri != ''\n             AND status = 'active'\n             AND ($1::text IS NULL OR client_id = $1)",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "client_id",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 1,
+        "name": "backchannel_logout_uri",
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text"
+      ]
+    },
+    "nullable": [
+      false,
+      true
+    ]
+  },
+  "hash": "363b0d3fe785d0a5dfa6626c7e9df8e08dfbd96e4741eeb1c5a8d3c5b542a262"
+}
