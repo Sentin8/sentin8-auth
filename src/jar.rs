@@ -178,8 +178,14 @@ pub fn validate_jar_claims(claims: &JarClaims, issuer: &str) -> Result<(), Strin
         // RFC 9101 §6.4 - the AS identifies itself among the audience
         // members (the array form collapses on deserialize; a
         // whitespace-joined multi-audience string matches per-member).
+        // The reject code rides the head: the suite's
+        // ensure-request-object-with-bad-aud-fails chains
+        // EnsureInvalidRequestObjectError (invalid_request_object) - a
+        // bare message reaches the by-value Err arm's DEFAULT mapping
+        // which codes it invalid_request and the module fails
+        // 'error field has unexpected value' (battery-11, F1BADAUD-1).
         if !aud.split_whitespace().any(|a| a == issuer) {
-            return Err("JAR aud must equal the AS issuer".into());
+            return Err("invalid_request_object: JAR aud must equal the AS issuer".into());
         }
     }
     if claims.response_type.is_empty() {

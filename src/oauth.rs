@@ -10084,38 +10084,53 @@ async fn verify_jar_request(
     }
     // The FAPI alg mandate (DESIGN 9a.16 (i)): under the signed-only
     // postures request objects sign with ES256/PS256 ONLY.
+    // The reject code heads: the ensure-expired-request-object-fails
+    // module chains EnsureInvalidRequestError (invalid_request), the
+    // request-object-unverifiable + bad-aud + alg-none families chain
+    // EnsureInvalidRequestObjectError (invalid_request_object) - the
+    // by-value Err arm's DEFAULT maps a bare message to invalid_request,
+    // so any object-family reject the suite expects as
+    // invalid_request_object carries the explicit head (battery-11,
+    // F1BADAUD-1: bad-aud delivered invalid_request and the module died
+    // 'error field has unexpected value').
     if flags.forbid_jar_alg_none && header_alg.as_deref() == Some("RS256") {
         return Err(
-            "RS256 is not a permitted request-object algorithm under the FAPI 2.0 security profile".into(),
+            "invalid_request_object: RS256 is not a permitted request-object algorithm under the FAPI 2.0 security profile"
+                .into(),
         );
     }
     let now = chrono::Utc::now().timestamp();
     if let Some(nbf) = raw.get("nbf").and_then(|v| v.as_i64()) {
         if nbf > now + 60 {
-            return Err("request object nbf more than 60s in the future".into());
+            return Err(
+                "invalid_request: request object nbf more than 60s in the future".into(),
+            );
         }
         if flags.require_jar_nbf && nbf < now - 600 {
-            return Err("request object nbf more than 10 minutes in the past".into());
+            return Err(
+                "invalid_request: request object nbf more than 10 minutes in the past".into(),
+            );
         }
     }
     if let Some(iat) = raw.get("iat").and_then(|v| v.as_i64()) {
         if iat > now + 60 {
-            return Err("request object iat more than 60s in the future".into());
+            return Err("invalid_request: request object iat more than 60s in the future".into());
         }
     }
     if let Some(exp) = raw.get("exp").and_then(|v| v.as_i64()) {
         // Closed-window boundary (same shape as the client assertion): exp
         // == now-600 IS expired - the boundary instant must not pass.
-        // The reject code rides the head: the suite's
-        // ensure-expired-request-object-fails chains
-        // EnsureInvalidRequestObjectError (getExpectedError =
-        // invalid_request_object) - a bare message reaches the by-value
-        // Err arm's DEFAULT mapping which codes it invalid_request and
-        // the module fails 'error field has unexpected value'
-        // (battery-11, F1EXPOBJ-1).
-        if exp <= now - 600 || exp > now + 600 {
+        // The reject code rides the head: BOTH exp windows chain
+        // Ensure{,PAR}InvalidRequestObjectError (getExpectedError =
+        // invalid_request_object) - the by-value Err arm's DEFAULT maps
+        // a bare message to invalid_request and the modules fail
+        // 'error field has unexpected value' (battery-11, F1EXPOBJ-1).
+        // RFC 7519 4.1.4: an exp in the PAST is an UNVERIFIABLE object;
+        // an exp over 60 minutes in the future is over the FAPI mandate
+        // window - both are invalid_request_object rejects.
+        if exp <= now - 600 || exp > now + 3600 {
             return Err(
-                "invalid_request_object: JAR request object exp out of range (+/-10min)".into(),
+                "invalid_request_object: JAR request object exp out of range (-10min expired / +60min future)".into(),
             );
         }
     }
