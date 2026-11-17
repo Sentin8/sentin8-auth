@@ -10101,20 +10101,29 @@ async fn verify_jar_request(
     }
     let now = chrono::Utc::now().timestamp();
     if let Some(nbf) = raw.get("nbf").and_then(|v| v.as_i64()) {
+        // The nbf-window reject code heads: the
+        // ensure-request-object-with-nbf-over-60-fails module (70 min
+        // in the PAST) chains EnsurePARInvalidRequestObjectError on the
+        // PAR push - invalid_request_object, same head as the exp
+        // windows (battery-11 round-4). The 8s-in-the-future variant is
+        // ACCEPTED (no reject) - only the over-60s-future and the
+        // over-10-min-past windows reject here.
         if nbf > now + 60 {
             return Err(
-                "invalid_request: request object nbf more than 60s in the future".into(),
+                "invalid_request_object: request object nbf more than 60s in the future".into(),
             );
         }
         if flags.require_jar_nbf && nbf < now - 600 {
             return Err(
-                "invalid_request: request object nbf more than 10 minutes in the past".into(),
+                "invalid_request_object: request object nbf more than 10 minutes in the past".into(),
             );
         }
     }
     if let Some(iat) = raw.get("iat").and_then(|v| v.as_i64()) {
         if iat > now + 60 {
-            return Err("invalid_request: request object iat more than 60s in the future".into());
+            return Err(
+                "invalid_request_object: request object iat more than 60s in the future".into(),
+            );
         }
     }
     if let Some(exp) = raw.get("exp").and_then(|v| v.as_i64()) {
