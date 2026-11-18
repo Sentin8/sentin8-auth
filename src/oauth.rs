@@ -10215,7 +10215,9 @@ pub async fn verify_client_signed_jwt(
         }
     }
     if !verified {
-        return Err("request object signature verification failed".into());
+        return Err(
+            "invalid_request_object: request object signature verification failed".into(),
+        );
     }
     Ok(())
 }
