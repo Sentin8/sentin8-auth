@@ -2021,6 +2021,27 @@ inline JSON body:
   written explicitly at every object-family site. Verified: 8/8
   variant cells per module (aud, exp, expired-request_uri, nbf, iat,
   alg-none, invalid-signature).
+- **The JAR-omitted redirect_uri serves the error page (battery-11
+  round-7, F1REDIRPAGE-1).** The `ensure-redirect-uri-in-authorization-
+  request` module strips `redirect_uri` from the by-value object AND
+  the outer query, then expects BOTH `ExpectRedirectUriMissingErrorPage`
+  (FAPI1-BASE-5.2.2-9: the page says the redirect uri is missing) AND
+  `CheckIfAuthorizationEndpointError` to pass - the AS cannot REDIRECT
+  any error without a presented redirect_uri, so the reject rides the
+  inline browser error-page family (the page fires only when no safe
+  redirect target exists), never the callback. The single-registration
+  adoption would otherwise fill `params.redirect_uri` and the deferred
+  JAR reject would JARM-redirect to the adopted callback -
+  CheckIfAuthorizationEndpointError fails that as "the authorization
+  was expected to succeed". The JAR Err arm therefore sets a missing
+  sentinel when the decoded object carries NO redirect_uri (the
+  unverified decode - the same trust level as the state/response_mode
+  echoes; the sentinel only steers the reject channel, tokens are
+  never minted); the registered check classifies the sentinel as
+  missing (no adoption, no registered match) and serves the error
+  page. Every redirect_uri-bearing reject path (objects that DO carry
+  a redirect_uri, outer-query flows, the PAR push's own 400 body) and
+  the non-JAR adoption are untouched.
 - **Campaign terminal state (2026-10-26).** Both f2 plans run
   terminal-ZERO-WARNING-ZERO-REVIEW green against the same deployed
   binary: fapi2-message-signing run16 = 117 module-instances (116 PASSED
