@@ -1999,6 +1999,28 @@ inline JSON body:
   wrapping, the state echo) applies unchanged. Verified: the
   targeted scope-less module FINISHED PASSED on all eight variant
   cells.
+- **The object-family reject contract map (battery-11 rounds 3-6,
+  F1BADAUD-1/F1EXPOBJ-1/F1NBF-1/F1ALGNON-1/F1SIGOBJ-1).** The suite's
+  decompiled classes fix the error CODE each JAR reject must deliver:
+  `EnsureInvalidRequestObjectError` (the by-value authorize path) and
+  `EnsurePARInvalidRequestObjectError` (the PAR push) both read the
+  `error` field and expect `invalid_request_object`; the bare
+  `invalid_request` code fails "the 'error' field has an unexpected
+  value". Every JAR-mandate violation therefore rides the explicit
+  object-family head at BOTH transports - aud-mismatch (§jar.rs: the
+  aud claim must equal the AS issuer), the exp freshness windows
+  (exp-less, expired, exp-over-60s), the nbf/iat future windows
+  (nbf/iat-over-60s), the unsigned object (alg=none), the
+  RS256-forbidden alg family, the scope-less object (F1SCOPE-1's
+  by-value overlay check), and the signature-verification failure
+  (`verify_client_signed_jwt`'s `!verified` arm). The by-value Err
+  arm's DEFAULT maps bare heads to `invalid_request` (the
+  long-state/long-nonce/64-char-nonce param rejects that
+  `EnsureInvalidRequestError` reads), so a bare message on an
+  object-family path silently delivers the WRONG code - the head is
+  written explicitly at every object-family site. Verified: 8/8
+  variant cells per module (aud, exp, expired-request_uri, nbf, iat,
+  alg-none, invalid-signature).
 - **Campaign terminal state (2026-10-26).** Both f2 plans run
   terminal-ZERO-WARNING-ZERO-REVIEW green against the same deployed
   binary: fapi2-message-signing run16 = 117 module-instances (116 PASSED
