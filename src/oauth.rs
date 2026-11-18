@@ -3989,6 +3989,37 @@ pub async fn authorize(
                 // back to the plain query redirect and the suite's
                 // ExtractJARMFromURLQuery finds no `response` param.
                 // Same unverified decode trust level as the state echo.
+                // The missing-redirect_uri page redirect (battery-11,
+                // F1REDIRPAGE-1): a by-value object that OMITS
+                // redirect_uri (jar.rs's "JAR redirect_uri is required"
+                // reject) leaves params.redirect_uri EMPTY here - the
+                // single-registration adoption below must NOT fill it,
+                // or the deferred reject would REDIRECT to the adopted
+                // callback (fapi1 ensure-redirect-uri module:
+                // FAPI1-BASE-5.2.2-9 - the AS cannot redirect without a
+                // presented/registered-in-request redirect_uri; the
+                // ExpectRedirectUriMissingErrorPage module demands the
+                // error PAGE at the authorization endpoint, and
+                // CheckIfAuthorizationEndpointError fails any callback
+                // error as "the authorization was expected to
+                // succeed"). Clearing the presented value puts the
+                // reject on the inline error-page channel exactly like
+                // a NON-JAR missing-redirect_uri request; every other
+                // redirect_uri-bearing reject path is untouched.
+                if params.redirect_uri.is_empty()
+                    && sentin8::auth::jwt::decode_payload(&request_jwt)
+                        .ok()
+                        .and_then(|claims| {
+                            claims
+                                .get("redirect_uri")
+                                .and_then(|v| v.as_str())
+                                .map(str::to_string)
+                        })
+                        .filter(|s| !s.is_empty())
+                        .is_none()
+                {
+                    params.redirect_uri = "__jar_missing_redirect_uri__".into();
+                }
                 if params.response_mode.is_none() {
                     if let Some(rm) = sentin8::auth::jwt::decode_payload(&request_jwt)
                         .ok()
@@ -4169,8 +4200,21 @@ pub async fn authorize(
     // EXACTLY ONE registered redirect_uri adopts that URI (and every
     // downstream validation error redirects there). Zero or multiple
     // registrations stay the inline 400 - the target would be an
-    // assumption.
-    if params.redirect_uri.is_empty() && client_redirect_uris.len() == 1 {
+    // assumption. A by-value JAR object that omitted redirect_uri
+    // (F1REDIRPAGE-1's sentinel) is EXEMPT: the object IS the request,
+    // the AS cannot redirect anywhere safe (FAPI1-BASE-5.2.2-9), and
+    // the suite's ExpectRedirectUriMissingErrorPage module demands the
+    // page - the sentinel falls through to the registered check as
+    // missing.
+    let jar_redirect_uri_omitted =
+        params.redirect_uri == "__jar_missing_redirect_uri__";
+    if jar_redirect_uri_omitted {
+        params.redirect_uri.clear();
+    }
+    if params.redirect_uri.is_empty()
+        && client_redirect_uris.len() == 1
+        && !jar_redirect_uri_omitted
+    {
         params.redirect_uri = client_redirect_uris[0].clone();
     }
     if !redirect_uri_registered(&client_redirect_uris, &params.redirect_uri) {
