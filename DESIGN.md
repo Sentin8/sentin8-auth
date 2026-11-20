@@ -1003,6 +1003,42 @@ graph TD
    password per env, seeded through the platform API only (no direct
    SQL). The legacy single-env form (env `cert`, alias `sentin8-local`,
    flat seed-out) remains the DEFAULT for the standard family.
+2c. **Rig domain mode (RIGMODE-1) - the OP hostname is a make
+   selection, not an edit.** The rig runs the OP under one of THREE
+   domain modes, selectable at fleet start (`make
+   conformance-domain-local / -platform / -public`); every consumer
+   (fleet derivation, suite container `extra_hosts`, seed, harness)
+   reads the SAME resolved configuration - no hardcoded domain remains:
+   - `local` (default) - `SENTIN8_DOMAIN=local.sentin8.dev`; the
+     wildcard zone resolves to 127.0.0.1 in public DNS and the suffix is
+     declared in `SENTIN8_ACME_LOCAL_DOMAINS`, so acme signs every
+     platform hostname with the platform CA (HTTP-01 short-circuited).
+     This is the pre-existing loopback shape.
+   - `platform` - `SENTIN8_DOMAIN` = a REAL public domain under the
+     operator's own control (e.g. `oidf.sentin8.dev`, wildcard A → the
+     dev box). The suffix JOINED `SENTIN8_ACME_LOCAL_DOMAINS`, so the
+     leaf ISSUER is still the platform CA - but hostnames now resolve
+     over public DNS to the box's public address: discovery, JWKS,
+     browser, and suite callbacks all ride a non-loopback route.
+   - `public` - the same real domain, suffix NOT declared local:
+     service leaves are issued through acme's **upstream relay**
+     (acme DESIGN §4.2) against the operator-configured public CA
+     (`SENTIN8_ACME_UPSTREAM_DIRECTORY_URL`, HTTP-01 tokens served
+     through the proxy's :80 listener) - the LE-signed leaf verifies in
+     every consumer (workspace reqwest runs native roots; the suite JVM
+     trusts ISRG Root X1; the harness runs TLS-verification-off for the
+     rig stack) with the platform CA additionally trusted everywhere.
+   The selection rides ONE override block (`conformance/domain.env`,
+   exported AFTER the `.env` source line so it wins - the source
+   assigns unconditionally) that sets `SENTIN8_DOMAIN`,
+   `SENTIN8_ACME_LOCAL_DOMAINS`, and the upstream-relay vars; `make
+   start-conformance` reads the selection too (a mode change forces the
+   full fleet restart - leaf caches are hostname-scoped). Under
+   `platform`/`public` the suite's nginx ingress leaf gains the rig
+   domain in its SAN list, and the seed/harness/compose derive the
+   tenant hosts from the resolved `SENTIN8_DOMAIN` (the compose
+   `extra_hosts` entries carry the CURRENT suffix only - generated from
+   the family table, no per-suffix hardcode).
 3. **Suite-visible posture (classical mode)** - the rig environment
    sets `SENTIN8_TLS_PQ_MODE=classical` (TLS 1.2/1.3 + RSA/ECDSA certs,
    JWT signing RS256) because the suite's Java client cannot speak the
@@ -1018,6 +1054,32 @@ graph TD
    driven with a scripted test user (the harness in `sentin8-auth-oidf/`).
 6. **Result capture** - runs export into `.tmp/conformance/results/`;
    the gate is zero FAILED / INTERRUPTED / SKIPPED / WARNING (§9a.11).
+
+**The rig's honesty contract (the browser-automation placeholder + the
+skip classes).** The harness replaces the suite's running-test-page
+browser loop - three hard rules keep the evidence real:
+
+- **Zero blank evidence.** Every screenshot the harness uploads to an
+  OIDF upload-placeholder shows a REAL surface. When the driven page
+  carries none (the pure-API dc_api drives stay on `about:blank`),
+  the harness renders one before the capture: the wallet's error
+  screen (`renderWalletErrorScreen` - the Wallet8 shell carrying the
+  exact rejection caption; the ISO suite's "upload a screenshot of
+  the wallet's error screen" placeholder reads the visible message)
+  or the module's error-page shell. The 1x1 placeholder PNG is
+  rejected as evidence: a blank pixel answers nothing.
+- **Zero silent skips.** A skip is a fact about a surface, not an
+  event: the skip-class harness lines (browser task skipped after the
+  flow moved on, the Flutter-test-bridge skip on a terminal page, the
+  plain-visit fallbacks, an unsupported browser command) log ONCE per
+  module run; a re-fire inside the same run is suppressed and the
+  suppressed repeats flush as `(xN)` counts when the module
+  terminates. A missing harness wire (`WALCERT_HOLDER_URL` absent)
+  is a HARD battery violation, never a logged info - the story fails
+  with its cause at the point of loss, not through a cascade of
+  downstream module failures.
+- **Failure notes are failures.** Screenshot or upload errors log as
+  failures at their one occurrence (they never repeat per poll).
 
 ### 9a.3 Profile-by-profile implementation state
 
@@ -3000,6 +3062,35 @@ sequenceDiagram
     V->>V: x5chain trust + MSO digests + device sig
     V-->>W: {redirect_uri} (the session outcome)
 ```
+
+**The wire-level closure the certification cells fixed.** The battery
+(the `oid4vp-wallet` family, all four cells green) surfaced the forms
+the §9a.29 summary understated, now canonical:
+
+- The vp_token DeviceResponse is the ISO MAP form
+  (`{version, documents, status}`) with the document carrying
+  `deviceSigned.deviceAuth.deviceSignature` - a DETACHED COSE_Sign1
+  whose DA array's 4th element is the TAGGED DeviceNameSpaceBytes
+  (`#6.24(bstr(...))`, not the decoded map) and whose session
+  transcript rides RAW; the engine contract is sdk DESIGN.md §8b.
+- The session transcript heads are MINIMAL canonical CBOR - every
+  member the verifier re-derives byte-exactly (the non-minimal
+  17-char tstr head broke the device signature; the fix lives in the
+  engine, both sides derive one shape).
+- The credential trust anchor for the mdoc presentation chain is the
+  ISSUING IACA of the mint - in the certification cells the suite's
+  mock issuer mints under its own IACA (served at
+  `/mdoc-iaca-root.pem`), so the wallet-side config names THAT root
+  as the top-level `credential_trust_anchor_pem` test-config member
+  (the chain validator reads env key `credential_trust_anchor_pem`;
+  the VICAL path takes precedence when a VICAL is configured).
+- The response-encryption JWK in `client_metadata.jwks` may omit
+  `use` - the encrypted-handover form still covers it (the B.2.6
+  HandoverInfo thumbprint rule, sdk DESIGN.md §8b).
+- The 6.4.1 disclosure rule: the wallet releases exactly the DCQL
+  selected claim paths, and a claims-LESS DCQL query releases
+  NOTHING (the claims filter lives in the engine's
+  `filter_issuer_signed`, sdk DESIGN.md §8b).
 
 ---
 
