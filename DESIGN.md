@@ -1039,6 +1039,19 @@ graph TD
    tenant hosts from the resolved `SENTIN8_DOMAIN` (the compose
    `extra_hosts` entries carry the CURRENT suffix only - generated from
    the family table, no per-suffix hardcode).
+   **Ingress reachability per mode:** `local` needs no inbound path and
+   `platform` needs none for the campaign (the browser, suite server,
+   CLI, and seed all run on the rig box - only a REMOTE human browser
+   would need the public route); `public` REQUIRES internet-level
+   inbound reachability on port 80 (and 443 for the TLS flows), because
+   the upstream CA's http-01 validator connects from outside. On a
+   WSL2 dev box the internet path ends at the Windows host - the VM
+   sits behind the Windows NAT, so the last hop is an operator-provided
+   `netsh portproxy` reconciled to the live VM IP (the group repo's
+   `scripts/windows/wsl-portproxy.ps1` + the registered logon/refresh
+   task; the rig runbook's "ingress reachability" section documents the
+   path and the verification - an in-box hairpin probe is NOT a valid
+   reachability verdict).
 3. **Suite-visible posture (classical mode)** - the rig environment
    sets `SENTIN8_TLS_PQ_MODE=classical` (TLS 1.2/1.3 + RSA/ECDSA certs,
    JWT signing RS256) because the suite's Java client cannot speak the
