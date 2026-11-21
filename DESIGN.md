@@ -1185,6 +1185,77 @@ RFC 8705 self-signed client-cert surface) WITHOUT mutating `../.env`.
 6. Export logs to `.tmp/conformance/results/`, then `make
    conformance-down`.
 
+### 9a.2d Hosted-suite target (OIDF production instance)
+
+Besides the local Docker rig, the same harness drives the OIDF
+**production suite** (`https://www.certification.openid.net`) - the
+instance certification results must run on for a submission. The two
+targets differ in exactly two dimensions; everything else (family
+table, specs' plan/module flow, browser automation, seed posture) is
+shared code:
+
+```mermaid
+graph TD
+    subgraph RIGM["local rig target (default)"]
+        RD["suite docker: mongo + server (devmode) + nginx<br/>SUITE_BASE=localhost.emobix.co.uk:8443<br/>devmode JSESSIONID - no real login"]
+    end
+    subgraph HOST["hosted target (CONFORMANCE_SUITE_TARGET=hosted)"]
+        HP["suite at certification.openid.net<br/>(OIDF-operated, real auth)"]
+        HT["/api/** = resource server<br/>opaque API bearer token (TokenApi)"]
+        HI["user sign-in: Google / GitLab OAuth2<br/>(one-time, tokens page creates the token)"]
+        HT -- "Authorization: Bearer" --> HP
+    end
+    RIGM --> AUTHP["sentin8:auth under test (public rig domain, RIGMODE-1)"]
+    HOST --> AUTHP
+```
+
+1. **Suite base is configuration.** `fixtures/env.ts` derives
+   `SUITE_BASE` from `CONFORMANCE_SUITE_URL` (default = the rig value,
+   today's behavior bit-for-bit). The hosted target needs no suite
+   stack at all - `make conformance-up` is skipped; only the platform
+   fleet (`make start-conformance`, `public` rig domain mode) + the
+   seed run.
+2. **API auth is a strategy, not a rewrite.** The suite's `/api/**`
+   chain is an OAuth2 resource server on the hosted instance: it
+   accepts opaque API bearer tokens (`POST /api/token {"permanent":
+   true|false}`, 24h TTL for temporary), while devmode rigs accept the
+   bare `JSESSIONID`. `SuiteApi` carries the token strategy when
+   `CONFORMANCE_SUITE_TOKEN` is set (`Authorization: Bearer` on every
+   call) - one code path serves both targets because the rig's
+   devmode filter coexists with the resource-server chain.
+3. **Token bootstrap is a one-time, interactive step.** The operator
+   signs in through the Playwright browser once (Google/GitLab - no
+   headless OAuth automation: bot-detection fragility + provider ToS
+   rule that out); a helper spec then drives the suite's Tokens page
+   (`POST /api/token` under the signed-in session), captures the
+   one-time-displayed value, and persists it to
+   `.tmp/conformance/suite-token.env` (chmod 600 - the same
+   secret-reference discipline as the seed's cert-user env).
+4. **Callbacks move with the suite base.** `suiteCallback()`
+   derivation already builds `/test/a/<alias>/callback` from
+   `SUITE_BASE`; the seed's `CALLBACK` resolves through the same
+   switch (the hosted form = the certification host's callback). The
+   OP under test MUST be publicly reachable from the suite AND from
+   the internet - the `public` rig domain mode (§9a.2 item 2c) with
+   its LE-signed leaf is the prerequisite (the portproxy collateral).
+5. **TTL discipline.** Temporary tokens expire after 24h - a battery
+   either mints fresh each day (the bootstrap helper re-runs in
+   minutes) or holds a permanent token the operator deletes after the
+   campaign. The suite's token list page shows expiry; the harness
+   treats a 401 from the suite as a loud fail (re-run the bootstrap),
+   never a silent re-login.
+6. **Result parity.** The exported logs land in
+   `.tmp/conformance/results/` under the SAME per-family naming, so
+   the campaign rule (§9a.10 no-skip + §9a.11 warning-zero) and the
+   submission packet (runbook step 7) read identical shapes from both
+   targets.
+
+**Deliberately not supported:** driving the Google/GitLab login
+headlessly (fragile + a ToS minefield - the sign-in is the operator's
+one interactive step), and a second "prod-mode" local Docker rig
+(it needs real OIDF OAuth client credentials and reproduces the same
+bearer work the hosted instance already gives free).
+
 ### 9a.10 No-skip rule (conformance coverage)
 
 **A skipped conformance test is a failed conformance test.** The suite
