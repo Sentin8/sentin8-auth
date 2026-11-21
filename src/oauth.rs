@@ -11084,7 +11084,13 @@ async fn handle_ciba_token(
                 Duration::seconds(effective_ttl as i64),
                 None,
                 None,
-                None,
+                // CIBA-7.1: the ID token's acr echoes the request's first
+                // acr_values entry (FAPI-CIBA 5.2.2-8 - the suite compares
+                // it against client.acr_value).
+                data["acr_values"]
+                    .as_str()
+                    .and_then(|s| s.split_whitespace().next())
+                    .filter(|s| !s.is_empty()),
             );
             Some(state.keys.sign_value_alg(&id_claims, &signing_alg).map_err(|e| {
                 TokenError::Internal(StatusCode::INTERNAL_SERVER_ERROR, e.to_string())

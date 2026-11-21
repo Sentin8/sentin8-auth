@@ -2119,11 +2119,36 @@ pub async fn credential_status(
     };
     // HAIP (§9a.19): the env profile's issuance leaf/chain (PEM) is the
     // status-list JWS's x5c when seeded; else the key's self-issued cert.
+    // BINDING GUARD: attach the chain ONLY when the leaf binds a
+    // PERSISTED key (HAIP-X5C-1's leaf-match - the signer must be the
+    // key the leaf certificate wraps). The VCI family's leaf wraps the
+    // SEED's fresh issuer-mint key (private inside the seed-out, never
+    // a persisted auth key) - a chain whose signer auth cannot resolve
+    // would fail the match and mint an EMPTY token (the 200
+    // content-length-0 class). Those profiles sign with our own active
+    // ES256 and keep the header's embedded `jwk` - the OIDF
+    // status-list signature condition verifies from the embedded jwk.
     let profile = crate::oauth::resolve_security_profile(&state.pool, &headers, "env").await;
-    let chain_x5c = pem_profile_to_x5c(&profile);
+    let chain_x5c = match pem_profile_to_x5c(&profile) {
+        Some(chain) if !chain.is_empty() => {
+            let leaf_bound = crate::x5c_leaf::leaf_ec_point_b64(&chain.first().cloned().unwrap_or_default())
+                .ok()
+                .map(|point| state.keys.binds_leaf_point(&point))
+                .unwrap_or(false);
+            if leaf_bound {
+                Some(chain)
+            } else {
+                None
+            }
+        }
+        _ => None,
+    };
     let token = crate::jwks::SigningKeys::status_list_jwt(&state.keys, &claims, &jwk_hdr, chain_x5c.as_deref())
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))
-        .unwrap_or_else(|_| String::new());
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("{e} - the status-list token was not minted")))
+        .unwrap_or_default();
+    if token.is_empty() {
+        return (StatusCode::INTERNAL_SERVER_ERROR, "the status-list token was not minted".to_string()).into_response();
+    }
     (
         [(axum::http::header::CONTENT_TYPE, "application/statuslist+jwt")],
         token,

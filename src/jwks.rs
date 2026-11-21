@@ -280,6 +280,16 @@ pub struct SigningKeys {
 }
 
 impl SigningKeys {
+    /// Does any persisted key bind the EC public point a leaf certificate
+    /// wraps (`ec_pk_b64 == point`, the HAIP-X5C-1 leaf-match)? Callers
+    /// attach an x5c chain to a minted JWS only when this answers true -
+    /// a chain whose signer is not a persisted key cannot be signed.
+    pub fn binds_leaf_point(&self, point: &str) -> bool {
+        self.all
+            .iter()
+            .any(|k| k.ec_pk_b64.as_deref() == Some(point))
+    }
+
     /// Generate a fresh in-memory key set for the active algorithm.
     ///
     /// Used by integration tests (no database persistence, no at-rest

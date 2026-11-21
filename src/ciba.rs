@@ -87,6 +87,10 @@ pub struct CibaRequest {
     #[serde(default)]
     /// The scope.
     pub scope: Option<String>,
+    /// CIBA §7.1 - space-delimited requested acr values; the FIRST entry
+    /// echoes back as the ID token's `acr` claim (FAPI-CIBA 5.2.2-8).
+    #[serde(default)]
+    pub acr_values: Option<String>,
     #[serde(default)]
     /// The user code.
     pub user_code: Option<String>,
@@ -402,6 +406,7 @@ pub async fn bc_authorize(
             }
         };
         overlay("scope", &mut req.scope);
+        overlay("acr_values", &mut req.acr_values);
         overlay("user_code", &mut req.user_code);
         overlay("binding_message", &mut req.binding_message);
         overlay("client_notification_token", &mut req.client_notification_token);
@@ -616,6 +621,10 @@ pub async fn bc_authorize(
         // DESIGN §9a.3 - ping-mode delivery state.
         "request_mode": request_mode,
         "client_notification_token": req.client_notification_token,
+        // CIBA-7.1 - the requested acr: the signed request object's
+        // acr_values REPLACES the form's (signed wins, the same rule
+        // as the other parameters).
+        "acr_values": req.acr_values,
     });    if let Some((thumb, _)) = crate::mtls::extract_mtls_identity(&headers) {
         if !thumb.is_empty() {
             if let Some(o) = request_data.as_object_mut() {
