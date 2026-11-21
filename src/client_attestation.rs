@@ -266,25 +266,108 @@ pub fn verify_attestation(
     crate::jwks::SigningKeys::verify_with_jwk(&leaf_jwk, attestation)
         .map_err(|_| AttestationRejection::ChainVerify)?;
 
-    // Trust-anchor pin: when the profile carries an anchor PEM, one of
-    // the chain's SPKIs (leaf or issuer cert) must equal the anchor's.
+    // Trust-anchor pin: when the profile carries an anchor PEM, the
+    // attester chain must bind to it. TWO accepted bindings:
+    //   (a) the anchor's SPKI appears IN the chain (an anchor carried as
+    //       a chain cert - an issuer-held intermediate), or
+    //   (b) the chain's LEAF is ISSUED and SIGNED by the anchor - the
+    //       leaf's issuer DN equals the anchor's subject DN AND the
+    //       leaf's signature verifies against the anchor's key. The
+    //       [leaf]-only chain convention the OIDF suite mandates
+    //       (X509CertificateUtil rejects the anchor INSIDE x5c) rides
+    //       this branch: the root is the trust anchor, never a chain
+    //       member. The signature verify (ECDSA/SHA-256 over the tbs
+    //       certificate) is the binding - a forged self-asserted leaf
+    //       cannot pass it without the anchor's key.
     if !trust_anchor_pem.trim().is_empty() {
         let anchor_der =
             pem_to_der(trust_anchor_pem).ok_or(AttestationRejection::ChainVerify)?;
         let anchor_spki =
             x509_leaf_spki(&anchor_der).map_err(|_| AttestationRejection::ChainVerify)?;
-        let chain_match = chain.iter().any(|c| {
+        let chain_in_anchor = chain.iter().any(|c| {
             c.as_str()
                 .and_then(|b| base64::engine::general_purpose::STANDARD.decode(b).ok())
                 .and_then(|der| x509_leaf_spki(&der).ok())
                 .map(|spki| spki == anchor_spki)
                 .unwrap_or(false)
         });
-        if !chain_match {
+        let leaf_issued_by_anchor = !chain_in_anchor
+            && leaf_signed_by_anchor(&leaf_der, &anchor_der)
+                .unwrap_or(false);
+        if !chain_in_anchor && !leaf_issued_by_anchor {
             return Err(AttestationRejection::ChainVerify);
         }
     }
     Ok(cnf)
+}
+
+/// Is `leaf_der` issued AND signed by `anchor_der`? The issuer DN must
+/// equal the anchor's subject DN and the leaf's signature must verify
+/// (ECDSA-P256/SHA-256) against the anchor's public key.
+fn leaf_signed_by_anchor(leaf_der: &[u8], anchor_der: &[u8]) -> Option<bool> {
+    anchor_vk_of(anchor_der).and_then(|vk| leaf_sig_from(leaf_der).and_then(|(sig_input, sig)| {
+        use p256::ecdsa::signature::Verifier;
+        vk.verify(&sig_input, &sig).ok().map(|_| true)
+    }))
+}
+
+/// The anchor certificate's P-256 verifying key (its SPKI point).
+fn anchor_vk_of(anchor_der: &[u8]) -> Option<p256::ecdsa::VerifyingKey> {
+    let spki = x509_leaf_spki(anchor_der).ok()?;
+    p256::ecdsa::VerifyingKey::from_public_key_der(&spki).ok()
+}
+
+/// The leaf certificate's signature parts: (the signed tbs TLV bytes, the
+/// signature). cert = SEQ { tbs SEQ { ... }, sigAlg SEQ, sigValue BIT }.
+fn leaf_sig_from(cert_der: &[u8]) -> Option<(Vec<u8>, p256::ecdsa::Signature)> {
+    fn tlv(buf: &[u8]) -> Option<(u8, usize, usize)> {
+        if buf.len() < 2 {
+            return None;
+        }
+        let tag = buf[0];
+        let lb = buf[1];
+        let (hdr, len) = if lb & 0x80 == 0 {
+            (2usize, lb as usize)
+        } else {
+            let n = (lb & 0x7f) as usize;
+            if n == 0 || n > 4 || buf.len() < 2 + n {
+                return None;
+            }
+            let mut len = 0usize;
+            for b in &buf[2..2 + n] {
+                len = (len << 8) | *b as usize;
+            }
+            (2 + n, len)
+        };
+        if buf.len() < hdr + len {
+            return None;
+        }
+        Some((tag, hdr, len))
+    }
+    let (_, cert_hdr, cert_len) = tlv(cert_der)?;
+    let body = &cert_der[cert_hdr..cert_hdr + cert_len];
+    let (t_tbs, tbs_hdr, tbs_len) = tlv(body)?;
+    if t_tbs != 0x30 {
+        return None;
+    }
+    // The signature input = the tbs TLV bytes (header through content).
+    let sig_input = body[..tbs_hdr + tbs_len].to_vec();
+    let rest = &body[tbs_hdr + tbs_len..];
+    // signatureAlgorithm SEQUENCE, then signatureValue BIT STRING.
+    let (_, alg_hdr, alg_len) = tlv(rest)?;
+    let rest2 = &rest[alg_hdr + alg_len..];
+    let (t_bit, bit_hdr, bit_len) = tlv(rest2)?;
+    if t_bit != 0x03 {
+        return None;
+    }
+    let bit_content = rest2.get(bit_hdr..bit_hdr + bit_len)?;
+    let raw = bit_content.get(1..)?; // skip the unused-bits octet
+    let sig = if raw.len() == 64 {
+        p256::ecdsa::Signature::from_slice(raw).ok()?
+    } else {
+        p256::ecdsa::Signature::from_der(raw).ok()?
+    };
+    Some((sig_input, sig))
 }
 
 /// Verify the PoP JWT: typ, `aud` (the issuer), `jti` presence (the
@@ -430,7 +513,7 @@ pub const ERROR_USE_CHALLENGE: &str = "use_attestation_challenge";
 
 /// Consume the PoP's `challenge` claim when present (§9a.30.1, the
 /// draft's §7.2 rule 5): the record must exist, be live, and be bound
-/// to the SAME client - then it is deleted (single use). A PoP with
+/// to the SAME client. A PoP with
 /// NO challenge claim passes untouched (the claim is OPTIONAL per
 /// §5.1; the platform's local policy - §6 - accepts challenges when
 /// present, never mandates them).
@@ -465,11 +548,22 @@ pub async fn consume_challenge_if_any(
                 "invalid client".to_string(),
             )
         })?;
-    // Atomic consume: get_del returns the record or nil (the glide
-    // client's GETDEL) - single-use by construction.
+    // Lifecycle (§9a.30.1, the A1 contract + the draft's §6.4): the
+    // challenge record is VALIDATED (exists + live + bound to this
+    // client) but NOT deleted - the certified client re-presents the
+    // SAME attestation PoP across the authorization JOURNEY (PAR then
+    // token; the wire-observed suite behavior), and the challenge's
+    // freshness is already bounded by the TTL (300s). Single-use
+    // replay protection rides the PoP's jti gate (below), which IS
+    // per-request: a replayed PoP answers invalid_client there.
+    // Atomic validate-with-delete removed: GETDEL here consumed the
+    // record at the PAR leg, so the SAME PoP's token leg answered
+    // use_attestation_challenge - the certified clients' retry loop
+    // re-POSTs the challenge and re-runs PAR, but the module's own
+    // token assertion already read the FIRST 400.
     let record: Option<String> = {
         use glide::AsyncCommands as _;
-        conn.get_del(&key).await.unwrap_or(None)
+        conn.get(&key).await.unwrap_or(None)
     };
     match record {
         Some(text) => {

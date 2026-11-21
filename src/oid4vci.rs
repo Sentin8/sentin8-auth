@@ -1677,10 +1677,26 @@ async fn credential_impl(
         let _ = tx.commit().await;
 
         // HAIP x5c chain from the env profile (issuance leaf + chain).
+        // The LEAF-BINDING GUARD (HAIP-X5C-1, the same guard the verifier
+        // request-object + status-list mints apply): the profile's leaf
+        // must wrap a PERSISTED key; the VCI family's leaf wraps the
+        // SEED's fresh issuer-mint key (auth holds none) - an unbound
+        // chain fails the signer resolution and the plain fallback mints
+        // a credential with NO x5c header (the suite's HAIP-6.1.1
+        // failure class). Falling back to None makes the signer attach
+        // the KEY'S OWN certificate - the credential always carries x5c
+        // and the signature verifies against x5c[0].
         let issuance_chain = crate::wallet::pem_profile_to_x5c(
             &crate::oauth::resolve_security_profile(&state.pool, &headers, "env")
                 .await,
-        );
+        )
+        .filter(|c| {
+            !c.is_empty()
+                && crate::x5c_leaf::leaf_ec_point_b64(&c.first().cloned().unwrap_or_default())
+                    .ok()
+                    .map(|point| state.keys.binds_leaf_point(&point))
+                    .unwrap_or(false)
+        });
         match mint_credential(
             &state,
             &headers,
@@ -1850,7 +1866,14 @@ pub async fn deferred_credential(
     }
     let issuance_chain = crate::wallet::pem_profile_to_x5c(
         &crate::oauth::resolve_security_profile(&state.pool, &headers, "env").await,
-    );
+    )
+    .filter(|c| {
+        !c.is_empty()
+            && crate::x5c_leaf::leaf_ec_point_b64(&c.first().cloned().unwrap_or_default())
+                .ok()
+                .map(|point| state.keys.binds_leaf_point(&point))
+                .unwrap_or(false)
+    });
     let credential =
         mint_credential(&state, &headers, id, env_id, user_id, &cred_type, &cnf,
  None, 0, issuance_chain.as_deref()).await?;

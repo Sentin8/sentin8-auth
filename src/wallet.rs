@@ -350,9 +350,23 @@ async fn create_verifier_request(
     // HAIP (§9a.19) - the env issuance leaf/chain: the x5c = [leaf, ...]
     // is the request object's chain (the wallet checks
     // x509_hash(client_id) equality against x5c[0]'s sha256 thumbprint
-    // and validates the chain against the trust anchor).
+    // and validates the chain against the trust anchor). The LEAF-BINDING
+    // GUARD: attach the chain ONLY when the leaf wraps a PERSISTED key
+    // (the signer must be the key the leaf cert binds - the same
+    // HAIP-X5C-1 match the status-list mint applies). The VCI family's
+    // profile leaf wraps the SEED's fresh issuer-mint key (private inside
+    // the seed-out; auth holds none) - attaching that chain would fail
+    // the leaf match and 500 the request creator. Those requests sign
+    // with the tenant ES256 key and its own certificate, and the
+    // client_id falls back to the plain plan's redirect_uri form.
     let profile = crate::oauth::resolve_security_profile(&state.pool, &headers, "env").await;
-    let chain = pem_profile_to_x5c(&profile);
+    let chain = pem_profile_to_x5c(&profile).filter(|c| {
+        !c.is_empty()
+            && crate::x5c_leaf::leaf_ec_point_b64(&c.first().cloned().unwrap_or_default())
+                .ok()
+                .map(|point| state.keys.binds_leaf_point(&point))
+                .unwrap_or(false)
+    });
     // The request key pair: the leaf's key = the ISSUER'S ES256 signing
     // key (the same key the issuance leaf cert wraps; the seed minted
     // the leaf ON that key) - the signature is verifiable against x5c[0]
@@ -608,9 +622,18 @@ pub async fn vp_request_object(
         }
     }
 
-    // Re-sign the (possibly updated) object with the SAME chain.
+    // Re-sign the (possibly updated) object with the SAME chain the
+    // creator used - the profile's leaf/chain ONLY when the leaf binds a
+    // persisted key (the same HAIP-X5C-1 guard the creator applies; an
+    // unbound leaf fails the signer resolution and 500s the fetch).
     let profile = crate::oauth::resolve_security_profile(&state.pool, &headers, "env").await;
-    let chain = pem_profile_to_x5c(&profile);
+    let chain = pem_profile_to_x5c(&profile).filter(|c| {
+        !c.is_empty()
+            && crate::x5c_leaf::leaf_ec_point_b64(&c.first().cloned().unwrap_or_default())
+                .ok()
+                .map(|point| state.keys.binds_leaf_point(&point))
+                .unwrap_or(false)
+    });
     let object = crate::jwks::SigningKeys::sign_value_typed_x5c(
         &state.keys,
         &request,
