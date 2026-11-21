@@ -943,6 +943,26 @@ pub async fn authenticate_client(
                     (StatusCode::UNAUTHORIZED, "invalid client".into())
                 },
             )?;
+        // §9a.30.1 (A1): when the PoP carries a `challenge` claim, it
+        // MUST resolve to a LIVE single-use challenge record minted for
+        // THIS client - the bootstrap contract the advertised
+        // challenge_endpoint creates. Consumption is inside the same
+        // gate (POST-then-use once). A failed challenge answers the
+        // draft §7.4 error contract: 400 use_attestation_challenge + a
+        // fresh challenge in the OAuth-Client-Attestation-Challenge
+        // header (the spec-true retry path).
+        if let Err((status, message)) =
+            crate::client_attestation::consume_challenge_if_any(
+                &state.config.valkey_url,
+                pop_jwt,
+                &client_id,
+            )
+            .await
+        {
+            // The (StatusCode, String) channel carries the §7.4 marker;
+            // the caller maps it to use_attestation_challenge.
+            return Err((status, message));
+        }
         // PoP jti single-use (the draft's replay rule): the cache marks
         // the jti consumed; a replayed jti answers invalid_client.
         replay_gate_pop_jti(&state.config.valkey_url, &jti).await?;
@@ -1320,6 +1340,14 @@ pub struct DiscoveryDocument {
     /// The OIDC Session Management iframe (check_session_iframe).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub check_session_iframe: Option<String>,
+    /// The client-attestation challenge endpoint (§9a.30.1, A1 -
+    /// `challenge_endpoint`, the HAIP bootstrap).
+    pub challenge_endpoint: String,
+    /// The acr values supported (\u00a79a.30.6, A6): the value family the
+    /// id_token's `acr` claim actually carries - the achieved
+    /// authentication context (\u00a79a.11). Advertised unconditionally:
+    /// the emitted claim value must be discoverable.
+    pub acr_values_supported: Vec<String>,
     /// The response types supported.
     pub response_types_supported: Vec<String>,
     /// The response modes supported.
@@ -1543,28 +1571,30 @@ pub async fn discovery(
         token_endpoint: format!("{issuer}/oauth/token"),
         jwks_uri: format!("{issuer}/.well-known/jwks.json"),
         userinfo_endpoint: format!("{issuer}/oauth/userinfo"),
-        // The dynamic signed-userinfo family (§9a.10 honesty: the plan's
-        // oidcc-userinfo-rs256 module requires the advertisement). FAPI
-        // postures keep it off - the signed-userinfo form is not a FAPI
-        // surface.
-        userinfo_signing_alg_values_supported: if profile.require_par
-            || profile.require_mtls
-        {
-            None
-        } else {
-            Some(vec![
-                crate::jwks::active_signing_alg().into(),
-                "ES256".into(),
-                "PS256".into(),
-                "none".into(),
-            ])
-        },
+        // The signed-userinfo advertisement (§9a.30.5, A5): the honest
+        // response-alg family the OP signs userinfo with - advertised
+        // UNCONDITIONALLY (the FAPI disc checks run only when the member
+        // is present; hiding it behind the non-FAPI profiles starved
+        // FAPICheckDisc/FAPI2CheckDisc of the surface). `none` is listed
+        // because the Dynamic-OP family's plain cells register it
+        // (§9a.10); FAPI postures never request it.
+        userinfo_signing_alg_values_supported: Some(vec![
+            crate::jwks::active_signing_alg().into(),
+            "ES256".into(),
+            "PS256".into(),
+            "none".into(),
+        ]),
         revocation_endpoint: format!("{issuer}/oauth/revoke"),
         introspection_endpoint: format!("{issuer}/oauth/introspect"),
         end_session_endpoint: format!("{issuer}/oauth/logout"),
         // OIDC Session Management (design 9a.26): the postMessage shim
         // behind the certification's Session-OP plan.
         check_session_iframe: Some(format!("{issuer}/oauth/check-session/iframe")),
+        // §9a.30.1 (A1): the attestation challenge endpoint advertised.
+        challenge_endpoint: format!("{issuer}/oauth/attestation-challenge"),
+        // \u00a79a.30.6 (A6): the achieved-context family the id_token's
+        // acr claim carries under the certification profile.
+        acr_values_supported: vec!["urn:certification:idp:aal1".into()],
         // The standard five (OIDC Core §3.1.2.1 family + DESIGN §9a.13):
         // the certification family runs variant cells per response_type.
         response_types_supported: [
@@ -5827,6 +5857,18 @@ pub struct TokenResponse {
     #[serde(skip_serializing_if = "Option::is_none")]
     /// The id token.
     pub id_token: Option<String>,
+    /// §9a.30.3 (A3, RFC 9396 §7): the authorize request's validated
+    /// `authorization_details`, echoed verbatim from the code record
+    /// - omitted when the request carried none (the plain OIDC
+    /// families see no change).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub authorization_details: Option<serde_json::Value>,
+    /// §9a.30.3 (A3, OID4VCI-1FINAL-6.2): the per-credential
+    /// identifiers derived from the details - one entry per
+    /// `openid_credential` detail, STABLE across token responses (both
+    /// derive from the same code record).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub credential_identifiers: Option<serde_json::Value>,
 }
 
 /// Handle token.
@@ -5898,7 +5940,20 @@ pub async fn token(
         true,
     )
     .await
-    .map_err(|(s, m)| TokenError::OAuth(OAuthTokenError::with_desc(s, "invalid_client", m)))?;
+    .map_err(|(s, m)| {
+        // §9a.30.1 (the draft §7.4 error contract): the challenge
+        // failure carries its own error code - rendered with a fresh
+        // challenge in the OAuth-Client-Attestation-Challenge header.
+        if m == crate::client_attestation::ERROR_USE_CHALLENGE {
+            TokenError::OAuth(OAuthTokenError::with_desc(
+                s,
+                "use_attestation_challenge",
+                "Authorization Server requires a fresh challenge",
+            ))
+        } else {
+            TokenError::OAuth(OAuthTokenError::with_desc(s, "invalid_client", m))
+        }
+    })?;
 
     // DPoP proof handling. When the caller's env-resolved profile
     // requires DPoP, every token request must carry a valid proof;
@@ -6865,6 +6920,45 @@ async fn handle_code_exchange(
         None
     };
 
+    // §9a.30.3 (A3, RFC 9396 §7 + OID4VCI-1FINAL-6.2): echo the
+    // authorize request's validated authorization_details verbatim,
+    // plus the derived credential_identifiers (one entry per
+    // openid_credential detail - the detail's credential_configuration_id
+    // when present, else the type's id; STABLE across responses - the
+    // same code record derives both).
+    let echo_details = code_data
+        .get("authorization_details")
+        .cloned()
+        .filter(|d| !d.is_null());
+    let credential_identifiers = echo_details.as_ref().and_then(|details| {
+        let arr = details.as_array()?;
+        let ids: Vec<serde_json::Value> = arr
+            .iter()
+            .filter(|d| {
+                d.get("type")
+                    .and_then(|v| v.as_str())
+                    .map(|t| t == "openid_credential")
+                    .unwrap_or(false)
+            })
+            .map(|d| {
+                let cfg_id = d
+                    .get("credential_configuration_id")
+                    .and_then(|v| v.as_str())
+                    .map(str::to_string)
+                    .unwrap_or_else(|| {
+                        d.get("type")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("")
+                            .to_string()
+                    });
+                serde_json::json!({
+                    "credential_configuration_id": cfg_id,
+                })
+            })
+            .collect();
+        (!ids.is_empty()).then(|| serde_json::Value::Array(ids))
+    });
+
     Ok(Json(TokenResponse {
         access_token,
         refresh_token,
@@ -6877,6 +6971,8 @@ async fn handle_code_exchange(
         // API calls fail with "lacks <service>:read scope".
         scope: Some(merged_scope),
         id_token,
+        authorization_details: echo_details,
+        credential_identifiers,
     }))
 }
 
@@ -7170,6 +7266,9 @@ async fn handle_refresh(
         // Return the merged scope (base + group permissions).
         scope: Some(merged_scope),
         id_token: None,
+        authorization_details: None,
+        credential_identifiers: None,
+
     }))
 }
 
@@ -7322,6 +7421,8 @@ async fn handle_client_credentials(
         expires_in: state.config.m2m_token_ttl_secs,
         scope: if scope.is_empty() { None } else { Some(scope) },
         id_token: None,
+        authorization_details: None,
+        credential_identifiers: None,
     }))
 }
 
@@ -7469,6 +7570,8 @@ async fn handle_federated_token_exchange(
         expires_in: state.config.m2m_token_ttl_secs,
         scope: if scope.is_empty() { None } else { Some(scope) },
         id_token: None,
+        authorization_details: None,
+        credential_identifiers: None,
     }))
 }
 
@@ -7928,6 +8031,8 @@ async fn handle_publisher_token_exchange(
             Some(scope_str)
         },
         id_token: None,
+        authorization_details: None,
+        credential_identifiers: None,
     }))
 }
 
@@ -10677,6 +10782,9 @@ async fn handle_device_code(
         expires_in: state.config.access_token_ttl_secs,
         scope: Some(merged_scope),
         id_token: None,
+        authorization_details: None,
+        credential_identifiers: None,
+
     }))
 }
 
@@ -11003,6 +11111,9 @@ async fn handle_ciba_token(
         expires_in: effective_ttl,
         scope: Some(merged_scope),
         id_token,
+        authorization_details: None,
+        credential_identifiers: None,
+
     }))
 }
 

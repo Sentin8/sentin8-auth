@@ -100,6 +100,10 @@ paths(
         crate::oid4vci::credential,
         crate::oid4vci::deferred_credential,
         crate::oid4vci::notifications,
+        // §9a.30.2 (A2): the SD-JWT VC Type Metadata document.
+        crate::oid4vci::sd_jwt_vc_type_metadata,
+        // §9a.30.1 (A1): the HAIP client-attestation challenge endpoint.
+        crate::client_attestation::attestation_challenge_endpoint,
         crate::wallet::credential_offer_landing,
         crate::wallet::credential_offer_document,
         crate::wallet::credential_verifier_metadata,

@@ -37,6 +37,130 @@ use crate::handlers::AppState;
 
 /// Credential configuration entries auth mints (SD-JWT VC profile). The
 /// set is the wallet credential store's supported types.
+// ── §9a.30.2 (A2): SD-JWT VC Type Metadata (draft-ietf-oauth-sd-jwt-
+// vc-12 §6.2/§6.3.1/§7) ──────────────────────────────────────────────
+
+/// The type-metadata slug for a vct: the platform serves the document
+/// at `{issuer}/oauth/vci/vct/{slug}` and the credential
+/// configuration's `vct` carries the FULL HTTPS URL (the spec's URL
+/// retrieval form - `VCIFetchSdJwtVcTypeMetadata` GETs the vct itself).
+pub fn vct_url(issuer: &str, slug: &str) -> String {
+    format!("{issuer}/oauth/vci/vct/{slug}")
+}
+
+/// The PID claim catalog - the SINGLE SOURCE the minted credential's
+/// selectively-disclosable claims and the type-metadata `claims` array
+/// both derive from (the metadata can never drift from the credential).
+fn pid_claim_catalog() -> &'static [(&'static str, &'static str)] {
+    &[
+        ("given_name", "Given Name"),
+        ("family_name", "Family Name"),
+        ("birthdate", "Date of Birth"),
+        ("street_address", "Street Address"),
+        ("locality", "Locality"),
+        ("postal_code", "Postal Code"),
+        ("country", "Country"),
+        ("nationalities", "Nationalities"),
+        ("sex", "Sex"),
+        ("birth_family_name", "Birth Family Name"),
+        ("place_of_birth", "Place of Birth"),
+        ("age_in_years", "Age in Years"),
+        ("age_birth_year", "Year of Birth"),
+        ("issuance_date", "Issuance Date"),
+        ("expiry_date", "Expiry Date"),
+        ("issuing_authority", "Issuing Authority"),
+        ("issuing_country", "Issuing Country"),
+    ]
+}
+
+/// The claim-path forms for the catalog: the address sub-claims ride
+/// the nested path (`["address", ...]`), the rest top-level.
+fn pid_claim_path(claim: &str) -> Vec<String> {
+    match claim {
+        "street_address" | "locality" | "postal_code" | "country" => {
+            vec!["address".to_string(), claim.to_string()]
+        }
+        "locality_birth" => vec!["place_of_birth".to_string(), "locality".to_string()],
+        other => vec![other.to_string()],
+    }
+}
+
+/// The deterministic Type Metadata document (§6.2) for the PID type.
+/// `vct` is the FULL URL (the retrieval addressable); the `claims`
+/// array uses the draft's EXACT property names (`path`, `display`,
+/// `mandatory`, `sd` - §9); `extends` is absent (the base type).
+fn pid_type_metadata(vct: &str) -> serde_json::Value {
+    let claims: Vec<serde_json::Value> = pid_claim_catalog()
+        .iter()
+        .map(|(claim, label)| {
+            serde_json::json!({
+                "path": pid_claim_path(claim),
+                "display": [{
+                    "locale": "en",
+                    "label": label,
+                }],
+                // §9.3: every PID carries these (the mint's fixed set).
+                "mandatory": true,
+                // §9.4: the mint makes every catalog claim selectively
+                // disclosable - `always`, the unambiguous form the
+                // draft recommends.
+                "sd": "always",
+            })
+        })
+        .collect();
+    serde_json::json!({
+        "vct": vct,
+        "name": "Sentin8 Person Identification Data",
+        "description": "The platform-native SD-JWT VC PID credential",
+        "display": [{
+            "locale": "en",
+            "name": "Sentin8 PID",
+            "description": "Person Identification Data",
+        }],
+        "claims": claims,
+    })
+}
+
+/// `GET /oauth/vci/vct/{slug}` - serve the Type Metadata document
+/// (§9a.30.2, A2). `200 application/json` for the PID family slugs
+/// (the sd-jwt catalog), `404` otherwise. The document is DETERMINISTIC
+/// (one JSON serialization) so the credential's `vct#integrity`
+/// `sha256-<base64>` pin (§7) verifies against the fetched bytes.
+#[utoipa::path(
+    get,
+    path = "/oauth/vci/vct/{slug}",
+    params(("slug" = String, Path, description = "The type slug (e.g. eudi-pid-1)")),
+    responses(
+        (status = 200, description = "The SD-JWT VC Type Metadata document", body = serde_json::Value),
+        (status = 404, description = "Unknown type slug"),
+    ),
+    security(),
+    tag = "wallet",
+)]
+pub async fn sd_jwt_vc_type_metadata(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    axum::extract::Path(slug): axum::extract::Path<String>,
+) -> Response {
+    let issuer = crate::oauth::resolve_issuer(&state.config, &headers);
+    // The PID family slugs (the sd-jwt catalog's vct forms); the
+    // mso_mdoc configurations carry no vct (not an SD-JWT type).
+    let known = slug == "eudi-pid-1" || slug == "eudi-pid-1.nobinding";
+    if !known {
+        return (StatusCode::NOT_FOUND, "unknown type").into_response();
+    }
+    let doc = pid_type_metadata(&vct_url(&issuer, "eudi-pid-1"));
+    (
+        StatusCode::OK,
+        [(
+            axum::http::header::CONTENT_TYPE,
+            axum::http::HeaderValue::from_static("application/json"),
+        )],
+        axum::Json(doc),
+    )
+        .into_response()
+}
+
 fn supported_credential_configurations(issuer: &str) -> serde_json::Value {
     let _ = issuer;
     let single = |id: &str| {
@@ -88,6 +212,15 @@ fn supported_credential_configurations(issuer: &str) -> serde_json::Value {
         serde_json::Value::Object(pt)
     };
     let wallet = |id: &str, scope: &str, proofs: &[&str], vct: &str| {
+        // §9a.30.2 (A2): the sd-jwt families' vct is the HTTPS
+        // type-metadata URL (the spec's §6.3.1 retrieval form - the
+        // suite GETs the vct itself; the historical URN is the
+        // semantic alias inside the served document).
+        let vct = if vct == "urn:eudi:pid:1" {
+            vct_url(issuer, "eudi-pid-1")
+        } else {
+            vct.to_string()
+        };
         let mut v = serde_json::json!({
             "format": "dc+sd-jwt",
             "scope": scope,
@@ -1288,6 +1421,23 @@ fn oid4vci_error(status: StatusCode, code: &str, desc: String) -> Response {
         .into_response()
 }
 
+/// §9a.30.4 (A4, FAPI2-IMP-2.1.1): stamp the credential (resource)
+/// endpoint's response with `x-fapi-interaction-id` - echoing the
+/// request's header value, or a fresh UUID when absent (the exact
+/// pattern the userinfo surface implements, FAPI 1.0 §6.2.2-1).
+pub fn fapi_interaction_header(headers: &HeaderMap) -> (axum::http::HeaderName, axum::http::HeaderValue) {
+    let interaction = headers
+        .get("x-fapi-interaction-id")
+        .and_then(|v| v.to_str().ok())
+        .filter(|v| !v.trim().is_empty())
+        .map(str::to_string)
+        .unwrap_or_else(|| Uuid::new_v4().to_string());
+    (
+        axum::http::HeaderName::from_static("x-fapi-interaction-id"),
+        axum::http::HeaderValue::from_str(&interaction).expect("uuid/echo is a valid header value"),
+    )
+}
+
 async fn credential_impl(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -1625,11 +1775,16 @@ async fn credential_impl(
                 axum::http::header::CONTENT_TYPE,
                 axum::http::HeaderValue::from_static("application/jwt"),
             );
+            // §9a.30.4 (A4): the resource response carries the FAPI
+            // interaction-id (echo-or-fresh).
+            let (n, v) = fapi_interaction_header(&headers);
+            resp.headers_mut().insert(n, v);
             resp
         });
     }
     Ok((
         StatusCode::OK,
+        [(fapi_interaction_header(&headers))],
         Json(serde_json::json!({ "credentials": credentials_out })),
     )
         .into_response())
@@ -1685,6 +1840,7 @@ pub async fn deferred_credential(
     if status == "pending" {
         return Ok((
             StatusCode::OK,
+            [(fapi_interaction_header(&headers))],
             Json(serde_json::json!({ "error": "issuance_pending" })),
         )
             .into_response());
@@ -1700,6 +1856,7 @@ pub async fn deferred_credential(
  None, 0, issuance_chain.as_deref()).await?;
     Ok((
         StatusCode::OK,
+        [(fapi_interaction_header(&headers))],
         Json(serde_json::json!({
             "credentials": [{
                 "format": "dc+sd-jwt",

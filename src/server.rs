@@ -20,6 +20,7 @@ use crate::actor_tokens;
 use crate::admin;
 use crate::backchannel_logout;
 use crate::ciba;
+use crate::client_attestation;
 use crate::config::AuthConfig;
 use crate::consent_proxy;
 use crate::dcr;
@@ -322,6 +323,19 @@ pub fn build_router(state: AppState) -> Router {
         // the session-state verifier behind it.
         .route("/oauth/check-session", get(oauth::check_session_status))
         .route("/oauth/check-session/iframe", get(oauth::check_session_iframe))
+        // §9a.30.1 (A1): the HAIP client-attestation challenge endpoint
+        // (discovery-advertised as challenge_endpoint; the draft §6.3
+        // challenge endpoint - POST).
+        .route(
+            "/oauth/attestation-challenge",
+            post(client_attestation::attestation_challenge_endpoint),
+        )
+        // §9a.30.2 (A2): the SD-JWT VC Type Metadata document
+        // (draft-ietf-oauth-sd-jwt-vc-12 §6.3.1 - the vct URL).
+        .route(
+            "/oauth/vci/vct/{slug}",
+            get(crate::oid4vci::sd_jwt_vc_type_metadata),
+        )
         .route("/device/verify", post(oauth::device_verify))
         .route("/oauth/introspect", post(oauth::introspect))
         // FAPI 2.0 Grant Management.

@@ -3105,6 +3105,172 @@ the §9a.29 summary understated, now canonical:
   NOTHING (the claims filter lives in the engine's
   `filter_issuer_signed`, sdk DESIGN.md §8b).
 
+### 9a.30 The skip-closure surfaces (CLAIMS-A) - the missing-claims inventory
+
+Source: `missing-claims.md` - the full extraction over the battery's
+874 module logs (7,815 `Skipped evaluation` INFO entries). Category A
+(the ~3,000 real platform gaps) closes here in seven surfaces, each
+keyed to the OIDF conditions it arms. The harness/registration items
+(Category B) belong to the rig; the variant conditionals (Category C)
+are the suite's own skipIf gates - not platform work.
+
+#### 9a.30.1 The client-attestation challenge endpoint (`challenge_endpoint`, A1 - 1,224 items)
+
+The HAIP client-attestation flow (`OAuth2-ATCA07-8`) needs the
+challenge bootstrap. Spec source: draft-ietf-oauth-attestation-based-
+client-auth-12 §6.3 (the challenge endpoint), §7.4 (the error
+contract), §15.2 (the `challenge_endpoint` metadata registration).
+
+- **Route**: `POST /oauth/attestation-challenge` - the spec's
+  request method is POST (§6.3: "A request for a Challenge is made by
+  sending an HTTP POST request"). Unauthenticated by design: the
+  endpoint is a nonce fountain; enforcement is the PoP re-check at
+  the token family.
+- **Response**: `200 application/json` + `Cache-Control: no-store`
+  (§6.3 MUST) with the single REQUIRED member
+  `attestation_challenge: "<uuid>"` (§6.3's exact response
+  parameter name - NOT `challenge`; the suite's unknown-field check
+  rejects extra members). The record's lifetime is the valkey TTL
+  (300s); no `expires_in` member (the spec permits additional data
+  but the suite's response-shape check is strict).
+- **Challenge lifecycle**: a Valkey record
+  `auth:attestation:challenge:{challenge}` (TTL 300s) storing the
+  requesting `client_id` (from the attestation JWT's `sub`, best
+  effort) - the PoP verify path (§7.2 rule 5) gains the challenge
+  branch: a PoP carrying a `challenge` claim MUST resolve to a live
+  record (unknown/expired = reject), consumed single-use (GETDEL);
+  a record bound to a different client_id is rejected. A PoP with
+  NO challenge claim passes untouched (the claim is OPTIONAL per
+  §5.1 - the platform's local policy, §6: challenges are accepted
+  when present, not mandatory).
+- **Error contract (§7.4)**: when the PoP's challenge fails
+  verification, the token endpoint answers `400` with
+  `error: use_attestation_challenge` + a FRESH challenge in the
+  `OAuth-Client-Attestation-Challenge` response header - the
+  spec-true retry path a certified client expects. The bare
+  `401 invalid_client` stays only for the non-challenge failure
+  surfaces (typ/aud/signature).
+
+#### 9a.30.2 SD-JWT VC type metadata (A2 - 1,088 items)
+
+`SDJWTVC-6.x/7/9` (draft-ietf-oauth-sd-jwt-vc-12): a `vct` value that
+is an HTTPS URL resolves to its Type Metadata document by GET (§6.3.1);
+the `vct#integrity` claim carries the W3C-SRI `sha256-<base64>` hash.
+
+- **vct as a URL**: the credential configurations' `vct` becomes the
+  platform's HTTPS type-metadata URL
+  (`{issuer}/oauth/vci/vct/{slug}` - e.g.
+  `.../oauth/vci/vct/eudi-pid-1`), which is what the suite's
+  `VCIFetchSdJwtVcTypeMetadata` follows. (The historical URN
+  `urn:eudi:pid:1` remains an ecosystem alias inside the document and
+  the minted credential's semantic identity; the URL form is the
+  retrieval addressable.)
+- **Route**: `GET /oauth/vci/vct/{slug}` - `200 application/json`
+  when the slug matches a configured credential family; `404`
+  otherwise. The document is served cacheable (the platform's TLS +
+  the issuer signature over the credential carry the trust; §6.3.4
+  allows indefinite caching when integrity is pinned).
+- **Document structure (§6.2 exactly)**: `vct` (the URL - REQUIRED),
+  `name`, `description` (OPTIONAL), `extends` (absent - the base PID
+  type extends nothing; a circular `extends` is forbidden §10.3),
+  `display` (array of `{locale, name, description}` objects - `locale`
+  REQUIRED per §8), `claims` (array of
+  `{path, display, mandatory, sd, svg_id}` entries - the draft's
+  EXACT claim-metadata property names, §9: `sd` ∈
+  `always|allowed|never` (the selective-disclosure flag; RECOMMENDED
+  `always`/`never` per §9.4), `mandatory` boolean (§9.3),
+  `path` the non-empty claim-path array (§9.1), `display` per-claim
+  locale objects with REQUIRED `label` (§9.2)).
+- **Single source (no drift)**: the `claims` array is GENERATED from
+  the same claim catalog the mint uses - every disclosable claim the
+  minted PID carries (`given_name`, `family_name`, `birthdate`,
+  `address.*`, `nationalities`, ...) gets its entry with
+  `sd: "always"` (matching the mint's actual selective disclosure) and
+  `mandatory: true` for the claims every PID carries.
+- **Integrity (§7)**: the credential's `vct#integrity` claim carries
+  `sha256-<standard-base64 of the SHA-256 over the served document>`;
+  the served bytes are deterministic (one JSON serialization), so the
+  minted credential pins the hash and the suite's
+  `VCIVerifyTypeMetadataIntegrity` (SDJWTVC-9.5) verifies it against
+  the fetched document.
+
+#### 9a.30.3 RFC 9396 authorization_details echo (A3 - 496 items)
+
+`OID4VCI-1FINAL-6.2/5.1.1`, `RFC9396-7`: the authorize request's
+`authorization_details` (already parsed, validated, and PAR-stored)
+must survive to the token response as the `authorization_details`
+member, with `credential_identifiers` per the OID4VCI conventions.
+
+- **Code record**: the valkey `auth:authcode:{code}` payload gains
+  `authorization_details` (verbatim, already-validated) - the code
+  is the state carrier between authorize and token.
+- **Token response**: `TokenResponse` gains
+  `authorization_details: Option<Value>` (skip_serializing when
+  absent - the plain OIDC families see no change) + the derived
+  `credential_identifiers` per detail whose `type` is
+  `openid_credential`: `[{"credential_configuration_id": <the
+  detail's "credential_configuration_id" or the type's id>}]` -
+  STABLE across token responses (the suite's
+  `VCIEnsureCredentialIdentifiersUnchangedAcrossTokenResponses`
+  compares the code-flow response with the deferred/batch
+  re-issuance response - both derive from the same code record).
+- The CIBA and device paths ride the same details (stored in the
+  CIBA/device record at request time).
+
+#### 9a.30.4 The credential endpoint's FAPI interaction-id echo (A4 - 64 items)
+
+`FAPI2-IMP-2.1.1`: the OID4VCI credential (resource) endpoint
+response carries `x-fapi-interaction-id` - echoing the request's
+header value, or a fresh UUID when absent. The userinfo surface
+(`userinfo_json`) already implements exactly this pattern; the
+credential endpoint's response construction gains the same pair
+(echo-or-fresh) on BOTH the success and the deferred-credential
+response paths.
+
+#### 9a.30.5 Discovery: userinfo_signing_alg_values_supported everywhere (A5 - 15 items)
+
+The advertisement exists today only for the non-FAPI profiles
+(`if profile.require_par || require_mtls -> None`). The FAPI plans'
+`FAPI2CheckDiscEndpointUserinfoSigningAlgValuesSupported` /
+`FAPICheckDiscEndpointUserinfoSigningAlgValuesSupported` run when the
+member is PRESENT: the list becomes unconditional
+(`[active_signing_alg, "ES256", "PS256", "none"]`) - an empty
+response set is a discovery lie; the honest list is the family the
+OP actually signs with. (The FAPI `none` question does not arise -
+`none` is listed because the signed-userinfo family's plain cells
+register it; FAPI never REQUESTS `none`.)
+
+#### 9a.30.6 Discovery: acr_values_supported (A6 - 8 items)
+
+`acr_values_supported: ["urn:certification:idp:aal1"]` (the value
+the id_token's `acr` claim actually carries - the certification
+profile's achieved context, §9a.11) - advertised unconditionally:
+the claim's emitted value must be discoverable
+(`FAPICIBAValidateIdTokenACRClaims` resolves it).
+
+#### 9a.30.7 The verifier request object's verifier_info + PKCE (A7 - 65 items)
+
+`OID4VP-1FINAL-5.1` + `RFC7636-4.3`: the OID4VP verifier's signed
+request objects (the `/v1/auth/verifier/request` creator in
+wallet.rs) gain two members the suite's extraction conditions
+require:
+
+- **`verifier_info`** (SIOPv2 `client` metadata object): the
+  verifier's human-facing identity - `{"name": "Sentin8 Verifier",
+  "purpose": ["identity presentation verification"], "logo_uri":
+  null-omitted}` - inserted at the request object's top level next
+  to `client_metadata` (the suite's
+  `ExtractVerifierInfoFromAuthorizationRequest` +
+  `ValidateVerifierInfo` + the unexpected-parameter check).
+- **`code_challenge` + `code_challenge_method: "S256"`**: the
+  verifier's authorization-code-flow leg (the request object rides
+  the wallet's authorize round-trip; the code_challenge binds the
+  eventual token exchange). The verifier generates a fresh PKCE
+  pair per request; the challenge's verifier lives in the pending
+  record (valkey) and the eventual token exchange verifies it
+  (the suite's
+  `EnsureAuthorizationRequestContainsPkceCodeChallenge`).
+
 ---
 
 ## 9b. In-process rig mirror - the Rust coverage map

@@ -263,6 +263,16 @@ async fn create_verifier_request(
     // - the request's fresh verifier nonce (the KB-JWT echoes it - the
     //   suite's replay defense).
     let nonce = Uuid::new_v4().to_string();
+    // §9a.30.7 (A7, RFC 7636): the verifier's PKCE pair - the request
+    // object carries the challenge; the verifier secret rides the
+    // pending record for the eventual token exchange.
+    let pkce_verifier = Uuid::new_v4().simple().to_string();
+    let pkce_challenge = {
+        use base64::Engine as _;
+        use sha2::{Digest, Sha256};
+        let digest = Sha256::digest(pkce_verifier.as_bytes());
+        base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(digest)
+    };
     // DCQL (OID4VP Final §5.2): the credential query rides `dcql_query`;
     // the presentation_definition (DIF PE) form is the WALLET plan's
     // alternative (accepted at the response endpoint for parity).
@@ -285,6 +295,20 @@ async fn create_verifier_request(
         // (the suite's ValidateRequestObjectAudForVP requires it).
         "aud": "https://self-issued.me/v2",
         "client_metadata": verifier_client_metadata(serde_json::Value::Null),
+        // §9a.30.7 (A7, OID4VP-1FINAL-5.1): the verifier's
+        // human-facing identity - the suite's
+        // ExtractVerifierInfoFromAuthorizationRequest +
+        // ValidateVerifierInfo read it from the request object.
+        "verifier_info": {
+            "name": "Sentin8 Verifier",
+            "purpose": ["identity presentation verification"],
+        },
+        // §9a.30.7 (A7, RFC 7636 §4.3): the verifier's authorization-
+        // code leg is PKCE-bound - the request object carries the
+        // challenge; the verifier (stored in the pending record)
+        // checks at the eventual token exchange.
+        "code_challenge": pkce_challenge,
+        "code_challenge_method": "S256",
         // DCQL (OID4VP Final §5.2): BOTH format families ride the query -
         // the sd-jwt PID (vct_values meta) and the mdoc PID
         // (meta.doctype_value - the suite's iso_mdl cells read the
@@ -372,6 +396,9 @@ async fn create_verifier_request(
         "type": "verifier_request",
         "request_id": request_id,
         "nonce": nonce,
+        // §9a.30.7 (A7): the PKCE verifier - checked at the eventual
+        // token exchange against the code_verifier.
+        "pkce_verifier": pkce_verifier,
         "client_id": client_id_final,
         "oauth_client_id": oauth_client_id,
         "oauth_redirect_uri": oauth_redirect_uri,

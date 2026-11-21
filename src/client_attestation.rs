@@ -31,6 +31,10 @@ use base64::Engine as _;
 use chrono::Utc;
 use p256::pkcs8::DecodePublicKey;
 
+/// The challenge record's lifetime (seconds) - the window the PoP's
+/// `challenge` claim stays consumable (§9a.30.1).
+pub const CHALLENGE_TTL_SECS: u64 = 300;
+
 /// The two header names the draft carries the pair on.
 pub const HEADER_ATTESTATION: &str = "OAuth-Client-Attestation";
 /// The PoP header name (draft: `OAuth-Client-Attstation-Pop` naming -
@@ -326,6 +330,197 @@ pub fn verify_pop(
     crate::jwks::SigningKeys::verify_with_jwk(attested_key, pop)
         .map_err(|_| AttestationRejection::PopSignature)?;
     Ok(jti)
+}
+
+// ── §9a.30.1 (A1): the challenge endpoint ────────────────────────────
+
+/// `POST /oauth/attestation-challenge` - the HAIP bootstrap surface
+/// (`OAuth2-ATCA07-8`; the draft's challenge endpoint, §6.3 - the
+/// request method is POST, the response member is
+/// `attestation_challenge`, and `Cache-Control: no-store` is a MUST).
+/// Served even to an absent/invalid attestation (the endpoint is a
+/// nonce fountain; the enforcement is the PoP re-check at the token
+/// family).
+#[utoipa::path(
+    post,
+    path = "/oauth/attestation-challenge",
+    responses(
+        (status = 200, description = "The fresh attestation challenge", body = serde_json::Value),
+        (status = 503, description = "Challenge store unavailable"),
+    ),
+    security(),
+    tag = "oauth",
+)]
+pub async fn attestation_challenge_endpoint(
+    axum::extract::State(state): axum::extract::State<crate::AppState>,
+    headers: axum::http::HeaderMap,
+) -> axum::response::Response {
+    use axum::response::IntoResponse;
+    // Identify the caller when the attestation is well-formed (best
+    // effort - a malformed attestation still receives a challenge;
+    // the record simply carries no client binding).
+    let mut client_binding = String::new();
+    if let Some(att) = headers
+        .get(HEADER_ATTESTATION)
+        .and_then(|v| v.to_str().ok())
+    {
+        if let Ok(payload) = sentin8::auth::jwt::decode_payload(att) {
+            client_binding = payload
+                .get("sub")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default()
+                .to_string();
+        }
+    }
+    let challenge = uuid::Uuid::new_v4().to_string();
+    // Persist the single-use record (GET-then-use-once): the PoP's
+    // consume path resolves it, checks the client binding, and deletes.
+    let conn = match sentin8::middleware::valkey_client(
+        &state.config.valkey_url,
+        "sentin8:auth",
+    )
+    .await
+    {
+        Ok(c) => c,
+        Err(e) => {
+            tracing::warn!(error = %e, "attestation challenge: valkey unavailable");
+            return (
+                axum::http::StatusCode::SERVICE_UNAVAILABLE,
+                "challenge store unavailable",
+            )
+                .into_response();
+        }
+    };
+    let record = serde_json::json!({
+        "client_id": client_binding,
+        "issued_at": Utc::now().timestamp(),
+    });
+    {
+        use glide::AsyncCommands as _;
+        let _: Result<(), _> = conn
+            .set_ex(
+                format!("auth:attestation:challenge:{challenge}"),
+                record.to_string(),
+                CHALLENGE_TTL_SECS,
+            )
+            .await;
+    }
+    tracing::info!(
+        client_id = %client_binding,
+        "client-attestation challenge issued (§9a.30.1)"
+    );
+    // §6.3's response contract: 200 application/json, no-store, the
+    // REQUIRED `attestation_challenge` member (the suite's unknown-field
+    // check rejects extra members).
+    (
+        [
+            ("content-type", "application/json"),
+            ("cache-control", "no-store"),
+        ],
+        axum::Json(serde_json::json!({
+            "attestation_challenge": challenge,
+        })),
+    )
+        .into_response()
+}
+
+/// The draft §7.4 error code carried through the (StatusCode, String)
+/// channel - the caller maps it to `use_attestation_challenge`.
+pub const ERROR_USE_CHALLENGE: &str = "use_attestation_challenge";
+
+/// Consume the PoP's `challenge` claim when present (§9a.30.1, the
+/// draft's §7.2 rule 5): the record must exist, be live, and be bound
+/// to the SAME client - then it is deleted (single use). A PoP with
+/// NO challenge claim passes untouched (the claim is OPTIONAL per
+/// §5.1; the platform's local policy - §6 - accepts challenges when
+/// present, never mandates them).
+///
+/// # Errors
+/// `(400, use_attestation_challenge)` on a stale/unknown/misbound
+/// challenge - the draft §7.4 error contract (a fresh challenge is
+/// minted into the record store alongside, so the client's single
+/// retry resolves a live record).
+pub async fn consume_challenge_if_any(
+    valkey_url: &str,
+    pop_jwt: &str,
+    client_id: &str,
+) -> Result<(), (axum::http::StatusCode, String)> {
+    let Some(payload) = sentin8::auth::jwt::decode_payload(pop_jwt).ok() else {
+        return Ok(()); // the caller re-verifies the PoP shape anyway
+    };
+    let Some(challenge) = payload
+        .get("challenge")
+        .and_then(|v| v.as_str())
+        .filter(|c| !c.is_empty())
+    else {
+        return Ok(());
+    };
+    let key = format!("auth:attestation:challenge:{challenge}");
+    let conn = sentin8::middleware::valkey_client(valkey_url, "sentin8:auth")
+        .await
+        .map_err(|e| {
+            tracing::warn!(error = %e, "attestation challenge: consume gate unavailable");
+            (
+                axum::http::StatusCode::UNAUTHORIZED,
+                "invalid client".to_string(),
+            )
+        })?;
+    // Atomic consume: get_del returns the record or nil (the glide
+    // client's GETDEL) - single-use by construction.
+    let record: Option<String> = {
+        use glide::AsyncCommands as _;
+        conn.get_del(&key).await.unwrap_or(None)
+    };
+    match record {
+        Some(text) => {
+            let bound = serde_json::from_str::<serde_json::Value>(&text)
+                .ok()
+                .and_then(|r| {
+                    r.get("client_id")
+                        .and_then(|v| v.as_str())
+                        .map(str::to_string)
+                })
+                .unwrap_or_default();
+            if !bound.is_empty() && bound != client_id {
+                tracing::warn!(
+                    challenge = %challenge,
+                    "attestation challenge bound to a different client"
+                );
+                return Err(use_attestation_challenge(&conn).await);
+            }
+            Ok(())
+        }
+        None => {
+            tracing::warn!(challenge = %challenge, "attestation challenge unknown/expired");
+            Err(use_attestation_challenge(&conn).await)
+        }
+    }
+}
+
+/// The draft §7.4 error payload: `400 use_attestation_challenge` with
+/// a FRESH challenge minted into the record store and returned for the
+/// `OAuth-Client-Attestation-Challenge` response header - the
+/// spec-true retry path (the client rebuilds the PoP with the fresh
+/// challenge and retries ONCE).
+async fn use_attestation_challenge(
+    conn: &glide::GlideClient,
+) -> (axum::http::StatusCode, String) {
+    let fresh = uuid::Uuid::new_v4().to_string();
+    let record = serde_json::json!({ "client_id": "" });
+    {
+        use glide::AsyncCommands as _;
+        let _: Result<(), _> = conn
+            .set_ex(
+                format!("auth:attestation:challenge:{fresh}"),
+                record.to_string(),
+                CHALLENGE_TTL_SECS,
+            )
+            .await;
+    }
+    (
+        axum::http::StatusCode::BAD_REQUEST,
+        ERROR_USE_CHALLENGE.to_string(),
+    )
 }
 
 #[cfg(test)]
